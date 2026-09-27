@@ -17,9 +17,13 @@ function rid() { const a = new Uint8Array(12); crypto.getRandomValues(a); return
 // token is per-tab so two tabs on one PC are two different players
 let token = sess.get('ob_token'); if (!token) { token = rid(); sess.set('ob_token', token); }
 const myName = () => store.get('ob_name') || '';
-const EMOTES = ['GG', 'Nice one!', 'Lucky…', 'Too easy 😎', 'Rematch?!', '😭'];
+const EMOTES = ['GG', 'Nice one', 'Lucky', 'Too easy', 'Again?', 'Ouch'];
 const COLORS = ['#ff4d5e', '#3fa7ff'];
 
+const ICON = {
+  link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 9.5 9.5 6.5M7 4.5l1.2-1.2a2.8 2.8 0 0 1 4 4L11 8.5M9 11.5l-1.2 1.2a2.8 2.8 0 0 1-4-4L5 7.5"/></svg>',
+  menu: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 4h12M2 8h12M2 12h8"/></svg>',
+};
 function toast(text, ms = 3200) {
   const el = document.createElement('div'); el.className = 'toast'; el.textContent = text;
   $('toasts').appendChild(el);
@@ -27,14 +31,14 @@ function toast(text, ms = 3200) {
   while ($('toasts').children.length > 4) $('toasts').firstChild.remove();
 }
 
-function lbHtml(list, highlight) {
-  if (!list || !list.length) return '<div class="empty">No ranked matches yet. Play a real 1v1 to get on the board.</div>';
-  const rows = list.map((p, i) => {
-    const acc = p.shots ? Math.round(p.perfect / p.shots * 100) + '%' : '–';
+function lbHtml(list, highlight, limit = 25) {
+  if (!list || !list.length) return '<div class="empty">No ranked matches yet. Play a real 1v1 to get on the table.</div>';
+  const rows = list.slice(0, limit).map((p, i) => {
     const me = highlight && p.name.toLowerCase() === highlight.toLowerCase();
-    return `<tr class="${i === 0 ? 'top' : ''}${me ? ' me' : ''}"><td>${i === 0 ? '👑' : i + 1}</td><td>${esc(p.name)}</td><td><b>${p.rating}</b></td><td>${p.w}–${p.l}</td><td>${p.gf}:${p.ga}</td><td>${acc}</td><td>${p.bestStreak}</td></tr>`;
+    const rec = `${p.w}W ${p.l}L · ${p.gf} goals${p.bestStreak >= 2 ? ` · best run ${p.bestStreak}` : ''}`;
+    return `<tr class="${me ? 'me' : ''}"><td class="rk">${i + 1}</td><td><div class="nm">${esc(p.name)}</div><div class="rec">${rec}</div></td><td class="rt">${p.rating}</td></tr>`;
   }).join('');
-  return `<table><thead><tr><th>#</th><th>Player</th><th>Rating</th><th>W–L</th><th>Goals</th><th>Perfect</th><th>Streak</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table>${rows}</table>`;
 }
 
 // =====================================================================
@@ -247,10 +251,13 @@ function showHome() {
     store.set('ob_name', n.slice(0, 16)); return n;
   };
   const go = code => { if (needName()) location.href = '/r/' + encodeURIComponent(code.toUpperCase()); };
-  $('createBtn').onclick = async () => {
+  const create = async practice => {
     if (!needName()) return;
+    if (practice) store.set('ob_practice', 'solo');
     try { const r = await (await fetch('/api/new')).json(); go(r.code); } catch { toast('Server unreachable. Is it running?'); }
   };
+  $('createBtn').onclick = () => create(false);
+  $('practiceBtn').onclick = () => create(true);
   $('joinBtn').onclick = () => { const c = $('codeInput').value.trim().replace(/[^A-Za-z0-9]/g, ''); if (c) go(c); else $('codeInput').focus(); };
   $('codeInput').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
   nameIn.onkeydown = e => { if (e.key === 'Enter') $('createBtn').click(); };
@@ -258,10 +265,10 @@ function showHome() {
   async function refresh() {
     try {
       const [rooms, lb] = await Promise.all([fetch('/api/rooms').then(r => r.json()), fetch('/api/leaderboard').then(r => r.json())]);
-      $('roomsList').innerHTML = rooms.length ? '<div class="label" style="margin:4px 0 0">Open rooms</div>' + rooms.map(r =>
-        `<button class="btn room-item" data-code="${esc(r.code)}"><span><b>${esc(r.code)}</b>&nbsp; ${esc(r.names.join(', '))}</span><span>${r.live ? '<span class="live">● LIVE</span> ' : ''}${r.players} 👤</span></button>`).join('') : '';
-      $('roomsList').querySelectorAll('.room-item').forEach(b => b.onclick = () => go(b.dataset.code));
-      $('homeLb').innerHTML = lbHtml(lb, myName());
+      $('roomsList').innerHTML = rooms.length ? '<div class="cap">Rooms on the network</div>' + rooms.map(r =>
+        `<button class="live-room" data-code="${esc(r.code)}"><b>${esc(r.code)}</b><span class="who">${esc(r.names.join(', '))}</span><span class="tag${r.live ? '' : ' open'}">${r.live ? 'Live' : 'Join'}</span></button>`).join('') : '';
+      $('roomsList').querySelectorAll('.live-room').forEach(b => b.onclick = () => go(b.dataset.code));
+      $('homeLb').innerHTML = lbHtml(lb, myName(), 8);
     } catch { }
   }
   refresh(); setInterval(refresh, 3000);
@@ -313,12 +320,11 @@ function slotName(i) {
 
 function enterRoom(c) {
   code = c;
-  $('side').classList.remove('hidden'); $('hud').classList.remove('hidden');
-  $('roomCode').textContent = code;
+  $('hud').classList.remove('hidden');
+  $('roomCode').textContent = code; $('roomCode2').textContent = code;
   document.title = `Office Ball · ${code}`;
   history.replaceState(null, '', '/r/' + code);
-  if (store.get('ob_side') === 'hidden') document.body.classList.add('side-hidden');
-  setupShare(); setupSide(); setupInput();
+  setupShare(); setupMenu(); setupInput();
   if (!myName()) askName(connect); else connect();
   requestAnimationFrame(frame);
   setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'ping', c: performance.now() })); }, 2000);
@@ -335,79 +341,87 @@ function askName(then) {
   inp.onkeydown = e => { if (e.key === 'Enter') done(); e.stopPropagation(); };
 }
 
+let shareUrl = '';
+function copyText(v, btn) {
+  const fallback = () => { const t = document.createElement('textarea'); t.value = v; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); } catch { } t.remove(); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).catch(fallback); else fallback();
+  if (btn) { const old = btn.textContent; btn.textContent = 'Copied'; btn.blur(); setTimeout(() => btn.textContent = old, 1400); }
+}
 async function setupShare() {
-  const setLink = host => { $('shareLink').value = `${location.protocol}//${host}/r/${code}`; };
+  const setLink = host => { shareUrl = `${location.protocol}//${host}/r/${code}`; $('shareLink').value = shareUrl; screenKey = ''; };
   setLink(location.host);
   const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
   try {
     const info = await (await fetch('/api/info')).json();
     if (local && info.ips.length) {
       setLink(`${info.ips[0]}:${location.port || info.port}`);
-      $('shareHint').innerHTML = 'Teammates must be on the same office network/Wi-Fi.' +
-        (info.ips.length > 1 ? `<br>Not working? Try: ${info.ips.slice(1).map(ip => `<code>${esc(ip)}</code>`).join(', ')}` : '');
-    } else if (local) $('shareHint').textContent = 'No network found on this PC. Connect to Wi-Fi/LAN so others can join.';
+      $('shareHint').innerHTML = 'Teammates must be on the same office network or Wi-Fi.' +
+        (info.ips.length > 1 ? `<br>Link not working? Try ${info.ips.slice(1).map(ip => `<code>${esc(ip)}</code>`).join(', ')}` : '');
+    } else if (local) $('shareHint').textContent = 'This PC is not on a network. Connect to Wi-Fi or LAN so others can join.';
     else $('shareHint').textContent = 'Anyone on this network can open it.';
   } catch { }
   $('shareLink').onclick = () => $('shareLink').select();
-  $('copyBtn').onclick = () => {
-    const v = $('shareLink').value;
-    const fallback = () => { const i = $('shareLink'); i.focus(); i.select(); try { document.execCommand('copy'); } catch { } };
-    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).catch(fallback); else fallback();
-    $('copyBtn').blur(); $('copyBtn').textContent = 'Copied!'; setTimeout(() => $('copyBtn').textContent = 'Copy', 1500);
-  };
-}
-
-function toggleSide() {
-  document.body.classList.toggle('side-hidden');
-  store.set('ob_side', document.body.classList.contains('side-hidden') ? 'hidden' : 'shown');
+  $('copyBtn').onclick = e => copyText(shareUrl, e.currentTarget);
+  $('screen').addEventListener('click', e => { const b = e.target.closest('[data-act="copy"]'); if (b) copyText(shareUrl, b); });
 }
 
 const practicePref = () => (store.get('ob_practice') === 'solo' ? 'solo' : 'bot');
 function updatePracticeUI() {
   document.querySelectorAll('#practiceSeg button').forEach(b => b.classList.toggle('on', b.dataset.p === practicePref()));
-  $('practiceHint').innerHTML = practicePref() === 'solo'
-    ? 'No opponent, no clock. Shoot at either goal. <kbd>R</kbd> brings the ball to your feet.'
-    : 'A bot plays you until a teammate joins.';
 }
-function setupSide() {
-  document.querySelectorAll('#practiceSeg button').forEach(b => b.onclick = e => {
-    store.set('ob_practice', b.dataset.p); send({ t: 'practice', v: b.dataset.p }); updatePracticeUI(); e.currentTarget.blur();
+const menuOpen = () => !$('menu').classList.contains('hidden');
+function openMenu(pane = 'room') {
+  releaseAllInputs();
+  $('menu').classList.remove('hidden');
+  showPane(pane);
+}
+function closeMenu() { $('menu').classList.add('hidden'); }
+function showPane(pane) {
+  if (pane === 'resume') return closeMenu();
+  if (pane === 'leave') { location.href = '/'; return; }
+  document.querySelectorAll('.menu-nav button').forEach(b => b.classList.toggle('on', b.dataset.pane === pane));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.dataset.pane === pane));
+  if (pane === 'table') $('lbTable').innerHTML = lbHtml(lbList, myName());
+}
+function setupMenu() {
+  document.querySelectorAll('.hbtn[data-icon]').forEach(b => b.insertAdjacentHTML('afterbegin', ICON[b.dataset.icon]));
+  $('menuBtn').onclick = e => { e.currentTarget.blur(); menuOpen() ? closeMenu() : openMenu('room'); };
+  $('inviteBtn').onclick = e => { e.currentTarget.blur(); openMenu('invite'); };
+  document.querySelectorAll('.menu-nav button').forEach(b => b.onclick = () => showPane(b.dataset.pane));
+  $('menu').onclick = e => { if (e.target === $('menu')) closeMenu(); };
+  document.querySelectorAll('#practiceSeg button').forEach(b => b.onclick = () => {
+    store.set('ob_practice', b.dataset.p); send({ t: 'practice', v: b.dataset.p }); updatePracticeUI();
   });
   updatePracticeUI();
-  $('muteBtn').textContent = Sound.muted ? '🔇' : '🔊';
-  $('muteBtn').onclick = e => { $('muteBtn').textContent = Sound.toggle() ? '🔇' : '🔊'; e.currentTarget.blur(); };
-  $('sitBtn').onclick = e => { const me = room && room.members.find(m => m.id === myId); if (me) send({ t: 'sit', v: !me.sitting }); e.currentTarget.blur(); };
-  $('lbBtn').onclick = e => { $('lbTable').innerHTML = lbHtml(lbList, myName()); $('lbModal').classList.remove('hidden'); e.currentTarget.blur(); };
-  $('lbClose').onclick = () => $('lbModal').classList.add('hidden');
-  $('lbModal').onclick = e => { if (e.target === $('lbModal')) $('lbModal').classList.add('hidden'); };
-  $('homeBtn').onclick = () => { location.href = '/'; };
-  $('renameBtn').onclick = e => { e.currentTarget.blur(); askName(() => send({ t: 'name', name: myName() })); };
-  $('sideToggle').onclick = e => { toggleSide(); e.currentTarget.blur(); };
+  const muteLabel = () => { $('muteBtn').textContent = Sound.muted ? 'Off' : 'On'; };
+  muteLabel(); $('muteBtn').onclick = () => { Sound.toggle(); muteLabel(); };
+  setupMenu.muteLabel = muteLabel;
+  $('sitBtn').onclick = () => { const me = room && room.members.find(m => m.id === myId); if (me) send({ t: 'sit', v: !me.sitting }); };
+  $('renameBtn').onclick = () => askName(() => send({ t: 'name', name: myName() }));
   const qb = $('qualityBtn');
-  qb.textContent = `Graphics: ${qualityNames[quality]}`;
-  qb.onclick = e => {
+  qb.textContent = qualityNames[quality];
+  qb.onclick = () => {
     quality = { auto: 'high', high: 'low', low: 'auto' }[quality];
-    store.set('ob_quality', quality); if (R) R.setQuality(quality);
-    qb.textContent = `Graphics: ${qualityNames[quality]}`; e.currentTarget.blur();
+    store.set('ob_quality', quality); if (R) R.setQuality(quality); qb.textContent = qualityNames[quality];
   };
 }
 
 function renderMembers() {
   if (!room) return;
   const rows = [];
-  const pushRow = (id, name, cls, dotCls, tag, rating) => rows.push(
-    `<li class="${cls}"><span class="dot ${dotCls}"></span><span class="nm">${esc(name)}${id === myId ? ' <span class="pill">you</span>' : ''}${room.streak && room.streak.id === id && room.streak.n >= 2 ? ` 👑${room.streak.n}` : ''}</span>${tag ? `<span class="pill">${tag}</span>` : ''}${rating != null ? `<span class="rt">${rating}</span>` : ''}</li>`);
+  const row = (id, name, bar, status, rating, off) => rows.push(
+    `<li class="${off ? 'off' : ''}"><span class="bar ${bar}"></span><span class="nm">${esc(name)}${id === myId ? '<span class="you">You</span>' : ''}${room.streak && room.streak.id === id && room.streak.n >= 2 ? `<span class="you">W${room.streak.n}</span>` : ''}</span><span class="st">${status}</span><span class="rt">${rating != null ? rating : ''}</span></li>`);
   room.slots.forEach((id, i) => {
     if (id === 'none') return;
-    if (id === 'bot') pushRow('bot', 'BOT', '', i ? 'blue' : 'red', 'practice', null);
-    else if (id != null) { const m = room.members.find(x => x.id === id); if (m) pushRow(m.id, m.name, (m.id === myId ? 'me ' : '') + (m.connected ? '' : 'off'), i ? 'blue' : 'red', m.connected ? 'playing' : 'reconnecting', m.rating); }
+    if (id === 'bot') row('bot', 'Bot', i ? 'blue' : 'red', 'Practice', null);
+    else if (id != null) { const m = room.members.find(x => x.id === id); if (m) row(m.id, m.name, i ? 'blue' : 'red', m.connected ? 'Playing' : 'Reconnecting', m.rating, !m.connected); }
   });
-  room.queue.forEach((id, qi) => { const m = room.members.find(x => x.id === id); if (m) pushRow(m.id, m.name, m.id === myId ? 'me' : '', 'q', qi === 0 ? 'next up' : `#${qi + 1} in line`, m.rating); });
+  room.queue.forEach((id, qi) => { const m = room.members.find(x => x.id === id); if (m) row(m.id, m.name, 'q', qi === 0 ? 'Next up' : `#${qi + 1} in line`, m.rating); });
   room.members.filter(m => !room.slots.includes(m.id) && !room.queue.includes(m.id)).forEach(m =>
-    pushRow(m.id, m.name, (m.id === myId ? 'me ' : '') + (m.connected ? '' : 'off'), '', m.connected ? 'sitting out' : 'offline', m.rating));
+    row(m.id, m.name, '', m.connected ? 'Sitting out' : 'Offline', m.rating, !m.connected));
   $('memberList').innerHTML = rows.join('');
   const me = room.members.find(m => m.id === myId);
-  $('sitBtn').textContent = me && me.sitting ? '▶ Join the line' : '⏸ Sit out';
+  $('sitBtn').textContent = me && me.sitting ? 'Join the line' : 'Sit out';
 }
 
 // ---------------- networking ----------------
@@ -447,8 +461,8 @@ function handle(m) {
     case 'result': result = m; resultAt = performance.now(); resultFx = false; break;
     case 'emote': showEmote(m.id, m.n); break;
     case 'toast': toast(m.text); break;
-    case 'lb': lbList = m.list; if (!$('lbModal').classList.contains('hidden')) $('lbTable').innerHTML = lbHtml(lbList, myName()); break;
-    case 'pong': pingMs = performance.now() - m.c; $('netInfo').textContent = `Ping ${pingMs.toFixed(0)} ms · smoothing ${Math.max(0, clock.delay * 16.7).toFixed(0)} ms · ${R ? ['low', 'medium', 'high'][R.level] : ''} graphics`; break;
+    case 'lb': lbList = m.list; if (menuOpen()) $('lbTable').innerHTML = lbHtml(lbList, myName()); break;
+    case 'pong': pingMs = performance.now() - m.c; $('netInfo').textContent = `Connection ${pingMs.toFixed(0)} ms · smoothing ${Math.max(0, clock.delay * 16.7).toFixed(0)} ms · rendering at ${R ? ['low', 'medium', 'high'][R.level] : ''} quality`; break;
   }
 }
 
@@ -538,16 +552,28 @@ const inp = { kp: 0, dc: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, rb: 0 };
 const mouse = { x: 0, y: 0, has: false };
 let ctrl = ['keyboard', 'mouse', 'gamepad'].includes(store.get('ob_ctrl')) ? store.get('ob_ctrl') : 'keyboard';
 let lastSent = '', padPrev = { kick: false, dash: false }, padSeen = false;
+const K = s => s.split(' ').map(k => `<span class="key">${k}</span>`).join('');
 const CTRL_HELP = {
-  keyboard: '<div><kbd>WASD</kbd> / <kbd>Arrows</kbd> move. Ease off to keep the ball close, sprint and it runs away from you</div><div><kbd>Space</kbd> hold & release to shoot/pass. Release on <b class="gold">gold</b> = PERFECT</div><div><kbd>E</kbd> hold & release to <b>chip</b> it over them</div><div><kbd>Shift</kbd> tackle. While charging it <b>fakes</b> the shot</div>',
-  mouse: '<div>Your player <b>runs to the pointer</b>. Keep it just ahead of you for fine control</div><div><b>Hold click</b> to charge, <b>release</b> to shoot where you point. Release on <b class="gold">gold</b> = PERFECT</div><div><b>Right-click</b> (two-finger tap) = tackle; while charging it <b>fakes</b> the shot</div><div><b>Shift+click</b> or middle-click = <b>chip</b>. <kbd>Space</kbd> / <kbd>E</kbd> also work</div>',
-  gamepad: '<div><b>Left stick</b> / D-pad move</div><div>Hold <b>A</b> (or RT) to charge, release to kick. Release on <b class="gold">gold</b> = PERFECT</div><div><b>Y</b> = chip over them</div><div><b>X</b> / <b>B</b> / LB = tackle; while charging it <b>fakes</b> the shot</div>',
+  keyboard: `<span class="do">Move</span><span class="how">${K('W A S D')} or arrows. Ease off to keep the ball close; at full sprint it runs away from you</span>
+    <span class="do">Shoot / pass</span><span class="how">Hold ${K('Space')}, release. Release on gold for a perfect strike</span>
+    <span class="do">Chip</span><span class="how">Hold ${K('E')}, release. Lifts it over the keeper</span>
+    <span class="do">Tackle</span><span class="how">${K('Shift')}. While charging a shot it cancels it: a fake</span>
+    <span class="do">Practice</span><span class="how">${K('R')} brings the ball to your feet</span>`,
+  mouse: `<span class="do">Move</span><span class="how">Your player runs to the pointer. Keep it just ahead of you for close control</span>
+    <span class="do">Shoot / pass</span><span class="how">Hold click, release. The ball goes where you point</span>
+    <span class="do">Chip</span><span class="how">Shift + click, or middle-click</span>
+    <span class="do">Tackle</span><span class="how">Right-click (two-finger tap). While charging it fakes the shot</span>`,
+  gamepad: `<span class="do">Move</span><span class="how">Left stick or D-pad</span>
+    <span class="do">Shoot / pass</span><span class="how">Hold A or RT, release</span>
+    <span class="do">Chip</span><span class="how">Y</span>
+    <span class="do">Tackle</span><span class="how">X, B or LB. While charging it fakes the shot</span>`,
 };
 const CTRL_TOAST = {
-  keyboard: '⌨ Keyboard controls',
-  mouse: '🖱 Mouse controls: run to the pointer, hold click and release to shoot, right-click to tackle',
-  gamepad: '🎮 Controller connected: left stick moves, A kicks, X tackles',
+  keyboard: 'Keyboard controls',
+  mouse: 'Mouse controls: run to the pointer, hold click and release to shoot, right-click to tackle',
+  gamepad: 'Controller: left stick moves, A shoots, Y chips, X tackles',
 };
+function releaseAllInputs() { held.clear(); for (const s of [...kickSources]) kickUp(s); inp.ax = inp.ay = 0; sendInput(); }
 function typing(e) { const t = e.target; return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
 function sendInput(force) {
   const msg = {
@@ -600,14 +626,14 @@ function setCtrl(mode, announce = true) {
 function setupInput() {
   addEventListener('keydown', e => {
     if (typing(e) || !$('nameModal').classList.contains('hidden')) return;
+    if (e.code === 'Escape') { e.preventDefault(); menuOpen() ? closeMenu() : openMenu('room'); return; }
+    if (menuOpen()) return;
     const act = KEYMAP[e.code];
     if (act) e.preventDefault();
     if (e.repeat) return;
     if (/^Digit[1-6]$/.test(e.code)) { send({ t: 'emote', n: +e.code.slice(5) - 1 }); return; }
-    if (e.code === 'KeyM') { $('muteBtn').textContent = Sound.toggle() ? '🔇' : '🔊'; return; }
-    if (e.code === 'KeyH') { toggleSide(); return; }
+    if (e.code === 'KeyM') { Sound.toggle(); if (setupMenu.muteLabel) setupMenu.muteLabel(); return; }
     if (e.code === 'KeyR') { inp.rb++; sendInput(); return; }
-    if (e.code === 'Escape') { $('lbModal').classList.add('hidden'); return; }
     if (!act) return;
     if (MOVE.has(act) && ctrl !== 'keyboard') setCtrl('keyboard');
     held.add(e.code);
@@ -629,7 +655,7 @@ function setupInput() {
     const r = stage.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true;
   });
   stage.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'touch' || e.target.closest('button, input, a')) return;
+    if (e.pointerType === 'touch' || e.target.closest('button, input, a, .interactive')) return;
     const r = stage.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true;
     if (e.button === 0 && e.shiftKey) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('lob:mouse'); e.preventDefault(); }
     else if (e.button === 0) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('mouse'); e.preventDefault(); }
@@ -638,10 +664,9 @@ function setupInput() {
   });
   addEventListener('pointerup', e => { if (e.button === 0) { kickUp('mouse'); kickUp('lob:mouse'); } if (e.button === 1) kickUp('lob:mouse'); });
   stage.addEventListener('contextmenu', e => e.preventDefault());
-  addEventListener('gamepadconnected', () => { padSeen = true; toast('🎮 Controller detected. Move the stick to use it', 3500); });
-  const clearAll = () => { held.clear(); for (const s of [...kickSources]) kickUp(s); inp.ax = inp.ay = 0; sendInput(); };
-  addEventListener('blur', clearAll);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) clearAll(); });
+  addEventListener('gamepadconnected', () => { padSeen = true; toast('Controller detected. Move the stick to use it', 3500); });
+  addEventListener('blur', releaseAllInputs);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllInputs(); });
   setInterval(() => sendInput(true), 250);
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.onclick = e => { setCtrl(b.dataset.c); e.currentTarget.blur(); });
   updateCtrlUI();
@@ -765,80 +790,83 @@ function setScreen(key, html) {
 }
 function statRows(r) {
   const tot = Math.max(1, r.stats[0].poss + r.stats[1].poss);
-  const rows = [['Goals', st => st.goals], ['Shots', st => st.shots], ['Perfect kicks', st => st.perfect], ['Tackles', st => st.tackles], ['Possession', st => Math.round(st.poss / tot * 100), '%']];
-  return rows.map(([label, f, suf = '']) => {
-    const a = f(r.stats[0]), b = f(r.stats[1]), m = Math.max(1, a, b);
-    return `<div class="stat"><span class="v" style="color:#ff8a96">${a}${suf}</span><span class="bar l0"><i style="width:${a / m * 100}%"></i></span><span class="l">${label}</span><span class="bar l1"><i style="width:${b / m * 100}%"></i></span><span class="v" style="color:#7cc4ff">${b}${suf}</span></div>`;
+  const rows = [['Goals', st => st.goals], ['Shots', st => st.shots], ['On target', st => st.onTarget || 0], ['Perfect', st => st.perfect], ['Tackles', st => st.tackles], ['Possession', st => Math.round(st.poss / tot * 100), '%']];
+  return rows.map(([label, fn, suf = '']) => {
+    const a = fn(r.stats[0]), b = fn(r.stats[1]), m = Math.max(1, a, b);
+    return `<div class="stat"><span class="v vl">${a}${suf}</span><span class="bar lb0"><i style="width:${a / m * 100}%"></i></span><span class="l">${label}</span><span class="bar lb1"><i style="width:${b / m * 100}%"></i></span><span class="v">${b}${suf}</span></div>`;
   }).join('');
 }
+const inviteBox = () => `<div class="invite interactive"><input readonly value="${esc(shareUrl)}" onclick="this.select()"><button class="btn primary" data-act="copy">Copy link</button></div>`;
+const scoreRow = (n0, s0, s1, n1) => `<div class="ft-score"><span class="nm l">${esc(n0)}</span><span class="num l">${s0}</span><span class="dash">–</span><span class="num r">${s1}</span><span class="nm">${esc(n1)}</span></div>`;
 function renderScreens(s) {
   const ms = mySlot();
   const me = room && room.members.find(m => m.id === myId);
   if (s.rp === 'waiting') {
-    setScreen('wait' + (me && me.sitting), `<div class="scrim"></div><div class="panel">${me && me.sitting
-      ? '<h2>YOU\'RE SITTING OUT</h2><p>Click "Join the line" in the side panel to play.</p>'
-      : '<h2>WAITING FOR PLAYERS</h2><p>Share the invite link from the side panel.</p>'}</div>`);
+    setScreen('wait' + (me && me.sitting), me && me.sitting
+      ? `<div class="scrim"></div><div class="card"><div class="cap">Room ${esc(code)}</div><h2>Sitting out</h2><p>Open the menu (${K('Esc')}) and pick Room, then Join the line, to play.</p></div>`
+      : `<div class="scrim"></div><div class="card"><div class="cap">Room ${esc(code)}</div><h2>Waiting for players</h2><p>Send this link to a teammate. The match starts when they open it.</p>${inviteBox()}</div>`);
   } else if (s.rp === 'prematch' && matchInfo) {
     const mi = matchInfo, secs = Math.max(1, Math.ceil((s.rt || 0) / 60));
     if (secs !== lastCountdown) { if (lastCountdown !== -1) Sound.fx.beep(false); else Sound.fx.whoosh(); lastCountdown = secs; }
     if (mi.solo) {
-      setScreen('pre-solo', `<div class="scrim" style="opacity:.55"></div><div class="panel"><h2 style="color:var(--gold)">SOLO PRACTICE</h2><p>No opponent, no clock. Shoot at either goal. Press <kbd>R</kbd> to bring the ball to your feet.</p><p style="font-size:14px;color:var(--dim)">Want an opponent? Pick "Practice vs Bot" in the side panel, or share the invite link.</p><div class="vs-count" id="cnt" style="margin-top:14px"></div></div>`);
+      setScreen('pre-solo', `<div class="scrim" style="opacity:.5"></div><div class="card"><div class="cap">Practice</div><h2>Solo shooting</h2><p>No opponent and no clock. Both goals count. ${K('R')} brings the ball to your feet.</p><p class="muted small">Want someone to play? Send the link. A ranked match starts the moment they join.</p>${inviteBox()}<div class="count" id="cnt"></div></div>`);
     } else if (mi.bot) {
-      setScreen('pre-bot', `<div class="scrim" style="opacity:.6"></div><div class="panel"><h2 style="color:var(--gold)">PRACTICE vs BOT</h2><p>A ranked match starts the moment someone else joins. Share the invite link.</p><div class="vs-count" id="cnt" style="margin-top:14px"></div></div>`);
+      setScreen('pre-bot', `<div class="scrim" style="opacity:.55"></div><div class="card"><div class="cap">Practice</div><h2>Versus bot</h2><p>A ranked match starts the moment someone else joins.</p>${inviteBox()}<div class="count" id="cnt"></div></div>`);
     } else {
-      const crown = i => mi.streak && mi.streak.slot === i && mi.streak.n >= 2 ? `<div class="vs-crown">👑 ${mi.streak.n}-WIN STREAK</div>` : '';
-      const h2h = mi.h2h ? (mi.h2h[0] + mi.h2h[1] ? `Head to head &nbsp;<b>${mi.h2h[0]} – ${mi.h2h[1]}</b>` : 'First ever meeting') : '';
+      const streak = i => mi.streak && mi.streak.slot === i && mi.streak.n >= 2 ? `<div class="vs-streak">${mi.streak.n} wins in a row</div>` : '';
+      const h2h = mi.h2h ? (mi.h2h[0] + mi.h2h[1] ? `Head to head  ${mi.h2h[0]} – ${mi.h2h[1]}` : 'First meeting') : '';
       setScreen('pre-' + mi.names.join('|'), `<div class="vs">
-        <div class="vs-side red"><div class="vs-kicker">RED${ms === 0 ? ' · YOU' : ''}</div><div class="vs-name">${esc(mi.names[0])}</div><div class="vs-rating">${mi.ratings[0]} rating</div>${crown(0)}</div>
+        <div class="vs-side red"><div class="vs-kicker">Red${ms === 0 ? ' · You' : ''}</div><div class="vs-name">${esc(mi.names[0])}</div><div class="vs-rating">${mi.ratings[0]}</div>${streak(0)}</div>
         <div class="vs-mid"><div class="vs-vs">VS</div><div class="vs-count" id="cnt"></div></div>
-        <div class="vs-side blue"><div class="vs-kicker">${ms === 1 ? 'YOU · ' : ''}BLUE</div><div class="vs-name">${esc(mi.names[1])}</div><div class="vs-rating">${mi.ratings[1]} rating</div>${crown(1)}</div>
+        <div class="vs-side blue"><div class="vs-kicker">${ms === 1 ? 'You · ' : ''}Blue</div><div class="vs-name">${esc(mi.names[1])}</div><div class="vs-rating">${mi.ratings[1]}</div>${streak(1)}</div>
         <div class="vs-info">${h2h}</div>
-        ${ms >= 0 ? `<div class="vs-you">You are ${ms ? 'BLUE, attacking ←' : 'RED, attacking →'} · Controls: ${{ keyboard: 'keyboard', mouse: 'mouse / trackpad', gamepad: 'controller' }[ctrl]} (change in side panel)</div>` : ''}
+        ${ms >= 0 ? `<div class="vs-you">You attack ${ms ? '←' : '→'} · ${{ keyboard: 'Keyboard', mouse: 'Mouse', gamepad: 'Controller' }[ctrl]} controls</div>` : ''}
       </div>`);
     }
-    const c = $('cnt'); if (c) c.textContent = secs;
+    const cn = $('cnt'); if (cn) cn.textContent = secs;
   } else if (s.rp === 'match' && s.ph === 'half') {
     const sc = s.sc || [0, 0];
-    setScreen('half', `<div class="scrim"></div><div class="panel"><div class="label" style="font-size:13px;letter-spacing:.3em">END OF FIRST HALF</div><h2 style="font-size:96px">HALF TIME</h2>
-      <div class="res-score" style="margin:10px 0 6px"><span class="nm c0">${esc(slotName(0))}</span><span class="num c0">${sc[0]}</span><span class="num" style="color:#556">–</span><span class="num c1">${sc[1]}</span><span class="nm c1">${esc(slotName(1))}</span></div>
-      <p>Switching ends. Second half in <b id="hts"></b>s${ms >= 0 ? `: you'll attack <b>${attackArrow(ms, true)}</b>` : ''}</p></div>`);
+    setScreen('half', `<div class="scrim"></div><div class="ft"><div class="ft-head"><span>Half time</span><span class="accent">Ends switch</span></div>
+      ${scoreRow(slotName(0), sc[0], sc[1], slotName(1))}
+      <div class="ft-foot"><div class="ft-next"><span>Second half in <span id="hts"></span>s</span><span>${ms >= 0 ? `You attack ${attackArrow(ms, true)}` : ''}</span></div></div></div>`);
     const h = $('hts'); if (h) h.textContent = Math.max(1, Math.ceil((C.HALF_T - (s.pt || 0)) / 60));
   } else if (s.rp === 'paused') {
     const gone = room ? room.slots.map(id => room.members.find(m => m.id === id)).find(m => m && !m.connected) : null;
-    setScreen('paused', `<div class="scrim"></div><div class="panel"><h2>PAUSED</h2><p>${esc(gone ? gone.name : 'Opponent')} disconnected. Waiting <b id="pz"></b>s for them to return.</p></div>`);
+    setScreen('paused', `<div class="scrim"></div><div class="card"><div class="cap">Paused</div><h2>${esc(gone ? gone.name : 'Opponent')} dropped</h2><p>Waiting <b id="pz"></b>s for them to come back.</p></div>`);
     const p = $('pz'); if (p) p.textContent = Math.ceil((s.rt || 0) / 60);
   } else if (s.rp === 'over' && result) {
     const r = result, w = r.winner, wName = r.names[w];
-    const title = ms === w ? 'VICTORY' : ms >= 0 ? 'DEFEAT' : `${esc(wName).toUpperCase()} WINS`;
+    const title = ms === w ? 'Victory' : ms >= 0 ? 'Defeat' : `${esc(wName)} wins`;
     const cls = ms >= 0 && ms !== w ? 'lose' : 'win';
     let elo = '';
     if (r.elo) {
-      const f = d => `<span class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '+' : ''}${d}</span>`;
-      elo = `<div class="res-elo"><span>${esc(r.names[0])}<b>${r.ratings[0]}</b> ${f(r.elo[0])}</span><span>${esc(r.names[1])}<b>${r.ratings[1]}</b> ${f(r.elo[1])}</span></div>`;
+      const d = v => `<span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}</span>`;
+      elo = `<div class="ft-elo"><span>${esc(r.names[0])}<b>${r.ratings[0]}</b>${d(r.elo[0])}</span><span>${d(r.elo[1])}<b>${r.ratings[1]}</b>${esc(r.names[1])}</span></div>`;
     }
     const notes = [];
-    if (r.forfeit) notes.push('<div class="res-note">Win by forfeit</div>');
-    if (r.h2h) notes.push(`<div class="res-note">Head to head: ${esc(r.names[0])} ${r.h2h[0]} – ${r.h2h[1]} ${esc(r.names[1])}</div>`);
-    if (r.streak) notes.push(`<div class="res-note gold">👑 ${esc(r.streak.name)}: ${r.streak.n} wins in a row</div>`);
+    if (r.forfeit) notes.push('<div class="ft-note">Won by forfeit</div>');
+    if (r.h2h) notes.push(`<div class="ft-note">Head to head: ${esc(r.names[0])} ${r.h2h[0]} – ${r.h2h[1]} ${esc(r.names[1])}</div>`);
+    if (r.streak) notes.push(`<div class="ft-note hl">${esc(r.streak.name)}: ${r.streak.n} wins in a row</div>`);
     let next;
-    if (r.bot) next = room && room.queue.length ? 'Real match next' : 'Rematch vs BOT';
+    if (r.bot) next = room && room.queue.length ? 'Real match next' : 'Rematch vs bot';
     else {
       const loserId = room ? room.slots[1 - w] : null;
       const ch = room && room.queue.find(id => id !== loserId);
-      next = ch != null ? `Next: ${esc(wName)} vs ${esc(memberName(ch))}` : 'Rematch';
+      next = ch != null ? `Next: ${esc(wName)} v ${esc(memberName(ch))}` : 'Rematch';
     }
-    setScreen('over' + r.score.join() + r.names.join(), `<div class="scrim"></div><div class="glass result">
-      <div class="res-title ${cls}">${title}</div>
-      <div class="res-score"><span class="nm c0">${esc(r.names[0])}</span><span class="num c0">${r.score[0]}</span><span class="num" style="color:#556">–</span><span class="num c1">${r.score[1]}</span><span class="nm c1">${esc(r.names[1])}</span></div>
-      ${statRows(r)}${elo}${notes.join('')}
-      <div class="res-next">${next} in <span id="nx"></span>s</div>
-      <div class="res-ready" id="rdy"></div>
-    </div>`);
+    setScreen('over' + r.score.join() + r.names.join(), `<div class="scrim"></div><div class="ft">
+      <div class="ft-head"><span>Full time</span><span class="accent">${r.bot ? 'Practice' : r.rated ? 'Ranked' : 'Friendly'}</span></div>
+      <div class="ft-title ${cls}">${title}</div>
+      ${scoreRow(r.names[0], r.score[0], r.score[1], r.names[1])}
+      <div class="ft-stats">${statRows(r)}</div>
+      <div class="ft-foot">${elo}${notes.join('')}
+        <div class="ft-next"><span>${next} in <span id="nx"></span>s</span><span class="ft-ready" id="rdy"></span></div>
+      </div></div>`);
     const nx = $('nx'); if (nx) nx.textContent = Math.max(0, Math.ceil((s.rt || 0) / 60));
     const rdy = $('rdy');
     if (rdy) {
-      if (ms >= 0) { const ok = s.rd && s.rd[ms]; rdy.textContent = ok ? 'READY ✓ WAITING FOR OPPONENT' : 'PRESS SPACE WHEN READY'; rdy.className = 'res-ready' + (ok ? ' ok' : ''); }
-      else { const qi = room ? room.queue.indexOf(myId) : -1; rdy.textContent = qi === 0 ? "YOU'RE NEXT UP. GET READY!" : ''; }
+      if (ms >= 0) { const ok = s.rd && s.rd[ms]; rdy.textContent = ok ? 'Ready' : 'Shoot to ready up'; rdy.className = 'ft-ready' + (ok ? ' ok' : ''); }
+      else { const qi = room ? room.queue.indexOf(myId) : -1; rdy.textContent = qi === 0 ? "You're next" : ''; }
     }
     if (!resultFx && performance.now() - resultAt > 700) {
       resultFx = true;
@@ -877,16 +905,15 @@ function frame(now) {
     const sc = s.sc || [0, 0];
     setText($('s0'), sc[0]); setText($('s1'), s.so ? '–' : sc[1]);
     const ck = $('clock');
-    if (s.so) { setText(ck, 'FREE'); setClass(ck, 'sb-clock'); }
+    if (s.so) { setText(ck, 'FREE'); setClass(ck, 'sb-clock free'); }
     else if (s.sd) { setText(ck, 'SUDDEN DEATH'); setClass(ck, 'sb-clock sd'); }
     else { setText(ck, s.tm != null ? `${(s.tm / 60) | 0}:${String(s.tm % 60).padStart(2, '0')}` : '2:00'); setClass(ck, 'sb-clock' + (s.tm != null && s.tm <= 10 ? ' low' : '')); }
     const sub = $('subbug');
     const halfTxt = s.sd ? 'sudden death' : s.ph === 'half' ? 'half time' : (s.hf === 2 ? '2nd half' : '1st half');
     setText(sub, s.so ? 'Solo practice · both goals count · R = ball to your feet' : matchInfo ? `${matchInfo.bot ? 'Practice vs bot' : 'Ranked 1v1'} · ${halfTxt} · first to 3` : 'Office Ball');
     setClass(sub, matchInfo && matchInfo.bot ? 'bot' : '');
-    setHTML($('hudLeft'), `Room <b>${esc(code)}</b>`);
     const q = room ? room.queue.length : 0;
-    setHTML($('hudRight'), q ? `<b>${q}</b> waiting in line` : 'Nobody in line');
+    setHTML($('hudRight'), q ? `<b>${q}</b> in line` : '');
   }
 
   // camera mode + world
@@ -981,10 +1008,10 @@ function frame(now) {
   // spectator footer
   let foot = '';
   if (s && s.rp === 'match' && ms >= 0 && s.ph === 'kickoff' && !s.so) foot = `YOU ATTACK ${attackArrow(ms, s.sw)}`;
-  if (s && s.so && s.rp === 'match' && ms >= 0) foot = 'SOLO PRACTICE · R brings the ball to you';
+  if (s && s.so && s.rp === 'match' && ms >= 0 && s.ph === 'kickoff') foot = 'R brings the ball to your feet';
   if (s && s.rp === 'match' && ms < 0 && room && !replaying) {
     const me = room.members.find(m => m.id === myId), qi = room.queue.indexOf(myId);
-    foot = me && me.sitting ? 'Spectating (sitting out)' : qi === 0 ? "Spectating · you're NEXT: winner stays on" : qi > 0 ? `Spectating · #${qi + 1} in line` : 'Spectating';
+    foot = me && me.sitting ? 'Watching · sitting out' : qi === 0 ? "Watching · you're next" : qi > 0 ? `Watching · #${qi + 1} in line` : 'Watching';
   }
   setText($('footer'), foot);
 }

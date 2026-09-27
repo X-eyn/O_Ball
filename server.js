@@ -359,7 +359,7 @@ const server = http.createServer((req, res) => {
   if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return serveFile(res, path.join(PUB, 'index.html'));
   if (p.startsWith('/vendor/')) { // three.js + fonts, served locally so the game works without internet
     const rel = p.slice(8);
-    if (!/^(three\/(build|examples\/jsm)\/|@fontsource\/(teko|inter)\/)/.test(rel)) return send(res, 404, 'Not found', 'text/plain');
+    if (!/^(three\/(build|examples\/jsm)\/|@fontsource\/(teko|inter|barlow|barlow-condensed)\/)/.test(rel)) return send(res, 404, 'Not found', 'text/plain');
     const f = path.normalize(path.join(NODE_MODULES, rel));
     if (!f.startsWith(NODE_MODULES + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');
     return serveFile(res, f, true);

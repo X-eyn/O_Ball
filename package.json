@@ -10,6 +10,8 @@
   "license": "ISC",
   "description": "1v1 LAN browser football",
   "dependencies": {
+    "@fontsource/barlow": "^5.3.0",
+    "@fontsource/barlow-condensed": "^5.3.0",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/teko": "^5.3.0",
     "three": "^0.186.1",
