@@ -1,4 +1,4 @@
-# Office Ball âš½
+# Office Ball ⚽
 
 Fast 1v1 browser football for the office LAN. The winner stays on, and there's an ELO leaderboard.
 
@@ -6,7 +6,7 @@ Fast 1v1 browser football for the office LAN. The winner stays on, and there's a
 
 1. Double-click **`start.bat`**. It opens the game in your browser.
 2. If Windows Firewall asks, click **Allow** (Private networks).
-3. Enter your name, then click **Create room**.
+3. Enter your name, then click **Play**.
 4. Click **Invite** (top right) and send the link to teammates (e.g. `http://192.168.1.23:3000/r/ABCD`).
    They paste it in their browser and they're in. Nothing to install.
 
@@ -26,12 +26,13 @@ Keyboard, mouse/trackpad and game controllers all work. The game switches to whi
 
 - Release while the ring is **gold** for a PERFECT shot. An arrow on the grass shows where the kick will go.
 - The ball goes where you're facing/pointing. Run one way and aim another to **curve** it.
-- A slow ball sticks to your feet when you run into it. Only a tackle can take it off you.
+- Ease off and the ball stays close to your feet; sprint and it runs away from you (and can be nicked).
+- Tackle while you are charging a shot to cancel it: a shot fake.
 - Released a bit early? The kick still fires when the ball reaches you.
 
 | Other | Keys |
 |---|---|
-| Emotes | `1`â€“`6` |
+| Emotes | `1`–`6` |
 | Mute | `M` |
 | Menu (invite link, room, controls, settings) | `Esc` |
 
@@ -46,11 +47,11 @@ on slow laptops.
   both goals count, `R` brings the ball to your feet). A ranked match starts the moment someone joins.
 - Halftime at 1:00, and the teams switch ends for the second half.
 - If someone disconnects mid-match, the game pauses for 12 s. If they don't return, it's a forfeit.
-- Ranked results (ELO, Wâ€“L, head-to-head, streaks) are saved in `data/stats.json`.
+- Ranked results (ELO, W–L, head-to-head, streaks) are saved in `data/stats.json`.
 
 ## Troubleshooting
 
 - **Teammates can't open the link:** they must be on the same network. On the host, make sure the
-  Wi-Fi/Ethernet network is set to *Private* (Windows Settings â†’ Network) and that Node.js is allowed
-  through the firewall. If the host PC has several networks, the sidebar lists alternative addresses.
+  Wi-Fi/Ethernet network is set to *Private* (Windows Settings → Network) and that Node.js is allowed
+  through the firewall. If the host PC has several networks, **Menu > Invite** lists alternative addresses.
 - **Port 3000 busy:** run `set PORT=3001 && node server.js`.
