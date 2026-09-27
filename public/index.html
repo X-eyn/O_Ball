@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Office Ball</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+<link rel="stylesheet" href="/vendor/@fontsource/teko/500.css">
+<link rel="stylesheet" href="/vendor/@fontsource/teko/600.css">
+<link rel="stylesheet" href="/vendor/@fontsource/teko/700.css">
+<link rel="stylesheet" href="/vendor/@fontsource/inter/400.css">
+<link rel="stylesheet" href="/vendor/@fontsource/inter/600.css">
+<link rel="stylesheet" href="/vendor/@fontsource/inter/800.css">
+<link rel="stylesheet" href="/style.css">
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <!-- broadcast HUD: its own bar above the 3D view, so it can never cover the pitch -->
+    <div id="hud" class="hidden">
+      <div class="hud-side hud-l"><div id="hudLeft"></div><div id="subbug"></div></div>
+      <div id="scorebug">
+        <div class="sb-team sb-l"><i class="sb-bar"></i><span class="sb-name" id="n0">RED</span><b class="sb-score" id="s0">0</b></div>
+        <div class="sb-clock" id="clock">2:00</div>
+        <div class="sb-team sb-r"><b class="sb-score" id="s1">0</b><span class="sb-name" id="n1">BLUE</span><i class="sb-bar"></i></div>
+      </div>
+      <div class="hud-side hud-r"><div id="hudRight"></div><button id="sideToggle" title="Show/hide panel (H)">☰</button></div>
+    </div>
+
+    <div id="view">
+    <canvas id="c"></canvas>
+    <div id="vignette"></div>
+    <div id="labels"></div>
+    <div id="letterbox"><i></i><i></i></div>
+    <div id="replayBadge"><span class="rec"></span>REPLAY<small id="replaySkip">Space to skip</small></div>
+    <div id="bigText"></div>
+    <div id="goalBanner"><div class="gb-band"><div class="gb-text" id="gbText">GOAL!</div><div class="gb-sub" id="gbSub"></div></div></div>
+    <div id="screen"></div>
+    <div id="footer"></div>
+    <!-- home -->
+    <div id="home" class="hidden">
+      <div class="home-left">
+        <div class="brand"><span class="brand-ball">⚽</span><div><h1>OFFICE <em>BALL</em></h1><p>1v1 · skill-based · winner stays on</p></div></div>
+        <div class="glass home-card">
+          <label class="field">Your name
+            <input id="nameInput" maxlength="16" placeholder="e.g. Ahmed" autocomplete="off">
+          </label>
+          <button id="createBtn" class="btn primary big">Create a room</button>
+          <div class="or"><span>or join one</span></div>
+          <div class="row">
+            <input id="codeInput" maxlength="8" placeholder="Room code" autocomplete="off">
+            <button id="joinBtn" class="btn">Join</button>
+          </div>
+          <div id="roomsList"></div>
+        </div>
+        <div class="home-foot">Play with <b>keyboard</b>, <b>mouse / trackpad</b> or a <b>controller</b>. Hold to charge, release on <b class="gold">gold</b> for a PERFECT shot.</div>
+      </div>
+      <div class="glass home-lb">
+        <h2>Office leaderboard</h2>
+        <div id="homeLb" class="lb"></div>
+      </div>
+    </div>
+    </div>
+  </div>
+
+  <aside id="side" class="hidden">
+    <div class="block">
+      <div class="label">Invite link: send this to your opponent</div>
+      <div class="row"><input id="shareLink" readonly><button id="copyBtn" class="btn primary">Copy</button></div>
+      <div id="shareHint" class="small"></div>
+    </div>
+    <div class="block">
+      <div class="label">Room <b id="roomCode"></b> · winner stays on</div>
+      <ul id="memberList"></ul>
+    </div>
+    <div class="row btns">
+      <button id="sitBtn" class="btn">Sit out</button>
+      <button id="lbBtn" class="btn" title="Leaderboard">🏆</button>
+      <button id="muteBtn" class="btn" title="Sound (M)">🔊</button>
+      <button id="renameBtn" class="btn" title="Change name">✏️</button>
+      <button id="homeBtn" class="btn" title="Leave room">⏏</button>
+    </div>
+    <div class="block">
+      <div class="label">When you're alone in the room</div>
+      <div class="seg" id="practiceSeg"><button data-p="bot">🤖 Practice vs Bot</button><button data-p="solo">🎯 Solo shooting</button></div>
+      <div class="small" id="practiceHint"></div>
+    </div>
+    <div class="block">
+      <div class="label">Controls (switches automatically)</div>
+      <div class="seg" id="ctrlSeg"><button data-c="keyboard">⌨ Keyboard</button><button data-c="mouse">🖱 Mouse</button><button data-c="gamepad">🎮 Pad</button></div>
+      <div class="keys" id="ctrlHelp"></div>
+      <div class="small" style="margin-top:6px"><kbd>1</kbd>–<kbd>6</kbd> emotes · <kbd>M</kbd> mute · <kbd>H</kbd> hide panel</div>
+    </div>
+    <div class="row btns"><button id="qualityBtn" class="btn">Graphics: Auto</button></div>
+    <div id="netInfo" class="small"></div>
+  </aside>
+</div>
+
+<div id="nameModal" class="modal hidden"><div class="glass modal-card">
+  <h2>What should we call you?</h2>
+  <input id="modalName" maxlength="16" placeholder="Your name" autocomplete="off">
+  <button id="modalGo" class="btn primary big">Let's play</button>
+</div></div>
+
+<div id="lbModal" class="modal hidden"><div class="glass modal-card wide">
+  <h2>Office leaderboard</h2>
+  <div id="lbTable" class="lb"></div>
+  <button id="lbClose" class="btn">Close</button>
+</div></div>
+
+<div id="toasts"></div>
+<div id="conn" class="hidden">Connection lost. Reconnecting…</div>
+<div id="fatal" class="hidden"></div>
+
+<script src="/shared/game.js"></script>
+<script type="module" src="/client.js"></script>
+</body>
+</html>
