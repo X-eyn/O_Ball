@@ -301,7 +301,7 @@ class Player {
     this.cool = new THREE.Mesh(G.disc, arcMaterial(0xffffff, 0.86, 0.45)); this.cool.scale.setScalar((PR + 0.17) * 2); this.cool.position.y = 0.016; this.root.add(this.cool);
     this.arrow = new THREE.Mesh(G.arrow, new THREE.MeshBasicMaterial({ color: kit.light })); this.arrow.position.y = 1.85; this.root.add(this.arrow);
     for (const o of [this.baseRing, this.reach, this.charge, this.cool]) o.renderOrder = 2;
-    Object.assign(this, { phase: 0, yaw: slot ? -Math.PI / 2 : Math.PI / 2, lastX: null, lastZ: null, speed: 0, kickT: 0, windup: 0, identity: '', celebrate: 0, sad: 0 });
+    Object.assign(this, { phase: 0, yaw: slot ? -Math.PI / 2 : Math.PI / 2, lastX: null, lastZ: null, speed: 0, kickT: 0, windup: 0, identity: '', celebrate: 0, sad: 0, swingT: 0, swingDur: 0.1, vx: 0, vz: 0, ax: 0, az: 0, roll: 0, pitch: 0 });
     this.root.visible = false;
   }
   setIdentity(name) {
@@ -315,9 +315,18 @@ class Player {
     // p: sim player array [x,y,fx,fy,ct,stun,dash,dashCd,recover]
     this.root.visible = true;
     const x = wx(p[0]), z = wz(p[1]);
-    if (this.lastX === null || Math.hypot(x - this.lastX, z - this.lastZ) > 1.5) { this.lastX = x; this.lastZ = z; }
-    const sp = dt > 0 ? Math.hypot(x - this.lastX, z - this.lastZ) / dt : 0;
+    if (this.lastX === null || Math.hypot(x - this.lastX, z - this.lastZ) > 1.5) { this.lastX = x; this.lastZ = z; this.vx = this.vz = 0; }
+    const ivx = dt > 0 ? (x - this.lastX) / dt : 0, ivz = dt > 0 ? (z - this.lastZ) / dt : 0;
+    const pvx = this.vx, pvz = this.vz;
+    this.vx = damp(this.vx, ivx, 14, dt); this.vz = damp(this.vz, ivz, 14, dt);
+    if (dt > 0) { this.ax = damp(this.ax, (this.vx - pvx) / dt, 8, dt); this.az = damp(this.az, (this.vz - pvz) / dt, 8, dt); }
+    const sp = Math.hypot(this.vx, this.vz);
     this.speed = damp(this.speed, sp, 12, dt); this.lastX = x; this.lastZ = z;
+    // body weight: lean into turns (lateral acceleration) and forward/back with speed changes
+    const hx = sp > 0.3 ? this.vx / sp : 0, hz = sp > 0.3 ? this.vz / sp : 0;
+    const lat = hx * this.az - hz * this.ax, fwd = hx * this.ax + hz * this.az;
+    this.roll = damp(this.roll, clamp(lat * 0.035, -0.38, 0.38), 10, dt);
+    this.pitch = damp(this.pitch, clamp(fwd * 0.022, -0.3, 0.25), 10, dt);
     this.root.position.set(x, 0, z);
     const stun = !!p[5], dash = !!p[6], ct = o.ct;
     const tgtYaw = Math.atan2(p[2], p[3]);
@@ -328,21 +337,23 @@ class Player {
     this.phase += dt * (6 + this.speed * 2.2) * (amp > 0.05 ? 1 : 0);
     const sw = Math.sin(this.phase) * amp;
     this.kickT = Math.max(0, this.kickT - dt * 4.5);
+    this.swingT = Math.max(0, this.swingT - dt);
     const charging = ct >= 0;
     this.windup = damp(this.windup, charging ? Math.min(ct / C.CHARGE_FULL, 1) : 0, 14, dt);
     // legs
     this.legs[0].rotation.x = sw * 0.9;
     let r = -sw * 0.9;
-    if (this.kickT > 0) r = -1.7 * Math.sin(Math.PI * (1 - this.kickT)) + 0.6 * this.kickT;
+    if (this.swingT > 0) { const u = 1 - this.swingT / this.swingDur; r = 1.0 - 2.1 * u * u; }  // back-lift, then drive through
+    else if (this.kickT > 0) r = -1.1 * this.kickT - 0.2 * Math.sin(Math.PI * (1 - this.kickT)); // follow-through
     else if (this.windup > 0.02) r = r * (1 - this.windup) + 0.9 * this.windup;
     this.legs[1].rotation.x = r;
     // arms
     this.arms[0].rotation.x = -sw * 0.8; this.arms[1].rotation.x = sw * 0.8;
     this.arms[0].rotation.z = -0.12; this.arms[1].rotation.z = 0.12;
     // body
-    let lean = amp * 0.18 + (dash ? 0.5 : 0) - this.windup * 0.12;
-    this.body.position.y = Math.abs(Math.cos(this.phase)) * 0.05 * amp;
-    this.body.rotation.z = stun ? Math.sin(t * 9) * 0.22 : 0;
+    let lean = amp * 0.12 + this.pitch + (dash ? 0.5 : 0) - this.windup * 0.12 + (this.swingT > 0 ? -0.15 : 0) + this.kickT * 0.2;
+    this.body.position.y = Math.abs(Math.cos(this.phase)) * 0.05 * amp - (this.swingT > 0 ? 0.05 : 0);
+    this.body.rotation.z = stun ? Math.sin(t * 9) * 0.22 : this.roll;
     this.head.rotation.x = 0;
     if (dash) { this.arms[0].rotation.x = 1.1; this.arms[1].rotation.x = 1.1; }
     if (o.celebrate) {
@@ -376,13 +387,14 @@ class Player {
     if (this.cool.visible) this.cool.material.uniforms.progress.value = 1 - p[7] / C.DASH_CD;
   }
   hide() { this.root.visible = false; this.lastX = null; }
+  startSwing(sec) { this.swingT = this.swingDur = Math.max(0.03, sec); this.kickT = 0; }
 }
 
 // ---------------------------------------------------------------- goals / nets
 class Goal {
   constructor(scene, side, netTex) {
     this.side = side; const gx = side * HW; this.gx = gx;
-    const g = new THREE.Group(); scene.add(g);
+    const g = new THREE.Group(); scene.add(g); this.g = g; this.shakeT = 0;
     const white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.1 });
     const post = new THREE.CylinderGeometry(0.075, 0.075, GOAL_H, 16);
     for (const s of [-1, 1]) { const m = new THREE.Mesh(post, white); m.position.set(gx, GOAL_H / 2, s * GW / 2); m.castShadow = true; g.add(m); }
@@ -416,6 +428,7 @@ class Goal {
   }
   hit(zWorld, strength = 1) { this.ripple = { lx: -this.side * zWorld, t: 0, s: strength }; }
   update(dt) {
+    if (this.shakeT > 0) { this.shakeT = Math.max(0, this.shakeT - dt); const a = this.shakeT * 0.06; this.g.position.set(Math.sin(this.shakeT * 90) * a, 0, Math.cos(this.shakeT * 77) * a * 0.5); }
     if (!this.ripple) return;
     const r = this.ripple; r.t += dt;
     const pa = this.back.geometry.attributes.position, base = this.backBase;
@@ -752,26 +765,51 @@ export function createRenderer(canvas) {
   cursor.add(new THREE.Mesh(new THREE.CircleGeometry(0.05, 16).rotateX(-Math.PI / 2), curMat));
   cursor.children.forEach(m => { m.position.y = 0.02; m.renderOrder = 3; });
 
+  // shockwave rings on hard contact
+  const waves = Array.from({ length: 6 }, () => {
+    const m = new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+    m.position.y = 0.03; m.renderOrder = 4; m.visible = false; scene.add(m); return { m, t: 0, dur: 0.3, max: 2 };
+  });
+  let waveIdx = 0;
+  function wave(x, z, y, color, max, dur) { const w = waves[waveIdx++ % waves.length]; w.m.position.set(x, y, z); w.m.material.color.setHex(color); w.t = 0; w.dur = dur; w.max = max; w.m.visible = true; }
+  const camKick = new THREE.Vector3();
+  let ballSquash = 0, fovPunch = 0;
+
   // effects state
   let shake = 0, hype = 0, hypeR = 0, hypeB = 0, zoom = 0, orbit = 0, jumboFlash = null, jumboFlashT = 0;
   const fx = {
-    kick(slot, x, y, perfect, power) {
-      const P = players[slot]; if (P) P.kickT = 1;
+    swing(slot, ticks) { const P = players[slot]; if (P) P.startSwing(ticks / 60); },
+    kick(slot, x, y, perfect, power, dx = 0, dy = 0, lob = false) {
+      const P = players[slot]; if (P) { P.kickT = 1; P.swingT = 0; }
       const X = wx(x), Z = wz(y);
-      parts.burst(X, 0.05, Z, 8 + power * 8, { colors: [0x3d8b3f, 0x5aa04f, 0x2d6e30], speed: 2.2, up: 2.5, size: 0.07, life: 0.6 });
-      if (perfect) { parts.burst(X, 0.2, Z, 34, { colors: [0xffd34d, 0xfff1b0, 0xffa31a], speed: 6, up: 4, size: 0.12, life: 0.8, grav: 4 }); shake = Math.max(shake, 0.28); ballHot = 1; }
-      else shake = Math.max(shake, power * 0.1);
+      ballSquash = Math.min(1, 0.35 + power * 0.6);
+      parts.burst(X, 0.05, Z, 8 + power * 10, { colors: [0x3d8b3f, 0x5aa04f, 0x2d6e30, 0x7a5a36], speed: 2.4 + power, up: 2.5 + power * 1.5, size: 0.07, life: 0.7 });
+      if (power > 0.6) { wave(X, Z, 0.05, perfect ? 0xffd34d : 0xffffff, 0.8 + power * 0.9, 0.28); camKick.x += dx * power * 0.28; camKick.z += dy * power * 0.28; }
+      if (perfect) {
+        parts.burst(X, 0.25, Z, 38, { colors: [0xffd34d, 0xfff1b0, 0xffa31a], speed: 6.5, up: 4, size: 0.12, life: 0.8, grav: 4 });
+        wave(X, Z, 0.25, 0xffe28a, 2.6, 0.4); fovPunch = 1; shake = Math.max(shake, 0.12); ballHot = 1;
+      }
+    },
+    touch(x, y, f) { if (f > 4) parts.burst(wx(x), 0.03, wz(y), 3, { colors: [0x4f9a45, 0x3d8b3f], speed: 1, up: 1.2, size: 0.05, life: 0.35 }); },
+    trap(x, y) { parts.burst(wx(x), 0.05, wz(y), 6, { colors: [0x4f9a45, 0xd7e6c8], speed: 1.4, up: 1.5, size: 0.06, life: 0.4 }); ballSquash = 0.4; },
+    skid(x, y) { parts.burst(wx(x), 0.04, wz(y), 14, { colors: [0x6e5a3c, 0x8a7350, 0x4f9a45], speed: 1.8, up: 1.4, size: 0.09, life: 0.6, grav: 4, drag: 3 }); },
+    bounce(x, y, f) { parts.burst(wx(x), 0.04, wz(y), 4 + f, { colors: [0x6e5a3c, 0x4f9a45], speed: 1.2, up: 1.2, size: 0.07, life: 0.45 }); ballSquash = Math.min(1, f * 0.12); },
+    bump(x, y, f) { shake = Math.max(shake, Math.min(0.12, f * 0.02)); },
+    bar(x, y, z) {
+      const g = goals[x > C.CX ? 1 : 0]; g.shakeT = 0.6;
+      parts.burst(wx(x), GOAL_H, wz(y), 26, { colors: [0xffffff, 0xdfe6f2, 0xffd34d], speed: 4, up: 3, size: 0.08, life: 0.6 });
+      shake = Math.max(shake, 0.2); hype = Math.max(hype, 0.9);
     },
     dash(slot, x, y) { parts.burst(wx(x), 0.05, wz(y), 12, { colors: [0x9bbf8a, 0xd7e6c8], speed: 1.6, up: 1.2, size: 0.1, life: 0.5, grav: 3 }); },
     tackle(x, y) { parts.burst(wx(x), 0.6, wz(y), 22, { colors: [0xff9f43, 0xffffff, 0xffd34d], speed: 4, up: 3, size: 0.1, life: 0.6 }); shake = Math.max(shake, 0.25); },
-    post(x, y) { parts.burst(wx(x), 0.6, wz(y), 20, { colors: [0xffffff, 0xdddddd], speed: 4, up: 3, size: 0.08, life: 0.5 }); shake = Math.max(shake, 0.25); hype = Math.max(hype, 0.7); },
+    post(x, y) { goals[x > C.CX ? 1 : 0].shakeT = 0.5; parts.burst(wx(x), 0.6, wz(y), 20, { colors: [0xffffff, 0xdddddd], speed: 4, up: 3, size: 0.08, life: 0.5 }); shake = Math.max(shake, 0.2); hype = Math.max(hype, 0.8); },
     wall(x, y, sp) { if (sp > 12) shake = Math.max(shake, 0.06); },
     goal(scorer, x, y) {
       const goal = goals[x > C.CX ? 1 : 0];
       goal.hit(wz(y), 1);
       const X = wx(x), Z = wz(y), col = KITS[scorer];
       parts.burst(X, 0.6, Z, 90, { colors: [col.shirt, 0xffffff, col.light, 0xffd34d], speed: 5, up: 8, size: 0.13, life: 2.2, grav: 3.5, drag: 1.2, sway: 0.6 });
-      shake = 0.55; zoom = 1;
+      shake = 0.35; zoom = 1; camKick.x += (x > C.CX ? 1 : -1) * 0.5;
       if (scorer === 0) hypeR = 1.4; else hypeB = 1.4;
       hype = 1;
       jumboFlash = { text: 'GOAL!', color: col.css }; jumboFlashT = 3;
@@ -803,14 +841,15 @@ export function createRenderer(canvas) {
   let lastT = null;
   function frame(view, nowMs) {
     const now = (nowMs !== undefined ? nowMs : performance.now()) / 1000;
-    const dt = lastT === null ? 1 / 60 : Math.min(0.05, Math.max(0, now - lastT)); lastT = now;
+    const rawDt = lastT === null ? 1 / 60 : Math.min(0.05, Math.max(0, now - lastT)); lastT = now;
+    const dt = rawDt * (view.timeScale !== undefined ? view.timeScale : 1); // slow motion slows the world, not the UI
     const t = now;
     crowdU.uTime.value = t;
     const live = !!view.live;
 
     // auto quality: measure continuously, but only switch while play is paused
     if (quality === 'auto') {
-      ftAvg = ftAvg * 0.97 + dt * 1000 * 0.03;
+      ftAvg = ftAvg * 0.97 + rawDt * 1000 * 0.03;
       if (++ftFrames > 240 && ftAvg > 22 && level > 0 && pendingLevel === null) pendingLevel = level - 1;
       if (pendingLevel !== null && !live) { level = pendingLevel; pendingLevel = null; ftFrames = 0; ftAvg = 16; resize(cssW, cssH); }
     }
@@ -840,28 +879,32 @@ export function createRenderer(canvas) {
       aimArrow.rotation.y = Math.atan2(-view.aim[1], view.aim[0]);
       const k = 0.75 + 0.45 * Math.min(ct / C.CHARGE_FULL, 1);
       aimArrow.scale.set(k, 1, 1);
-      aimMat.color.setHex(perfect ? 0xffd34d : ct > C.PERF_END ? 0x8a90a0 : 0xffffff);
+      aimMat.color.setHex(perfect ? 0xffd34d : ct > C.PERF_END ? 0x8a90a0 : view.localLob ? 0x7fdcff : 0xffffff);
     }
     cursor.visible = !!(view.cursor && live);
     if (cursor.visible) { cursor.position.set(wx(view.cursor[0]), 0, wz(view.cursor[1])); const s2 = 1 + Math.sin(t * 6) * 0.08; cursor.scale.set(s2, 1, s2); }
 
     if (W && W.ball) {
-      const bx = wx(W.ball[0]), bz = wz(W.ball[1]);
+      const bx = wx(W.ball[0]), bz = wz(W.ball[1]), bh = (W.ball[3] || 0) * S;
       ball.visible = true;
       if (lastBall && Math.hypot(bx - lastBall.x, bz - lastBall.z) < 2) {
         const dx = bx - lastBall.x, dz = bz - lastBall.z, dist = Math.hypot(dx, dz);
-        if (dist > 1e-5) { v3.set(dz, 0, -dx).normalize(); ball.quaternion.premultiply(tmpQ.setFromAxisAngle(v3, dist / BALL_R)); }
+        if (dist > 1e-5) { v3.set(dz, 0, -dx).normalize(); ball.quaternion.premultiply(tmpQ.setFromAxisAngle(v3, dist / BALL_R * (bh > 0.05 ? 0.5 : 1))); }
         if (W.ball[2]) ballHot = 1;
       } else trailPts.length = 0;
       if (!lastBall) lastBall = { x: bx, z: bz }; else { lastBall.x = bx; lastBall.z = bz; }
-      ball.position.set(bx, BALL_R, bz);
+      ball.position.set(bx, BALL_R + bh, bz);
+      ballSquash = Math.max(0, ballSquash - dt * 7);
+      const q = ballSquash * ballSquash; ball.scale.set(1 + 0.3 * q, 1 - 0.3 * q, 1 + 0.3 * q);
+      // the shadow stays on the grass and spreads/fades as the ball rises: this is what sells height
       ballBlob.position.set(bx, 0.013, bz); ballBlob.visible = true;
+      const hs = 1 + bh * 0.9; ballBlob.scale.set(hs, 1, hs); ballBlob.material.opacity = 0.38 / (1 + bh * 1.6);
       if (!W.ball[2]) ballHot = Math.max(0, ballHot - dt * 3);
       ballMat.emissiveIntensity = ballHot * (1.4 + Math.sin(t * 30) * 0.3);
-      ballLight.position.set(bx, 0.6, bz); ballLight.intensity = ballHot * 6;
+      ballLight.position.set(bx, 0.6 + bh, bz); ballLight.intensity = ballHot * 6;
       // trail
       if (!trailPts.length || Math.hypot(bx - trailPts[0].x, bz - trailPts[0].z) > 0.04) {
-        const pt = trailPts.length >= TRAIL ? trailPts.pop() : {}; pt.x = bx; pt.z = bz; trailPts.unshift(pt);
+        const pt = trailPts.length >= TRAIL ? trailPts.pop() : {}; pt.x = bx; pt.z = bz; pt.h = bh; trailPts.unshift(pt);
       }
       const speedish = trailPts.length > 3 ? Math.hypot(trailPts[0].x - trailPts[3].x, trailPts[0].z - trailPts[3].z) : 0;
       trailMat.uniforms.color.value.setHex(ballHot > 0.1 ? 0xffc02e : 0xffffff);
@@ -870,8 +913,9 @@ export function createRenderer(canvas) {
         const a = trailPts[Math.min(i, n - 1)], b = trailPts[Math.min(i + 1, n - 1)];
         let nx = -(b.z - a.z), nz = b.x - a.x; const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l;
         const f = 1 - i / TRAIL, wdt = BALL_R * 0.8 * f, o = i * 6;
-        trailPos[o] = a.x + nx * wdt; trailPos[o + 1] = BALL_R; trailPos[o + 2] = a.z + nz * wdt;
-        trailPos[o + 3] = a.x - nx * wdt; trailPos[o + 4] = BALL_R; trailPos[o + 5] = a.z - nz * wdt;
+        const th = BALL_R + (a.h || 0);
+        trailPos[o] = a.x + nx * wdt; trailPos[o + 1] = th; trailPos[o + 2] = a.z + nz * wdt;
+        trailPos[o + 3] = a.x - nx * wdt; trailPos[o + 4] = th; trailPos[o + 5] = a.z - nz * wdt;
         trailA[i * 2] = trailA[i * 2 + 1] = i < n ? f * clamp(speedish * 2.2 - 0.2, 0, 1) * (ballHot > 0.1 ? 0.9 : 0.35) : 0;
       }
       trailGeo.attributes.position.needsUpdate = true; trailGeo.attributes.aA.needsUpdate = true;
@@ -885,6 +929,12 @@ export function createRenderer(canvas) {
     view.hype = hype;
 
     goals.forEach(g => g.update(dt));
+    for (const w of waves) {
+      if (!w.m.visible) continue;
+      w.t += dt; const u = w.t / w.dur;
+      if (u >= 1) { w.m.visible = false; continue; }
+      const s3 = 0.2 + (w.max - 0.2) * (1 - (1 - u) * (1 - u)); w.m.scale.set(s3, 1, s3); w.m.material.opacity = (1 - u) * 0.8;
+    }
     parts.update(dt, t);
     for (const tx of boardTexs) tx.offset.x = (tx.offset.x + dt * 0.035) % 1;
     for (const f of flashes) {
@@ -960,8 +1010,14 @@ export function createRenderer(canvas) {
     camPos.x = damp(camPos.x, pos.x, k, dt); camPos.y = damp(camPos.y, pos.y, k, dt); camPos.z = damp(camPos.z, pos.z, k, dt);
     camTgt.x = damp(camTgt.x, tgt.x, k, dt); camTgt.y = damp(camTgt.y, tgt.y, k, dt); camTgt.z = damp(camTgt.z, tgt.z, k, dt);
     shake *= Math.exp(-dt * 7);
-    camera.position.set(camPos.x + (Math.random() - 0.5) * shake, camPos.y + (Math.random() - 0.5) * shake, camPos.z + (Math.random() - 0.5) * shake);
-    camera.lookAt(camTgt);
+    // impacts push the camera along the shot line (a directional kick, not random wobble)
+    camKick.multiplyScalar(Math.exp(-rawDt * 7));
+    fovPunch = Math.max(0, fovPunch - rawDt * 2.2);
+    const fov = 32 - fovPunch * fovPunch * 2.2;
+    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    camera.position.set(camPos.x + camKick.x + (Math.random() - 0.5) * shake, camPos.y + (Math.random() - 0.5) * shake, camPos.z + camKick.z + (Math.random() - 0.5) * shake);
+    v3.copy(camTgt).addScaledVector(camKick, 0.6);
+    camera.lookAt(v3);
 
     if (level >= 2) composer.render(); else renderer.render(scene, camera);
   }

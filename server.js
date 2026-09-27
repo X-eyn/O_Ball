@@ -148,7 +148,7 @@ class Room {
         const n = v => (Number.isFinite(v) ? v | 0 : 0);
         if (m.needSync) { m.needSync = false; const si = this.slots.indexOf(m.id); if (si >= 0 && this.sim) this.sim.players[si].init = false; }
         const f = v => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
-        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb) };
+        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob };
         break;
       }
       case 'emote': {

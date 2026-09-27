@@ -41,23 +41,44 @@ function lbHtml(list, highlight) {
 // Sound (synthesized, no assets)
 // =====================================================================
 const Sound = (() => {
-  let ctx = null, master = null, nb = null, muted = store.get('ob_muted') === '1', crowdGain = null, crowdHi = null;
+  // Everything is synthesized (no audio files), but routed like a real mix: a compressor on the
+  // master, a stadium reverb, and separate buses for effects and crowd.
+  let ctx = null, out = null, sfx = null, crowdBus = null, verb = null, nb = null;
+  let muted = store.get('ob_muted') === '1';
+  let bedLo = null, bedHi = null, bedLevel = 0, antic = null, anticTimer = null;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  function impulse(sec, decay) {
+    const len = Math.floor(ctx.sampleRate * sec), buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch), pre = Math.floor(ctx.sampleRate * 0.02);
+      for (let i = 0; i < len; i++) d[i] = i < pre ? 0 : (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+    return buf;
+  }
+  function loopBed(type, freq, q) {
+    const s = ctx.createBufferSource(); s.buffer = nb; s.loop = true;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+    const g = ctx.createGain(); g.gain.value = 0;
+    s.connect(f); f.connect(g); g.connect(crowdBus); s.start(0, Math.random() * 2);
+    return g;
+  }
   function init() {
     if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
     try {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
-      master = ctx.createGain(); master.gain.value = muted ? 0 : 0.5; master.connect(ctx.destination);
-      nb = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
-      const d = nb.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-      // looping crowd ambience: two filtered noise beds
-      const mk = (freq, q) => {
-        const s = ctx.createBufferSource(); s.buffer = nb; s.loop = true;
-        const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
-        const g = ctx.createGain(); g.gain.value = 0;
-        s.connect(f); f.connect(g); g.connect(master); s.start();
-        return g;
-      };
-      crowdGain = mk(420, 0.6); crowdHi = mk(1400, 0.9);
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = -16; comp.knee.value = 8; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.25;
+      out = ctx.createGain(); out.gain.value = muted ? 0 : 0.85; out.connect(comp); comp.connect(ctx.destination);
+      verb = ctx.createConvolver(); verb.buffer = impulse(2.8, 3.4);
+      const verbOut = ctx.createGain(); verbOut.gain.value = 0.5; verb.connect(verbOut); verbOut.connect(out);
+      sfx = ctx.createGain(); sfx.gain.value = 1; sfx.connect(out);
+      const sfxSend = ctx.createGain(); sfxSend.gain.value = 0.2; sfx.connect(sfxSend); sfxSend.connect(verb);
+      crowdBus = ctx.createGain(); crowdBus.gain.value = 1; crowdBus.connect(out);
+      const crowdSend = ctx.createGain(); crowdSend.gain.value = 0.45; crowdBus.connect(crowdSend); crowdSend.connect(verb);
+      nb = ctx.createBuffer(1, ctx.sampleRate * 4, ctx.sampleRate);
+      const d = nb.getChannelData(0); let last = 0;
+      for (let i = 0; i < d.length; i++) { const w = Math.random() * 2 - 1; last = last * 0.6 + w * 0.4; d[i] = w * 0.6 + last * 0.4; }
+      bedLo = loopBed('lowpass', 520, 0.7); bedHi = loopBed('bandpass', 1500, 0.9);
     } catch { ctx = null; }
   }
   const ok = () => ctx && !muted && ctx.state === 'running';
@@ -65,11 +86,11 @@ const Sound = (() => {
     if (!ok()) return;
     const t = ctx.currentTime + (o.at || 0), osc = ctx.createOscillator(), g = ctx.createGain();
     osc.type = o.type || 'sine'; osc.frequency.setValueAtTime(f, t);
-    if (o.to) osc.frequency.exponentialRampToValueAtTime(o.to, t + dur);
+    if (o.to) osc.frequency.exponentialRampToValueAtTime(o.to, t + (o.glide || dur));
     if (o.lfo) { const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = o.lfo; lg.gain.value = o.lfoAmt || 100; l.connect(lg); lg.connect(osc.frequency); l.start(t); l.stop(t + dur + 0.05); }
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol || 0.3, t + (o.attack || 0.005));
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol || 0.3, t + (o.attack || 0.004));
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(g); g.connect(master); osc.start(t); osc.stop(t + dur + 0.05);
+    osc.connect(g); g.connect(o.bus || sfx); osc.start(t); osc.stop(t + dur + 0.05);
   }
   function noise(dur, o = {}) {
     if (!ok()) return;
@@ -77,43 +98,121 @@ const Sound = (() => {
     s.buffer = nb; f.type = o.type || 'bandpass'; f.frequency.setValueAtTime(o.freq || 1000, t);
     if (o.to) f.frequency.exponentialRampToValueAtTime(o.to, t + dur);
     f.Q.value = o.q || 1;
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol || 0.3, t + (o.attack || 0.005));
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol || 0.3, t + (o.attack || 0.003));
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random()); s.stop(t + dur + 0.05);
+    s.connect(f); f.connect(g); g.connect(o.bus || sfx); s.start(t, Math.random() * 3); s.stop(t + dur + 0.05);
+  }
+  // A crowd "voice" chord: many detuned voices through vowel formants. Vowels: oo / oh / ah / eh.
+  const VOWELS = { oo: [[330, 6, 1], [800, 7, 0.5], [2400, 8, 0.12]], oh: [[480, 6, 1], [880, 7, 0.55], [2500, 8, 0.12]], ah: [[760, 5, 1], [1220, 6, 0.7], [2600, 8, 0.2]], eh: [[560, 5, 1], [1750, 6, 0.6], [2550, 8, 0.2]] };
+  function voices(o) {
+    if (!ok()) return null;
+    const t = ctx.currentTime + (o.at || 0), n = o.n || 14, dur = o.dur;
+    const mix = ctx.createGain(); mix.gain.value = 1.4 / n;
+    const env = ctx.createGain(); env.gain.setValueAtTime(0.0001, t);
+    env.gain.linearRampToValueAtTime(o.level, t + (o.attack || 0.25));
+    env.gain.setValueAtTime(o.level, t + Math.max(o.attack || 0.25, dur - (o.release || 0.5)));
+    env.gain.linearRampToValueAtTime(0.0001, t + dur);
+    const srcs = [];
+    for (let i = 0; i < n; i++) {
+      const osc = ctx.createOscillator(); osc.type = 'sawtooth';
+      const k = rnd(0.78, 1.3), f0 = o.f0[0] * k, f1 = o.f0[1] * k;
+      osc.frequency.setValueAtTime(f0, t); osc.frequency.linearRampToValueAtTime(f1, t + (o.glide || dur * 0.7));
+      osc.detune.value = rnd(-35, 35);
+      const lfo = ctx.createOscillator(), lg = ctx.createGain(); lfo.frequency.value = rnd(4, 7); lg.gain.value = f0 * 0.025;
+      lfo.connect(lg); lg.connect(osc.frequency);
+      const vg = ctx.createGain(); vg.gain.value = rnd(0.5, 1);
+      osc.connect(vg); vg.connect(mix);
+      osc.start(t + rnd(0, 0.12)); osc.stop(t + dur + 0.1); lfo.start(t); lfo.stop(t + dur + 0.1);
+      srcs.push(osc, lfo);
+    }
+    const breath = ctx.createBufferSource(); breath.buffer = nb; const bg = ctx.createGain(); bg.gain.value = o.breath || 0.35;
+    breath.connect(bg); bg.connect(mix); breath.start(t, Math.random() * 3); breath.stop(t + dur + 0.1); srcs.push(breath);
+    for (const [fq, q, gain] of VOWELS[o.vowel || 'ah']) {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = fq; bp.Q.value = q;
+      const fg = ctx.createGain(); fg.gain.value = gain * 3;
+      mix.connect(bp); bp.connect(fg); fg.connect(env);
+    }
+    env.connect(crowdBus);
+    return {
+      fade(sec) { const now = ctx.currentTime; env.gain.cancelScheduledValues(now); env.gain.setValueAtTime(env.gain.value, now); env.gain.linearRampToValueAtTime(0.0001, now + sec); srcs.forEach(s => { try { s.stop(now + sec + 0.05); } catch { } }); },
+    };
+  }
+  function claps(n, at = 0, level = 0.12) {
+    for (let k = 0; k < n; k++) for (let j = 0; j < 14; j++) noise(0.03, { type: 'highpass', freq: rnd(1100, 2200), q: 0.7, vol: level * rnd(0.4, 1), at: at + k * 0.42 + rnd(0, 0.06), bus: crowdBus });
+  }
+  function endAnticipation(kind) {
+    clearTimeout(anticTimer); anticTimer = null;
+    if (!antic) return;
+    antic.fade(kind === 'goal' ? 0.15 : 0.5); antic = null;
+    if (kind === 'miss') voices({ vowel: 'oh', f0: [250, 150], dur: 1.4, level: 0.34, attack: 0.08, release: 0.9, n: 14 });
   }
   const fx = {
-    kick(p) { tone(140, 0.14, { vol: 0.3 + 0.35 * p, to: 45 }); noise(0.05, { vol: 0.1 + 0.15 * p, freq: 2400, q: 0.8 }); },
-    perfect() { tone(170, 0.22, { vol: 0.7, to: 42 }); noise(0.12, { vol: 0.35, freq: 3000 }); tone(880, 0.3, { type: 'triangle', vol: 0.16, at: 0.02 }); tone(1320, 0.4, { type: 'triangle', vol: 0.12, at: 0.07 }); },
-    whiff() { noise(0.12, { vol: 0.06, freq: 1400, to: 400 }); },
-    dash() { noise(0.2, { vol: 0.1, freq: 500, to: 2200, q: 2 }); },
-    tackle() { tone(95, 0.22, { vol: 0.5, to: 40, type: 'square' }); noise(0.15, { vol: 0.3, freq: 700 }); },
-    post() { tone(1250, 0.6, { type: 'triangle', vol: 0.22 }); tone(1870, 0.5, { vol: 0.1 }); tone(90, 0.1, { vol: 0.3 }); },
-    wall(sp) { tone(110, 0.08, { vol: Math.min(0.25, sp / 45), to: 60 }); },
-    goal() {
-      noise(3.2, { vol: 0.42, freq: 600, q: 0.45, attack: 0.25 }); noise(2.4, { vol: 0.2, freq: 1800, q: 0.6, attack: 0.18 });
-      [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.35, { type: 'square', vol: 0.05, at: i * 0.08 }));
+    // ---- ball ----
+    kick(p) {
+      tone(95 + p * 20, 0.16, { to: 42, vol: 0.45 + 0.45 * p });          // body
+      noise(0.07, { freq: 850, q: 1.2, vol: 0.12 + 0.3 * p });              // leather slap
+      noise(0.018, { type: 'highpass', freq: 4000, vol: 0.08 + 0.12 * p }); // click
     },
-    groan() { noise(1.2, { vol: 0.2, freq: 350, to: 220, q: 0.8, attack: 0.1 }); },
-    whistle(long) { tone(2900, long ? 1.0 : 0.35, { vol: 0.1, lfo: 28, lfoAmt: 160, attack: 0.02 }); if (long) tone(2900, 0.35, { vol: 0.1, lfo: 28, lfoAmt: 160, at: 1.15 }); },
-    beep(hi) { tone(hi ? 1046 : 587, hi ? 0.28 : 0.12, { type: 'square', vol: 0.06 }); },
+    perfect() {
+      fx.kick(1.2);
+      tone(52, 0.45, { to: 30, vol: 0.7 });                                // sub boom
+      noise(0.25, { type: 'highpass', freq: 2500, vol: 0.18, attack: 0.002 });
+      tone(1760, 0.35, { type: 'triangle', vol: 0.07, at: 0.01 }); tone(2640, 0.4, { type: 'triangle', vol: 0.05, at: 0.03 });
+    },
+    swing(p) { noise(0.12 + p * 0.05, { freq: 420, to: 1600, q: 1.6, vol: 0.035 + p * 0.03, attack: 0.05 }); },
+    touch(f) { tone(170, 0.06, { to: 90, vol: Math.min(0.2, 0.05 + f * 0.02) }); noise(0.035, { type: 'lowpass', freq: 900, vol: 0.05 }); },
+    trap() { tone(140, 0.09, { to: 70, vol: 0.22 }); noise(0.06, { freq: 700, vol: 0.1 }); },
+    bounce(f) { tone(120, 0.1, { to: 60, vol: Math.min(0.35, f * 0.06) }); noise(0.05, { freq: 600, vol: Math.min(0.12, f * 0.02) }); },
+    wall(sp) { tone(80, 0.12, { to: 50, vol: Math.min(0.3, sp / 40) }); noise(0.08, { freq: 350, q: 0.8, vol: Math.min(0.2, sp / 60) }); },
+    metal(base) { // crossbar / post: inharmonic partials
+      [1, 2.51, 4.33, 6.62].forEach((m, i) => tone(base * m, [1.3, 0.9, 0.6, 0.4][i], { type: 'sine', vol: [0.22, 0.12, 0.08, 0.05][i] }));
+      noise(0.03, { type: 'highpass', freq: 3000, vol: 0.2 }); tone(85, 0.12, { vol: 0.25 });
+    },
+    net() { noise(0.55, { freq: 2600, to: 700, q: 0.8, vol: 0.2, attack: 0.01 }); noise(0.35, { type: 'highpass', freq: 5000, vol: 0.06 }); },
+    // ---- players ----
+    whiff() { noise(0.14, { freq: 1400, to: 400, vol: 0.06 }); },
+    fake() { noise(0.09, { freq: 1800, to: 900, vol: 0.05 }); },
+    dash() { noise(0.2, { freq: 500, to: 2200, q: 2, vol: 0.09 }); },
+    skid() { noise(0.28, { freq: 2200, to: 800, q: 1.2, vol: 0.07 }); },
+    bump(f) { tone(90, 0.1, { to: 55, vol: Math.min(0.25, f * 0.05) }); },
+    tackle() { tone(78, 0.24, { to: 38, vol: 0.55 }); noise(0.16, { freq: 520, vol: 0.28 }); voices({ vowel: 'oh', f0: [210, 260], dur: 0.6, level: 0.16, attack: 0.05, release: 0.4, n: 10 }); },
+    // ---- crowd ----
+    anticipate() { // a shot is flying at goal
+      if (!ok()) return;
+      if (antic) antic.fade(0.1);
+      antic = voices({ vowel: 'oo', f0: [150, 270], dur: 2.2, level: 0.3, attack: 0.7, release: 0.4, glide: 1.4, n: 16 });
+      clearTimeout(anticTimer); anticTimer = setTimeout(() => endAnticipation('miss'), 1500);
+    },
+    drama() { voices({ vowel: 'oo', f0: [200, 300], dur: 1.2, level: 0.22, attack: 0.3, release: 0.4, n: 12 }); },
+    miss() { if (antic) endAnticipation('miss'); else voices({ vowel: 'oh', f0: [250, 150], dur: 1.3, level: 0.3, attack: 0.08, release: 0.8, n: 14 }); },
+    goal() {
+      endAnticipation('goal');
+      fx.net();
+      voices({ vowel: 'ah', f0: [190, 260], dur: 3.8, level: 0.55, attack: 0.12, release: 1.4, glide: 0.8, n: 22, breath: 0.6 });
+      voices({ vowel: 'eh', f0: [300, 380], dur: 3, level: 0.25, attack: 0.2, release: 1.2, n: 12, at: 0.1 });
+      noise(3.5, { freq: 900, q: 0.5, vol: 0.28, attack: 0.15, bus: crowdBus });
+      claps(6, 2.2, 0.1);
+    },
+    whistle(long) { tone(2900, long ? 1.0 : 0.35, { vol: 0.09, lfo: 28, lfoAmt: 160, attack: 0.02 }); if (long) tone(2900, 0.35, { vol: 0.09, lfo: 28, lfoAmt: 160, at: 1.15 }); },
+    // ---- UI ----
+    beep(hi) { tone(hi ? 1046 : 587, hi ? 0.28 : 0.12, { type: 'square', vol: 0.05 }); },
     emote() { tone(700, 0.08, { type: 'triangle', vol: 0.1 }); tone(1000, 0.1, { type: 'triangle', vol: 0.08, at: 0.06 }); },
-    win() { [523, 659, 784, 1046, 1318].forEach((f, i) => tone(f, 0.34, { type: 'triangle', vol: 0.12, at: i * 0.1 })); },
-    lose() { [392, 330, 262].forEach((f, i) => tone(f, 0.4, { type: 'triangle', vol: 0.1, at: i * 0.16 })); },
+    win() { [523, 659, 784, 1046, 1318].forEach((f, i) => tone(f, 0.34, { type: 'triangle', vol: 0.1, at: i * 0.1 })); claps(8, 0.3, 0.12); },
+    lose() { [392, 330, 262].forEach((f, i) => tone(f, 0.4, { type: 'triangle', vol: 0.08, at: i * 0.16 })); },
     join() { tone(660, 0.1, { type: 'triangle', vol: 0.08 }); tone(990, 0.12, { type: 'triangle', vol: 0.08, at: 0.08 }); },
-    whoosh() { noise(0.5, { vol: 0.12, freq: 300, to: 3000, q: 1.5, attack: 0.2 }); },
+    whoosh() { noise(0.5, { vol: 0.1, freq: 300, to: 3000, q: 1.5, attack: 0.2 }); },
   };
-  let crowdLevel = 0;
   return {
     init, fx,
-    crowd(level) {
-      if (!ctx || !crowdGain) return;
-      crowdLevel += (level - crowdLevel) * 0.05;
+    crowd(level) { // continuous crowd bed, follows how dangerous the play is
+      if (!ctx || !bedLo) return;
+      bedLevel += (level - bedLevel) * 0.05;
       const t = ctx.currentTime;
-      crowdGain.gain.setTargetAtTime(muted ? 0 : 0.05 + crowdLevel * 0.2, t, 0.1);
-      crowdHi.gain.setTargetAtTime(muted ? 0 : 0.012 + crowdLevel * 0.08, t, 0.1);
+      bedLo.gain.setTargetAtTime(muted ? 0 : 0.07 + bedLevel * 0.22, t, 0.15);
+      bedHi.gain.setTargetAtTime(muted ? 0 : 0.012 + bedLevel * 0.06, t, 0.15);
     },
     get muted() { return muted; },
-    toggle() { muted = !muted; store.set('ob_muted', muted ? '1' : '0'); if (master) master.gain.value = muted ? 0 : 0.5; return muted; },
+    toggle() { muted = !muted; store.set('ob_muted', muted ? '1' : '0'); if (out) out.gain.value = muted ? 0 : 0.85; return muted; },
   };
 })();
 addEventListener('pointerdown', () => Sound.init());
@@ -169,7 +268,7 @@ function showHome() {
 
   // attract mode: two bots play a real match locally
   let sim = OB.createSim(0), acc = 0, last = performance.now(), prevWorld = null, curWorld = null;
-  const toWorld = s => ({ ball: [s.ball.x, s.ball.y, s.ball.hot > 0 ? 1 : 0], players: s.players.map(p => [p.x, p.y, p.fx, p.fy, p.ch ? p.ct : -1, p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, 0, 0]) });
+  const toWorld = s => ({ ball: [s.ball.x, s.ball.y, s.ball.hot > 0 ? 1 : 0, s.ball.z || 0], players: s.players.map(p => [p.x, p.y, p.fx, p.fy, p.ch ? p.ct : -1, p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, 0, 0]) });
   function loop(now) {
     requestAnimationFrame(loop);
     acc += Math.min(100, now - last); last = now;
@@ -178,7 +277,8 @@ function showHome() {
       sim.tick++;
       OB.stepSim(sim, [OB.botInput(sim, 0), OB.botInput(sim, 1)]);
       for (const e of sim.events) {
-        if (e.type === 'kick' && R) R.fx.kick(e.p, e.x, e.y, e.perfect, e.power);
+        if (e.type === 'kick' && R) R.fx.kick(e.p, e.x, e.y, e.perfect, e.power, e.dx, e.dy, e.lob);
+        if (e.type === 'swing' && R) R.fx.swing(e.p, e.t);
         if (e.type === 'goal' && R) R.fx.goal(e.scorer, e.x, e.y);
         if (e.type === 'tackle' && R) R.fx.tackle(e.x, e.y);
       }
@@ -189,7 +289,7 @@ function showHome() {
     }
     if (!R || !curWorld) return;
     const t = acc / (1000 / 60), W = prevWorld ? {
-      ball: [lerp(prevWorld.ball[0], curWorld.ball[0], t), lerp(prevWorld.ball[1], curWorld.ball[1], t), curWorld.ball[2]],
+      ball: [lerp(prevWorld.ball[0], curWorld.ball[0], t), lerp(prevWorld.ball[1], curWorld.ball[1], t), curWorld.ball[2], lerp(prevWorld.ball[3], curWorld.ball[3], t)],
       players: curWorld.players.map((p, i) => { const q = prevWorld.players[i]; return [lerp(q[0], p[0], t), lerp(q[1], p[1], t), p[2], p[3], p[4], p[5], p[6], 0, 0]; }),
     } : curWorld;
     R.frame({ mode: 'showcase', world: W, live: false, names: ['Home', 'Away'], mySlot: -1, noTrail: false, scoreboard: { names: ['RED', 'BLUE'], score: sim.score, mid: 'LIVE' } });
@@ -359,8 +459,9 @@ function handle(m) {
 const hist = [];
 const pendingEvents = [];
 const clock = {
-  est: [], at: [], playT: null, delay: 0,
-  reset() { this.est.length = 0; this.at.length = 0; this.playT = null; },
+  est: [], at: [], playT: null, delay: 0, rate: 1, slowUntil: -1,
+  reset() { this.est.length = 0; this.at.length = 0; this.playT = null; this.rate = 1; this.slowUntil = -1; },
+  slowmo(untilTick) { this.slowUntil = Math.max(this.slowUntil, untilTick); },
   onState(k, now) {
     this.est.push(k - now * TPMS); this.at.push(now);
     while (this.at.length > 2 && now - this.at[0] > 3000) { this.est.shift(); this.at.shift(); }
@@ -369,8 +470,14 @@ const clock = {
     if (!this.est.length) return null;
     let min = Infinity; for (const e of this.est) if (e < min) min = e;
     const target = now * TPMS + min - 2.2; // ~2 ticks behind the latest-arriving packet
-    if (this.playT === null || Math.abs(target - this.playT) > 20) this.playT = target;
-    else this.playT += dtMs * TPMS * (1 + clamp((target - this.playT) * 0.04, -0.08, 0.08));
+    if (this.playT === null || Math.abs(target - this.playT) > 90) { this.playT = target; this.rate = 1; }
+    else {
+      // goal-line slow motion: play the moment at 30% speed, then quietly catch back up to live
+      const err = target - this.playT;
+      const want = this.playT < this.slowUntil ? 0.3 : err > 3 ? Math.min(1.7, 1 + err * 0.05) : 1 + clamp(err * 0.04, -0.08, 0.08);
+      this.rate += (want - this.rate) * 0.2;
+      this.playT += dtMs * TPMS * this.rate;
+    }
     if (hist.length) this.delay = hist[hist.length - 1].k - this.playT;
     return this.playT;
   },
@@ -409,12 +516,12 @@ function interpWorld(v) {
   if (!a.p) return null;
   if (!b.p) return { ball: a.b, players: a.p };
   const jump = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1) > 70;
-  const ball = jump(a.b[0], a.b[1], b.b[0], b.b[1]) ? (t < 0.5 ? a.b : b.b) : [lerp(a.b[0], b.b[0], t), lerp(a.b[1], b.b[1], t), a.b[2]];
+  const ball = jump(a.b[0], a.b[1], b.b[0], b.b[1]) ? (t < 0.5 ? a.b : b.b) : [lerp(a.b[0], b.b[0], t), lerp(a.b[1], b.b[1], t), a.b[2], Math.max(0, lerp(a.b[3] || 0, b.b[3] || 0, Math.min(t, 1)))];
   const players = a.p.map((pa, k) => {
     const pb = b.p[k];
     if (jump(pa[0], pa[1], pb[0], pb[1])) return t < 0.5 ? pa : pb;
     const d = t < 1 ? pa : pb, tf = Math.min(t, 1);
-    return [lerp(pa[0], pb[0], t), lerp(pa[1], pb[1], t), lerp(pa[2], pb[2], tf), lerp(pa[3], pb[3], tf), d[4], d[5], d[6], d[7], d[8]];
+    return [lerp(pa[0], pb[0], t), lerp(pa[1], pb[1], t), lerp(pa[2], pb[2], tf), lerp(pa[3], pb[3], tf), d[4], d[5], d[6], d[7], d[8], d[9], d[10]];
   });
   return { ball, players };
 }
@@ -422,7 +529,7 @@ function interpWorld(v) {
 // ---------------- input: keyboard, mouse/trackpad, gamepad ----------------
 const KEYMAP = {
   KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r',
-  Space: 'kick', KeyJ: 'kick', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash',
+  Space: 'kick', KeyJ: 'kick', KeyE: 'lob', KeyL: 'lob', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash',
 };
 const MOVE = new Set(['u', 'd', 'l', 'r']);
 const held = new Set();
@@ -432,9 +539,9 @@ const mouse = { x: 0, y: 0, has: false };
 let ctrl = ['keyboard', 'mouse', 'gamepad'].includes(store.get('ob_ctrl')) ? store.get('ob_ctrl') : 'keyboard';
 let lastSent = '', padPrev = { kick: false, dash: false }, padSeen = false;
 const CTRL_HELP = {
-  keyboard: '<div><kbd>WASD</kbd> / <kbd>Arrows</kbd> move</div><div><kbd>Space</kbd> hold to charge, release to kick. Release on <b class="gold">gold</b> = PERFECT</div><div><kbd>Shift</kbd> dash-tackle</div>',
-  mouse: '<div>Your player <b>runs to the pointer</b>. Keep it just ahead of you for fine control</div><div><b>Hold click</b> to charge, <b>release</b> to shoot where you point. Release on <b class="gold">gold</b> = PERFECT</div><div><b>Right-click</b> (two-finger tap) = dash-tackle. <kbd>Space</kbd> also kicks</div>',
-  gamepad: '<div><b>Left stick</b> / D-pad move</div><div>Hold <b>A</b> (or RT) to charge, release to kick. Release on <b class="gold">gold</b> = PERFECT</div><div><b>X</b> / <b>B</b> / LB = dash-tackle</div>',
+  keyboard: '<div><kbd>WASD</kbd> / <kbd>Arrows</kbd> move. Ease off to keep the ball close, sprint and it runs away from you</div><div><kbd>Space</kbd> hold & release to shoot/pass. Release on <b class="gold">gold</b> = PERFECT</div><div><kbd>E</kbd> hold & release to <b>chip</b> it over them</div><div><kbd>Shift</kbd> tackle. While charging it <b>fakes</b> the shot</div>',
+  mouse: '<div>Your player <b>runs to the pointer</b>. Keep it just ahead of you for fine control</div><div><b>Hold click</b> to charge, <b>release</b> to shoot where you point. Release on <b class="gold">gold</b> = PERFECT</div><div><b>Right-click</b> (two-finger tap) = tackle; while charging it <b>fakes</b> the shot</div><div><b>Shift+click</b> or middle-click = <b>chip</b>. <kbd>Space</kbd> / <kbd>E</kbd> also work</div>',
+  gamepad: '<div><b>Left stick</b> / D-pad move</div><div>Hold <b>A</b> (or RT) to charge, release to kick. Release on <b class="gold">gold</b> = PERFECT</div><div><b>Y</b> = chip over them</div><div><b>X</b> / <b>B</b> / LB = tackle; while charging it <b>fakes</b> the shot</div>',
 };
 const CTRL_TOAST = {
   keyboard: '⌨ Keyboard controls',
@@ -448,7 +555,7 @@ function sendInput(force) {
     u: +(held.has('KeyW') || held.has('ArrowUp')), d: +(held.has('KeyS') || held.has('ArrowDown')),
     l: +(held.has('KeyA') || held.has('ArrowLeft')), r: +(held.has('KeyD') || held.has('ArrowRight')),
     k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dc: inp.dc,
-    ax: Math.round(inp.ax * 50) / 50, ay: Math.round(inp.ay * 50) / 50, rb: inp.rb,
+    ax: Math.round(inp.ax * 50) / 50, ay: Math.round(inp.ay * 50) / 50, rb: inp.rb, lob: !!inp.lob,
   };
   const s = JSON.stringify(msg);
   if (force || s !== lastSent) { lastSent = s; if (ws && ws.readyState === 1) ws.send(s); }
@@ -457,9 +564,26 @@ function releaseKick(now) {
   if (inp.kickDownAt === null) return;
   inp.kc = Math.round((now - inp.kickDownAt) * TPMS); inp.kickDownAt = null;
 }
-function kickDown(src) { if (!kickSources.size) { inp.kickDownAt = performance.now(); inp.kp++; } kickSources.add(src); sendInput(); }
-function kickUp(src) { if (!kickSources.delete(src)) return; if (!kickSources.size) releaseKick(performance.now()); sendInput(); }
-function dashPress() { inp.dc++; sendInput(); }
+// chip sources start with 'lob:' (E / L, middle-click or shift+click, controller Y)
+function kickDown(src) {
+  if (!kickSources.size) { inp.kickDownAt = performance.now(); inp.kp++; inp.lobArm = false; }
+  if (src.startsWith('lob:')) inp.lobArm = true;
+  kickSources.add(src); sendInput();
+}
+function kickUp(src) {
+  if (!kickSources.delete(src)) return;
+  if (!kickSources.size) { inp.lob = !!inp.lobArm; inp.lobArm = false; releaseKick(performance.now()); }
+  sendInput();
+}
+// tackle while charging = shot fake: the wind-up is cancelled (server does the same)
+function dashPress() {
+  if (inp.kickDownAt !== null) { inp.kickDownAt = null; kickSources.clear(); inp.lobArm = false; Sound.fx.fake(); }
+  inp.dc++; sendInput();
+}
+function rumble(strong, weak, ms) {
+  if (ctrl !== 'gamepad' || !navigator.getGamepads) return;
+  for (const gp of navigator.getGamepads()) if (gp && gp.connected && gp.vibrationActuator) { try { gp.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak }); } catch { } break; }
+}
 function updateCtrlUI() {
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.classList.toggle('on', b.dataset.c === ctrl));
   const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl];
@@ -488,6 +612,7 @@ function setupInput() {
     if (MOVE.has(act) && ctrl !== 'keyboard') setCtrl('keyboard');
     held.add(e.code);
     if (act === 'kick') kickDown('key:' + e.code);
+    if (act === 'lob') kickDown('lob:' + e.code);
     if (act === 'dash') dashPress();
     sendInput();
   });
@@ -495,6 +620,7 @@ function setupInput() {
     if (!held.has(e.code)) return;
     held.delete(e.code);
     if (KEYMAP[e.code] === 'kick') kickUp('key:' + e.code);
+    if (KEYMAP[e.code] === 'lob') kickUp('lob:' + e.code);
     sendInput();
   });
   // mouse / trackpad
@@ -505,10 +631,12 @@ function setupInput() {
   stage.addEventListener('pointerdown', e => {
     if (e.pointerType === 'touch' || e.target.closest('button, input, a')) return;
     const r = stage.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true;
-    if (e.button === 0) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('mouse'); e.preventDefault(); }
+    if (e.button === 0 && e.shiftKey) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('lob:mouse'); e.preventDefault(); }
+    else if (e.button === 0) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('mouse'); e.preventDefault(); }
+    else if (e.button === 1) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('lob:mouse'); e.preventDefault(); }
     else if (e.button === 2) { if (ctrl !== 'mouse') setCtrl('mouse'); dashPress(); e.preventDefault(); }
   });
-  addEventListener('pointerup', e => { if (e.button === 0) kickUp('mouse'); });
+  addEventListener('pointerup', e => { if (e.button === 0) { kickUp('mouse'); kickUp('lob:mouse'); } if (e.button === 1) kickUp('lob:mouse'); });
   stage.addEventListener('contextmenu', e => e.preventDefault());
   addEventListener('gamepadconnected', () => { padSeen = true; toast('🎮 Controller detected. Move the stick to use it', 3500); });
   const clearAll = () => { held.clear(); for (const s of [...kickSources]) kickUp(s); inp.ax = inp.ay = 0; sendInput(); };
@@ -526,12 +654,15 @@ function pollGamepad() {
   let x = gp.axes[0] || 0, y = gp.axes[1] || 0;
   if (b(14)) x = -1; if (b(15)) x = 1; if (b(12)) y = -1; if (b(13)) y = 1;
   const m = Math.hypot(x, y);
-  const kick = b(0) || b(7) || b(5) || b(9), dsh = b(2) || b(1) || b(4) || b(6);
+  const kick = b(0) || b(7) || b(5) || b(9), lobB = b(3), dsh = b(2) || b(1) || b(4) || b(6);
   if ((m > 0.4 || kick || dsh) && ctrl !== 'gamepad') setCtrl('gamepad');
   if (ctrl === 'gamepad') {
     if (m < 0.2) { inp.ax = inp.ay = 0; } else { const mm = Math.min(1, (m - 0.2) / 0.65); inp.ax = x / m * mm; inp.ay = y / m * mm; }
     if (kick && !padPrev.kick) kickDown('pad');
     if (!kick && padPrev.kick) kickUp('pad');
+    if (lobB && !padPrev.lob) kickDown('lob:pad');
+    if (!lobB && padPrev.lob) kickUp('lob:pad');
+    padPrev.lob = lobB;
     if (dsh && !padPrev.dash) dashPress();
     sendInput();
   }
@@ -578,20 +709,34 @@ function attackArrow(slot, swapped) { return ((slot === 0) !== !!swapped) ? '→
 function fireEvent(e) {
   const mine = e.p === mySlot();
   switch (e.type) {
+    case 'swing': if (R) R.fx.swing(e.p, e.t); Sound.fx.swing(e.power); break;
     case 'kick':
-      if (R) R.fx.kick(e.p, e.x, e.y, e.perfect, e.power);
-      if (e.perfect) { Sound.fx.perfect(); floatText(e.x, e.y, 1.6, 'PERFECT!', '#ffd34d', 46); }
-      else { Sound.fx.kick(e.power); if (e.curve && mine) floatText(e.x, e.y, 1.4, 'curve', '#b8f0ff', 26); }
+      if (R) R.fx.kick(e.p, e.x, e.y, e.perfect, e.power, e.dx, e.dy, e.lob);
+      if (e.perfect) { Sound.fx.perfect(); floatText(e.x, e.y, 1.6, e.volley ? 'PERFECT VOLLEY!' : 'PERFECT!', '#ffd34d', 46); }
+      else { Sound.fx.kick(e.power); if (e.volley && e.power > 0.6) floatText(e.x, e.y, 1.5, 'VOLLEY!', '#ffffff', 34); else if (e.curve && mine) floatText(e.x, e.y, 1.4, 'curve', '#b8f0ff', 26); }
+      if (e.lob && mine) floatText(e.x, e.y, 1.4, 'chip', '#b8f0ff', 26);
+      if (e.onTarget) Sound.fx.anticipate();
+      if (mine) rumble(e.perfect ? 1 : 0.35 + e.power * 0.4, 0.3, e.perfect ? 160 : 90);
       break;
+    case 'touch': Sound.fx.touch(e.f); if (R) R.fx.touch(e.x, e.y, e.f); break;
+    case 'trap': Sound.fx.trap(); if (R) R.fx.trap(e.x, e.y); break;
+    case 'skid': Sound.fx.skid(); if (R) R.fx.skid(e.x, e.y); break;
+    case 'bump': Sound.fx.bump(e.f); if (R) R.fx.bump(e.x, e.y, e.f); break;
+    case 'bounce': Sound.fx.bounce(e.f); if (R) R.fx.bounce(e.x, e.y, e.f); break;
+    case 'fake': if (mine) floatText(e.x, e.y, 1.5, 'fake', '#b8f0ff', 24); break;
+    case 'bar': Sound.fx.metal(420); Sound.fx.miss(); if (R) R.fx.bar(e.x, e.y, e.z); floatText(e.x, e.y, 2.2, 'CROSSBAR!', '#ffffff', 46); break;
+    case 'over': Sound.fx.miss(); floatText(e.x, e.y, 2, 'OVER THE BAR', '#aeb8d3', 30); break;
+    case 'drama': clock.slowmo(e.tick + e.n + 6); Sound.fx.drama(); break;
     case 'whiff': if (mine) { Sound.fx.whiff(); floatText(e.x, e.y, 1.5, 'whiff', '#aeb8d3', 26); } break;
     case 'dash': Sound.fx.dash(); if (R) R.fx.dash(e.p, e.x, e.y); break;
     case 'dashmiss': if (mine) floatText(e.x, e.y, 1.5, 'missed', '#aeb8d3', 24); break;
-    case 'tackle': Sound.fx.tackle(); if (R) R.fx.tackle(e.x, e.y); floatText(e.x, e.y, 1.7, 'TACKLED!', '#ff9f43', 40); break;
-    case 'post': Sound.fx.post(); Sound.fx.groan(); if (R) R.fx.post(e.x, e.y); floatText(e.x, e.y, 1.5, 'POST!', '#ffffff', 42); break;
+    case 'tackle': Sound.fx.tackle(); if (R) R.fx.tackle(e.x, e.y); floatText(e.x, e.y, 1.7, 'TACKLED!', '#ff9f43', 40); if (e.v === mySlot()) rumble(0.9, 0.6, 220); else if (mine) rumble(0.4, 0.3, 90); break;
+    case 'post': Sound.fx.metal(520); Sound.fx.miss(); if (R) R.fx.post(e.x, e.y); floatText(e.x, e.y, 1.5, 'POST!', '#ffffff', 42); break;
     case 'wall': Sound.fx.wall(e.sp); if (R) R.fx.wall(e.x, e.y, e.sp); break;
     case 'goal': {
       Sound.fx.goal();
       lastGoal = { scorer: e.scorer, own: e.own, tick: e.tick };
+      if (e.scorer === mySlot()) rumble(1, 1, 400);
       if (R) R.fx.goal(e.scorer, e.x, e.y);
       const who = slotName(e.scorer);
       if (e.own) goalBanner('OWN GOAL', `${slotName(1 - e.scorer)} · ${e.score[0]}–${e.score[1]}`, COLORS[e.scorer]);
@@ -806,7 +951,7 @@ function frame(now) {
   }
   const names = [slotName(0), slotName(1)];
   const rv = {
-    mode, introT, celebrate, world, live, mySlot: ms, localCt, names, aim, cursor, hide: s && s.so ? [false, true] : null,
+    mode, introT, celebrate, world, live, mySlot: ms, localCt, names, aim, cursor, hide: s && s.so ? [false, true] : null, timeScale: clock.rate, localLob: !!inp.lobArm,
     noTrail: s && s.ph === 'kickoff',
     scoreboard: s && s.p ? { names: s.so ? [names[0], 'PRACTICE'] : names, score: s.so ? [(s.sc || [0])[0], '-'] : (s.sc || [0, 0]), mid: s.so ? 'SOLO' : s.sd ? 'SUDDEN DEATH' : s.ph === 'half' ? 'HALF TIME' : (s.hf === 2 ? '2ND HALF' : '1ST HALF') } : null,
   };
