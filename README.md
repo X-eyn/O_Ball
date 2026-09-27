@@ -55,3 +55,8 @@ on slow laptops.
   Wi-Fi/Ethernet network is set to *Private* (Windows Settings → Network) and that Node.js is allowed
   through the firewall. If the host PC has several networks, **Menu > Invite** lists alternative addresses.
 - **Port 3000 busy:** run `set PORT=3001 && node server.js`.
+
+## Credits
+
+Player models, hairstyles and animations: [Quaternius](https://quaternius.com) (Universal Base Characters and
+Universal Animation Library, CC0). `tools/prepare_players.py` turns the downloaded packs into `public/models/`.

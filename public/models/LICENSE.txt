@@ -1,0 +1,2 @@
+Character, hairstyles and animations: Quaternius (https://quaternius.com), CC0 1.0 Universal.
+Universal Base Characters + Universal Animation Library. Prepared with tools/prepare_players.py.

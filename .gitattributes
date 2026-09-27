@@ -1,0 +1,4 @@
+# model and texture assets are binary: never touch their line endings or diff them
+*.glb binary
+*.jpg binary
+*.png binary
