@@ -341,7 +341,7 @@ class Room {
 }
 
 // ---------------- HTTP ----------------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary' };
 const NODE_MODULES = path.join(__dirname, 'node_modules');
 function send(res, code, body, type = 'application/json', cache = false) {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': cache ? 'public, max-age=86400' : 'no-store' }); res.end(body);

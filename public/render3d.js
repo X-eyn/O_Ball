@@ -5,14 +5,18 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { Human, Pose, HAIR_KEYS, MODEL_HEIGHT, loadPlayerAssets, resetPlayerAssets, boneIndex } from './human.js';
 
 const C = window.OB.C;
 export const S = 0.02; // sim px -> world units
 export const wx = x => (x - C.CX) * S;
 export const wz = y => (y - C.CY) * S;
 const PW = (C.FR - C.FL) * S, PH = (C.FB - C.FT) * S, HW = PW / 2, HH = PH / 2;
-const GW = C.GH * S, GDP = C.GD * S, GOAL_H = 1.25, BALL_R = C.BR * S, PR = C.PR * S;
+const GW = C.GH * S, GDP = C.GD * S, GOAL_H = 1.25, PR = C.PR * S;
+// drawn ball radius. The sim's ball is larger (C.BR) for forgiving touches; drawn at that size it
+// dwarfs the players, so the model is sized to real proportions (~0.14 of player height).
+const BALL_R = 0.11;
+const PLAYER_H = 1.6;
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
@@ -21,7 +25,7 @@ export const KITS = [
   { shirt: 0xe0283c, shorts: 0xf2f2f2, socks: 0xe0283c, css: '#ff4d5e', light: 0xff8a96 },
   { shirt: 0x1c8cf0, shorts: 0x0c1f3d, socks: 0x1c8cf0, css: '#3fa7ff', light: 0x7cc4ff },
 ];
-const SKIN = [0xf1c7a5, 0xe0ac86, 0xc68a5f, 0x9a6440, 0x70462b, 0xf6d6bd];
+const SKIN = [0xe9bb98, 0xd9a07a, 0xc08052, 0x9a6440, 0x6e4428, 0xf0c9a9];
 const HAIR = [0x1d1510, 0x3b2616, 0x6b4423, 0xb07b3e, 0x0d0d0d, 0x8a8a8a, 0xd8b36a];
 const hash = s => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
 
@@ -145,14 +149,6 @@ function skyTexture() {
   });
 }
 
-function numberTexture(n, color) {
-  return canvasTex(128, 128, g => {
-    g.font = '900 96px "Arial Black", Impact, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.lineWidth = 8; g.strokeStyle = 'rgba(0,0,0,.25)'; g.strokeText(String(n), 64, 70);
-    g.fillStyle = color; g.fillText(String(n), 64, 70);
-  });
-}
-
 // ---------------------------------------------------------------- shaders
 const arcVert = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
 const arcFrag = `uniform float progress; uniform vec3 color; uniform float opacity; uniform float inner; varying vec2 vUv;
@@ -238,17 +234,6 @@ let PG = null;
 function playerGeoms() {
   if (PG) return PG;
   PG = {
-    torso: new RoundedBoxGeometry(0.46, 0.44, 0.28, 3, 0.09),
-    shorts: new RoundedBoxGeometry(0.44, 0.2, 0.27, 2, 0.07),
-    leg: new THREE.CapsuleGeometry(0.078, 0.27, 4, 10).translate(0, -0.2, 0),
-    thigh: new THREE.CapsuleGeometry(0.085, 0.06, 4, 10).translate(0, -0.06, 0),
-    boot: new RoundedBoxGeometry(0.13, 0.08, 0.25, 2, 0.03).translate(0, -0.41, 0.04),
-    arm: new THREE.CapsuleGeometry(0.058, 0.25, 4, 8).translate(0, -0.18, 0),
-    sleeve: new THREE.SphereGeometry(0.088, 12, 8),
-    head: new THREE.SphereGeometry(0.17, 24, 16),
-    hair: new THREE.SphereGeometry(0.178, 24, 10, 0, Math.PI * 2, 0, Math.PI * 0.5),
-    eye: new THREE.SphereGeometry(0.024, 8, 6),
-    neck: new THREE.CylinderGeometry(0.06, 0.07, 0.1, 10),
     star: new THREE.OctahedronGeometry(0.06),
     arrow: new THREE.ConeGeometry(0.13, 0.24, 4).rotateX(Math.PI),
     baseRing: new THREE.RingGeometry(PR + 0.06, PR + 0.14, 48).rotateX(-Math.PI / 2),
@@ -258,38 +243,121 @@ function playerGeoms() {
   return PG;
 }
 
+const EYES = [0x4a2f1b, 0x2b1a10, 0x3d6b8f, 0x5b7a3a, 0x6b4a2a, 0x1e120a];
+// everything about a player's appearance comes from their name, so a person always looks the same
+function lookFor(name, slot) {
+  const h = hash(name || String(slot)), r = k => (hash(h + ':' + k) % 1000) / 1000;
+  return {
+    name, number: name === 'BOT' ? 0 : 1 + (h >>> 8) % 99,
+    skin: SKIN[h % SKIN.length], hairColor: HAIR[(h >>> 4) % HAIR.length], eyes: EYES[(h >>> 3) % EYES.length],
+    hair: HAIR_KEYS[Math.floor(r('hair') * HAIR_KEYS.length)], beard: r('beard') < 0.3,
+    scale: PLAYER_H / MODEL_HEIGHT * (0.96 + r('h') * 0.09), boots: Math.floor(r('boots') * 6),
+    foot: r('foot') < 0.8 ? 'R' : 'L', seed: r('seed') * 100,
+  };
+}
+
+// ---- procedural animation: each function writes bone rotations (radians) into a Pose.
+// Conventions: +x on a thigh/arm swings it back, +x on a shin bends the knee, -x on a forearm bends
+// the elbow, +y on an arm twists it about its own length, +x on a foot points the toes; +z on the left (L, +x side) limb lifts it outward.
+const SIDES = [[1, 'L'], [-1, 'R']];
+function runPose(P, ph, A, t, seed) {
+  const idle = 1 - Math.min(1, A * 2.5), br = Math.sin(t * 1.9 + seed);
+  P.zero();
+  for (const [s, k] of SIDES) {
+    const psi = ph + (s > 0 ? 0 : Math.PI), sp = Math.sin(psi);
+    const th = A * (-0.62 * sp - 0.1) - 0.08 * idle;
+    const kn = A * (0.22 + 1.25 * Math.max(0, Math.cos(psi - 0.6)) ** 2) + 0.17 * idle;
+    P.set('thigh' + k, th, 0, s * 0.045 * idle + s * 0.015);
+    P.set('shin' + k, kn);
+    P.set('foot' + k, -(th + kn) * 0.75 + A * 0.4 * Math.max(0, -sp) - 0.06 * idle, 0, -s * 0.04 * idle);
+    P.set('toe' + k, -A * 0.45 * Math.max(0, -sp));
+    P.set('clav' + k, 0, 0, s * br * 0.018 * idle);
+    P.set('arm' + k, A * 0.8 * sp + 0.04, 0, s * (0.13 + A * 0.05 + Math.sin(t * 1.3 + s + seed) * 0.02 * idle));
+    P.set('fore' + k, -(0.28 + A * 1.05) + A * 0.3 * sp);
+    P.set('hand' + k, 0, 0, s * 0.1);
+  }
+  const tw = Math.sin(ph);
+  P.set('hips', A * 0.06, -A * 0.17 * tw, Math.sin(t * 0.8 + seed) * 0.035 * idle);
+  P.set('spine', 0.03 + A * 0.09, A * 0.06 * tw, -Math.sin(t * 0.8 + seed) * 0.02 * idle);
+  P.set('chest', 0.02 + br * 0.016 * idle, A * 0.24 * tw);
+  P.set('neck', -A * 0.1, -A * 0.08 * tw);
+  P.set('head', 0.04 * idle, -A * 0.04 * tw);
+  P.lift = A * 0.025 * Math.max(0, -Math.cos(ph * 2));
+}
+// kick leg K: windup (w, 0..1), swing progress (u, 0..1, or -1), follow-through (ft, 1 -> 0)
+function kickPose(Q, K, w, u, ft) {
+  const S = K === 'L' ? 'R' : 'L', sk = K === 'L' ? 1 : -1, ss = -sk;
+  let th, kn, fo = 0.55, tw;
+  if (u >= 0) {
+    const e = u * u * (3 - 2 * u);
+    th = 0.9 - 2.25 * e;
+    kn = u < 0.55 ? 1.75 - 0.35 * u / 0.55 : 1.4 * Math.pow(1 - (u - 0.55) / 0.45, 1.6) + 0.08;
+    tw = sk * (0.3 - 0.7 * e);
+  } else if (ft > 0) { th = -1.35; kn = 0.12 + 0.3 * (1 - ft); tw = -sk * 0.4; }
+  else { th = 0.9; kn = 1.75; tw = sk * 0.3; }
+  Q.set('thigh' + K, th, 0, sk * 0.06); Q.set('shin' + K, kn); Q.set('foot' + K, fo); Q.set('toe' + K, 0.1);
+  Q.set('thigh' + S, -0.28, 0, ss * 0.06); Q.set('shin' + S, 0.45); Q.set('foot' + S, -0.12); Q.set('toe' + S, 0);
+  Q.set('hips', 0.06, tw, 0); Q.set('spine', -0.06, tw * 0.3); Q.set('chest', -0.06, tw * 0.6);
+  Q.set('arm' + S, -0.35, 0, ss * 1.1); Q.set('fore' + S, -0.45);
+  Q.set('arm' + K, 0.55, 0, sk * 0.4); Q.set('fore' + K, -0.7);
+  Q.set('neck', 0.22); Q.set('head', 0.28);
+  Q.lift = 0;
+}
+// tackle: lunge / slide with the lead leg out, trailing knee down, arms wide for balance
+function dashPose(Q, K) {
+  const S = K === 'L' ? 'R' : 'L', sk = K === 'L' ? 1 : -1;
+  Q.zero();
+  Q.set('thigh' + K, -1.15, 0, sk * 0.12); Q.set('shin' + K, 0.12); Q.set('foot' + K, -0.35);
+  Q.set('thigh' + S, 0.4, 0, -sk * 0.05); Q.set('shin' + S, 1.5); Q.set('foot' + S, 0.35);
+  for (const [s, k] of SIDES) { Q.set('arm' + k, -0.35, 0, s * 1.15); Q.set('fore' + k, -0.55); }
+  Q.set('spine', 0.18); Q.set('chest', 0.1); Q.set('neck', -0.25); Q.set('head', -0.05);
+}
+const CELEBRATIONS = ['jump', 'kneel', 'plane', 'dance'];
+function celebratePose(Q, style, c, t, K) {
+  Q.zero();
+  if (style === 'jump') {
+    const j = Math.abs(Math.sin(c * 5.5));
+    for (const [s, k] of SIDES) {
+      Q.set('arm' + k, -0.2, 0, s * (2.5 + 0.3 * j)); Q.set('fore' + k, -0.3 - 0.5 * (1 - j)); Q.set('clav' + k, 0, 0, s * 0.2);
+      Q.set('thigh' + k, -0.1 - 0.4 * j); Q.set('shin' + k, 0.45 + 0.5 * j); Q.set('foot' + k, 0.3 * j - 0.2);
+    }
+    Q.set('spine', -0.12); Q.set('chest', -0.06); Q.set('neck', -0.25); Q.set('head', -0.1);
+    Q.lift = j * 0.36;
+  } else if (style === 'kneel') {
+    const F = K === 'L' ? 'R' : 'L', pump = Math.sin(c * 9) * 0.15;
+    Q.set('thigh' + F, -1.45, 0, 0); Q.set('shin' + F, 1.45); Q.set('foot' + F, 0.02);
+    Q.set('thigh' + K, 0.12); Q.set('shin' + K, 1.6); Q.set('foot' + K, 0.7); Q.set('toe' + K, -0.6);
+    for (const [s, k] of SIDES) { Q.set('arm' + k, -0.9 + pump, 0, s * 0.55); Q.set('fore' + k, -1.7 - pump); Q.set('hand' + k, 0.3); }
+    Q.set('spine', -0.28); Q.set('chest', -0.12); Q.set('neck', -0.3); Q.set('head', -0.15);
+  } else {
+    runPose(Q, c * 12, 0.55, t, 0);
+    for (const [s, k] of SIDES) { Q.set('arm' + k, -0.08 + Math.sin(c * 2.4) * 0.1 * s, 0, s * 1.45); Q.set('fore' + k, -0.12); Q.set('hand' + k, 0, 0, 0); }
+    Q.set('neck', -0.2); Q.set('head', -0.1);
+  }
+}
+const SADS = ['head', 'slump'];
+function sadPose(Q, style, t) {
+  Q.zero();
+  for (const [s, k] of SIDES) { Q.set('thigh' + k, -0.05, 0, s * 0.05); Q.set('shin' + k, 0.12); Q.set('foot' + k, -0.07); }
+  if (style === 'head') {
+    for (const [s, k] of SIDES) { Q.set('arm' + k, -0.35, s * 1.57, s * 2.2); Q.set('fore' + k, -2.1); Q.set('hand' + k, 0.3); }
+    Q.set('spine', -0.05); Q.set('neck', -0.1); Q.set('head', -0.15 + Math.sin(t * 0.9) * 0.05);
+  } else {
+    for (const [s, k] of SIDES) { Q.set('arm' + k, 0.08, 0, s * 0.07); Q.set('fore' + k, -0.12); Q.set('clav' + k, 0, 0, -s * 0.08); }
+    Q.set('spine', 0.26); Q.set('chest', 0.1); Q.set('neck', 0.35); Q.set('head', 0.3 + Math.sin(t * 0.7) * 0.05);
+  }
+}
+
 class Player {
   constructor(scene, slot) {
     const G = playerGeoms(), kit = KITS[slot];
     this.slot = slot;
     this.root = new THREE.Group(); scene.add(this.root);
-    this.body = new THREE.Group(); this.root.add(this.body);
-    const std = (color, r = 0.65) => new THREE.MeshStandardMaterial({ color, roughness: r });
-    this.mShirt = std(kit.shirt, 0.55); this.mShorts = std(kit.shorts); this.mSocks = std(kit.socks);
-    this.mSkin = std(SKIN[0], 0.7); this.mHair = std(HAIR[0], 0.9);
-    const mBoot = std(0x111111, 0.4), mEye = new THREE.MeshBasicMaterial({ color: 0x111111 });
-    const mesh = (g, m, parent, x = 0, y = 0, z = 0) => { const o = new THREE.Mesh(g, m); o.position.set(x, y, z); o.castShadow = true; parent.add(o); return o; };
-    mesh(G.torso, this.mShirt, this.body, 0, 0.8, 0);
-    mesh(G.shorts, this.mShorts, this.body, 0, 0.53, 0);
-    mesh(G.neck, this.mSkin, this.body, 0, 1.04, 0);
-    this.legs = [-1, 1].map(s => {
-      const pv = new THREE.Group(); pv.position.set(s * 0.11, 0.5, 0); this.body.add(pv);
-      mesh(G.thigh, this.mShorts, pv); mesh(G.leg, this.mSocks, pv); mesh(G.boot, mBoot, pv);
-      return pv;
-    });
-    this.arms = [-1, 1].map(s => {
-      const pv = new THREE.Group(); pv.position.set(s * 0.3, 0.96, 0); pv.rotation.z = s * 0.12; this.body.add(pv);
-      mesh(G.sleeve, this.mShirt, pv, 0, -0.03, 0); mesh(G.arm, this.mSkin, pv);
-      return pv;
-    });
-    this.head = new THREE.Group(); this.head.position.set(0, 1.2, 0); this.body.add(this.head);
-    mesh(G.head, this.mSkin, this.head);
-    const hair = mesh(G.hair, this.mHair, this.head, 0, 0.02, -0.01); hair.rotation.x = -0.25;
-    for (const s of [-1, 1]) { const e = new THREE.Mesh(G.eye, mEye); e.position.set(s * 0.06, 0.02, 0.155); this.head.add(e); }
-    this.numMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false });
-    const num = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), this.numMat); num.position.set(0, 0.84, -0.145); num.rotation.y = Math.PI; this.body.add(num);
+    this.lean = new THREE.Group(); this.root.add(this.lean);  // whole-body lean pivots at the feet
+    this.h = new Human(kit); this.lean.add(this.h.group);
+    this.P = new Pose(); this.Q = new Pose(); this.AD = new Pose(); this.W = new Float32Array(this.P.r.length / 3);
     // stars when stunned
-    this.stars = new THREE.Group(); this.stars.position.y = 1.52; this.root.add(this.stars);
+    this.stars = new THREE.Group(); this.stars.position.y = 1.8; this.root.add(this.stars);
     const mStar = new THREE.MeshBasicMaterial({ color: 0xffd34d });
     for (let k = 0; k < 3; k++) { const s = new THREE.Mesh(G.star, mStar); this.stars.add(s); }
     // ground decals
@@ -299,17 +367,21 @@ class Player {
     this.reach.position.y = 0.014; this.root.add(this.reach);
     this.charge = new THREE.Mesh(G.disc, arcMaterial(0xffffff, 0.8)); this.charge.scale.setScalar((PR + 0.32) * 2); this.charge.position.y = 0.02; this.root.add(this.charge);
     this.cool = new THREE.Mesh(G.disc, arcMaterial(0xffffff, 0.86, 0.45)); this.cool.scale.setScalar((PR + 0.17) * 2); this.cool.position.y = 0.016; this.root.add(this.cool);
-    this.arrow = new THREE.Mesh(G.arrow, new THREE.MeshBasicMaterial({ color: kit.light })); this.arrow.position.y = 1.85; this.root.add(this.arrow);
+    this.arrow = new THREE.Mesh(G.arrow, new THREE.MeshBasicMaterial({ color: kit.light })); this.arrow.position.y = 1.95; this.root.add(this.arrow);
     for (const o of [this.baseRing, this.reach, this.charge, this.cool]) o.renderOrder = 2;
-    Object.assign(this, { phase: 0, yaw: slot ? -Math.PI / 2 : Math.PI / 2, lastX: null, lastZ: null, speed: 0, kickT: 0, windup: 0, identity: '', celebrate: 0, sad: 0, swingT: 0, swingDur: 0.1, vx: 0, vz: 0, ax: 0, az: 0, roll: 0, pitch: 0 });
+    Object.assign(this, {
+      phase: 0, yaw: slot ? -Math.PI / 2 : Math.PI / 2, lastX: null, lastZ: null, speed: 0, kickT: 0, windup: 0, identity: null,
+      celebrate: 0, swingT: 0, swingDur: 0.1, vx: 0, vz: 0, ax: 0, az: 0, roll: 0, pitch: 0,
+      dashW: 0, celW: 0, sadW: 0, stunW: 0, lookY: 0, lookX: 0, celStyle: 'jump', sadStyle: 'head', wasCel: false, wasSad: false,
+    });
+    this.setIdentity('');
     this.root.visible = false;
   }
   setIdentity(name) {
     if (name === this.identity) return;
-    this.identity = name; const h = hash(name || String(this.slot));
-    this.mSkin.color.setHex(SKIN[h % SKIN.length]); this.mHair.color.setHex(HAIR[(h >> 4) % HAIR.length]);
-    if (this.numMat.map) this.numMat.map.dispose();
-    this.numMat.map = numberTexture(name === 'BOT' ? 0 : 1 + (h >> 8) % 99, this.slot === 0 ? '#ffffff' : '#ffffff'); this.numMat.needsUpdate = true;
+    this.identity = name;
+    this.look = lookFor(name, this.slot);
+    this.h.setLook(this.look);
   }
   update(p, dt, t, o) {
     // p: sim player array [x,y,fx,fy,ct,stun,dash,dashCd,recover]
@@ -333,38 +405,76 @@ class Player {
     let dy = tgtYaw - this.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
     this.yaw += dy * (1 - Math.exp(-(stun ? 2 : 16) * dt));
     this.root.rotation.y = this.yaw;
-    const amp = clamp(this.speed / 4.5, 0, 1.25);
+    const amp = clamp(this.speed / 4.5, 0, 1.25), A = Math.min(amp, 1.1);
     this.phase += dt * (6 + this.speed * 2.2) * (amp > 0.05 ? 1 : 0);
-    const sw = Math.sin(this.phase) * amp;
     this.kickT = Math.max(0, this.kickT - dt * 4.5);
     this.swingT = Math.max(0, this.swingT - dt);
     const charging = ct >= 0;
     this.windup = damp(this.windup, charging ? Math.min(ct / C.CHARGE_FULL, 1) : 0, 14, dt);
-    // legs
-    this.legs[0].rotation.x = sw * 0.9;
-    let r = -sw * 0.9;
-    if (this.swingT > 0) { const u = 1 - this.swingT / this.swingDur; r = 1.0 - 2.1 * u * u; }  // back-lift, then drive through
-    else if (this.kickT > 0) r = -1.1 * this.kickT - 0.2 * Math.sin(Math.PI * (1 - this.kickT)); // follow-through
-    else if (this.windup > 0.02) r = r * (1 - this.windup) + 0.9 * this.windup;
-    this.legs[1].rotation.x = r;
-    // arms
-    this.arms[0].rotation.x = -sw * 0.8; this.arms[1].rotation.x = sw * 0.8;
-    this.arms[0].rotation.z = -0.12; this.arms[1].rotation.z = 0.12;
-    // body
-    let lean = amp * 0.12 + this.pitch + (dash ? 0.5 : 0) - this.windup * 0.12 + (this.swingT > 0 ? -0.15 : 0) + this.kickT * 0.2;
-    this.body.position.y = Math.abs(Math.cos(this.phase)) * 0.05 * amp - (this.swingT > 0 ? 0.05 : 0);
-    this.body.rotation.z = stun ? Math.sin(t * 9) * 0.22 : this.roll;
-    this.head.rotation.x = 0;
-    if (dash) { this.arms[0].rotation.x = 1.1; this.arms[1].rotation.x = 1.1; }
-    if (o.celebrate) {
-      this.celebrate += dt;
-      const j = Math.abs(Math.sin(this.celebrate * 7));
-      this.body.position.y = j * 0.35; lean = -0.1;
-      this.arms[0].rotation.z = -2.6 - j * 0.3; this.arms[1].rotation.z = 2.6 + j * 0.3;
-      this.arms[0].rotation.x = this.arms[1].rotation.x = 0;
-    } else this.celebrate = 0;
-    if (o.sad) { this.head.rotation.x = 0.5; lean = 0.25; this.arms[0].rotation.x = this.arms[1].rotation.x = 0.1; }
-    this.body.rotation.x = lean;
+
+    // ---- animation: mocap locomotion underneath (in Human), procedural layers over it.
+    // Each layer is a target pose plus a per-bone weight; later layers composite over earlier ones.
+    const P = this.P, Q = this.Q, W = this.W, AD = this.AD, L = this.look, K = L.foot, S2 = K === 'L' ? 'R' : 'L';
+    P.zero(); W.fill(0); AD.zero();
+    const layer = wOf => {
+      for (let i = 0; i < W.length; i++) {
+        const wl = wOf(i); if (wl <= 0.001) continue;
+        const nw = W[i] + wl * (1 - W[i]), k = wl / nw;
+        for (let c = i * 3; c < i * 3 + 3; c++) P.r[c] += (Q.r[c] - P.r[c]) * k;
+        W[i] = nw;
+      }
+    };
+    const swinging = this.swingT > 0;
+    const kw = Math.max(this.windup, swinging ? 1 : 0, this.kickT);
+    if (kw > 0.001) {
+      // while only winding up, the standing leg keeps running on the mocap
+      runPose(Q, this.phase, A, t, L.seed); kickPose(Q, K, this.windup, swinging ? 1 - this.swingT / this.swingDur : -1, this.kickT);
+      const support = new Set(['thigh', 'shin', 'foot', 'toe'].map(n => boneIndex(n + S2)));
+      const full = swinging || this.kickT > 0;
+      layer(i => (support.has(i) && !full ? kw * 0.25 : kw));
+    }
+    this.dashW = damp(this.dashW, dash ? 1 : 0, dash ? 20 : 7, dt);
+    if (this.dashW > 0.001) { dashPose(Q, K); layer(() => this.dashW); }
+    if (o.celebrate && !this.wasCel) this.celStyle = CELEBRATIONS[(Math.random() * CELEBRATIONS.length) | 0];
+    if (o.sad && !this.wasSad) this.sadStyle = SADS[(Math.random() * SADS.length) | 0];
+    this.wasCel = !!o.celebrate; this.wasSad = !!o.sad;
+    this.celebrate = o.celebrate ? this.celebrate + dt : 0;
+    this.celW = damp(this.celW, o.celebrate ? 1 : 0, 7, dt);
+    this.sadW = damp(this.sadW, o.sad ? 1 : 0, 4, dt);
+    const clips = {};
+    let lift = 0;
+    if (this.celW > 0.001) {
+      if (this.celStyle === 'dance') clips.Dance_Loop = this.celW;
+      else { celebratePose(Q, this.celStyle, this.celebrate, t, K); layer(() => this.celW); lift = Q.lift * this.celW; }
+    }
+    if (this.sadW > 0.001) { sadPose(Q, this.sadStyle, t); layer(() => this.sadW); }
+    this.stunW = damp(this.stunW, stun ? 1 : 0, 8, dt);
+    if (this.stunW > 0.001) {
+      const w = this.stunW;
+      for (const [s, k] of SIDES) { AD.add('arm' + k, 0.2 * w * Math.sin(t * 7 + s), 0, s * 0.15 * w); AD.add('shin' + k, 0.25 * w); AD.add('thigh' + k, -0.1 * w); }
+      AD.add('neck', 0.2 * w, 0, Math.sin(t * 5) * 0.2 * w); AD.add('head', 0.1 * w, Math.sin(t * 3.3) * 0.25 * w, Math.sin(t * 5 + 1) * 0.2 * w);
+    }
+    // eyes on the ball: the head turns toward it and tips down when it is close
+    const free = 1 - Math.max(this.celW, this.sadW);
+    if (o.ball) {
+      const bx = o.ball[0] - x, bz = o.ball[1] - z;
+      let a = Math.atan2(bx, bz) - this.yaw; a = Math.atan2(Math.sin(a), Math.cos(a));
+      this.lookY = damp(this.lookY, clamp(a, -1.15, 1.15) * free, 7, dt);
+      this.lookX = damp(this.lookX, clamp(0.5 - Math.hypot(bx, bz) * 0.12, 0, 0.4) * free, 4, dt);
+    } else { this.lookY = damp(this.lookY, 0, 4, dt); this.lookX = damp(this.lookX, 0, 4, dt); }
+    AD.add('neck', this.lookX * 0.4, this.lookY * 0.4); AD.add('head', this.lookX * 0.6, this.lookY * 0.55);
+    AD.add('chest', 0, this.lookY * 0.12);
+
+    // whole-body lean from the feet (the mocap already leans with speed)
+    let lean = this.pitch + this.dashW * 0.12 + (swinging ? -0.05 : 0);
+    let roll = this.roll;
+    lean *= free; roll *= free;
+    if (this.celStyle === 'plane') roll += Math.sin(this.celebrate * 2.2) * 0.28 * this.celW;
+    roll += Math.sin(t * 9) * 0.22 * this.stunW;
+    this.lean.rotation.set(lean, 0, roll);
+    AD.add('neck', -lean * 0.5);
+    this.h.animate(dt, t, this.speed, P, W, { pose: AD, lift, clips });
+
     // stun stars
     this.stars.visible = stun;
     if (stun) this.stars.children.forEach((s, k) => { const a = t * 5 + k * 2.09; s.position.set(Math.cos(a) * 0.3, Math.sin(t * 7 + k) * 0.04, Math.sin(a) * 0.3); s.rotation.y = t * 6; });
@@ -372,7 +482,7 @@ class Player {
     const mine = o.mine;
     this.baseRing.material.opacity = mine ? 0.75 : 0.35;
     this.arrow.visible = mine && o.live;
-    this.arrow.position.y = 1.72 + Math.sin(t * 5) * 0.06; this.arrow.rotation.y = t * 2;
+    this.arrow.position.y = 2.0 + Math.sin(t * 5) * 0.06; this.arrow.rotation.y = t * 2;
     this.reach.visible = charging && o.live;
     this.charge.visible = charging && o.live;
     if (charging) {
@@ -642,6 +752,16 @@ export function createRenderer(canvas) {
 
   // players, ball, trail, particles
   const players = [new Player(scene, 0), new Player(scene, 1)];
+  // player models load in the background; retry a few times so a hiccup never leaves invisible players
+  const loadPlayers = (tries = 0) => loadPlayerAssets(renderer).then(A => {
+    players.forEach(P => P.h.init(A));
+    try { renderer.compile(scene, camera); } catch { }
+  }).catch(e => {
+    console.error('player models failed to load', e);
+    resetPlayerAssets();
+    if (tries < 5) setTimeout(() => loadPlayers(tries + 1), 1500 * (tries + 1));
+  });
+  loadPlayers();
   const ballMat = new THREE.MeshStandardMaterial({ map: ballTexture(), roughness: 0.45, emissive: 0xffc02e, emissiveIntensity: 0 });
   const ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 32, 20), ballMat);
   ball.castShadow = true; ball.visible = false; scene.add(ball);
@@ -716,7 +836,7 @@ export function createRenderer(canvas) {
     const horiz = [new THREE.Vector3(-hx, 0, 0), new THREE.Vector3(hx, 0, 0)];
     // vertical framing: the top of a player (plus name tag) standing on the far boundary and the
     // near boundary must both be on screen. The scoreboard lives in its own bar, not over the view.
-    const far = new THREE.Vector3(0, 2.3, -HH + PR), near = new THREE.Vector3(0, 0, HH + 0.35);
+    const far = new THREE.Vector3(0, 2.45, -HH + PR), near = new THREE.Vector3(0, 0, HH + 0.35);
     const topLimit = 0.97, botLimit = -0.97;
     let d = 22, tz = 0.5;
     for (let it = 0; it < 14; it++) {
@@ -734,7 +854,7 @@ export function createRenderer(canvas) {
     // distance at which the whole pitch (goals and near corners included) fits, measured exactly
     const corners = [];
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) corners.push(new THREE.Vector3(sx * (HW + GDP + 0.3), 0, sz * (HH + 0.3)));
-    corners.push(new THREE.Vector3(0, 2.3, -HH + PR));
+    corners.push(new THREE.Vector3(0, 2.45, -HH + PR));
     let dd = fitD;
     for (let it = 0; it < 6; it++) { const m = framing(corners, 0, dd); if (Math.abs(m - 1) < 0.005) break; dd *= m; }
     fitDFull = Math.max(fitD, dd);
@@ -863,7 +983,7 @@ export function createRenderer(canvas) {
         P.setIdentity((view.names && view.names[i]) || '');
         P.update(p, dt, t, {
           ct: i === view.mySlot && view.localCt !== undefined ? view.localCt : p[4],
-          mine: i === view.mySlot, live,
+          mine: i === view.mySlot, live, ball: W.ball ? [wx(W.ball[0]), wz(W.ball[1])] : null,
           celebrate: view.celebrate === i, sad: view.celebrate === 1 - i,
         });
       });
@@ -983,7 +1103,7 @@ export function createRenderer(canvas) {
         if (view.hide && view.hide[i]) return;
         const x = wx(p[0]), z = wz(p[1]);
         framePts[n++].set(x + (x < bx ? -0.45 : 0.45), 0, z + 0.35);
-        framePts[n++].set(x, 2.3, z);
+        framePts[n++].set(x, 2.45, z);
       });
       const pts = framePts.slice(0, n);
       // 1) centre on everything that must be visible and pull back until it all fits

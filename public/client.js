@@ -989,7 +989,7 @@ function frame(now) {
   const showTags = world && R && s && s.rp !== 'prematch' && !replaying;
   tags.forEach((el, i) => {
     if (!showTags || (s.so && i === 1)) { el.style.display = 'none'; return; }
-    const p = world.players[i], pr = R.project(p[0], p[1], 2.05);
+    const p = world.players[i], pr = R.project(p[0], p[1], 2.2);
     el.style.display = pr.ok ? '' : 'none';
     el.style.transform = `translate3d(${pr.x.toFixed(1)}px,${pr.y.toFixed(1)}px,0) translate(-50%,-100%)`;
     const txt = (i === ms ? 'YOU · ' : '') + names[i];
@@ -998,7 +998,7 @@ function frame(now) {
   });
   for (const [slot, b] of bubbles) {
     if (now > b.until || !world || !R) { b.el.remove(); bubbles.delete(slot); continue; }
-    const p = world.players[slot], pr = R.project(p[0], p[1], 2.6);
+    const p = world.players[slot], pr = R.project(p[0], p[1], 2.75);
     b.el.style.left = pr.x + 'px'; b.el.style.top = pr.y + 'px';
   }
 
