@@ -25,6 +25,7 @@ export const BONES = ['hips', 'spine', 'chest', 'neck', 'head',
   'clavL', 'armL', 'foreL', 'handL', 'clavR', 'armR', 'foreR', 'handR',
   'thighL', 'shinL', 'footL', 'toeL', 'thighR', 'shinR', 'footR', 'toeR'];
 const BI = Object.fromEntries(BONES.map((n, i) => [n, i]));
+const LEG_I = BONES.map((n, i) => (/^(thigh|shin|foot|toe)/.test(n) ? i : -1)).filter(i => i >= 0);
 export class Pose {
   constructor() { this.r = new Float32Array(BONES.length * 3); this.lift = 0; }
   zero() { this.r.fill(0); this.lift = 0; return this; }
@@ -39,6 +40,23 @@ const RIG = { hips: [['pelvis', 1]], spine: [['spine_01', 1]], chest: [['spine_0
 for (const [k, s] of [['L', 'l'], ['R', 'r']]) Object.assign(RIG, {
   ['clav' + k]: [['clavicle_' + s, 1]], ['arm' + k]: [['upperarm_' + s, 1]], ['fore' + k]: [['lowerarm_' + s, 1]], ['hand' + k]: [['hand_' + s, 1]],
   ['thigh' + k]: [['thigh_' + s, 1]], ['shin' + k]: [['calf_' + s, 1]], ['foot' + k]: [['foot_' + s, 1]], ['toe' + k]: [['ball_' + s, 1]],
+});
+// how quickly each bone may follow its target (1/s): the torso and arms trail a little behind the
+// hips, which reads as weight and follow-through; the legs stay tight so the feet don't slide
+const RATE = BONES.map(n => ({ hips: 24, spine: 18, chest: 16, neck: 12, head: 11 })[n] ||
+  (/^(clav|arm)/.test(n) ? 20 : /^(fore|hand)/.test(n) ? 24 : 32));
+const FINGER = /^(index|middle|ring|pinky|thumb)_0[123]_[lr]$/;
+// Hard joint limits, applied to the final pose every frame, measured from the standing reference.
+// Knees are strict hinges; elbows are hinges that may still twist; everything else is capped by its
+// total rotation. Nothing (mocap, procedural layers, blending, bad input) can leave these ranges.
+const LIMIT = BONES.map(n => {
+  const b = n.replace(/[LR]$/, '');
+  if (b === 'shin') return { hinge: [-0.05, 2.5], strict: true };
+  if (b === 'fore') return { hinge: [-2.6, 0.1], swing: 1.7 };
+  // twist about the vertical axis is limited separately along the spine: a real waist turns a few
+  // degrees per vertebra, and bigger differences make the skin wring like a towel
+  const twist = { hips: 0.4, spine: 0.16, chest: 0.24, neck: 0.5, head: 0.8 }[b];
+  return { cap: { hips: 0.9, spine: 0.55, chest: 0.8, neck: 0.9, head: 1.1, clav: 0.5, arm: 3.0, hand: 1.3, thigh: 2.1, foot: 1.1, toe: 1.0 }[b], twist };
 });
 const ORDER = BONES.map(n => (['hips', 'spine', 'chest', 'neck', 'head'].includes(n) ? 'YXZ' : n.startsWith('arm') ? 'XZY' : 'XYZ'));
 
@@ -134,7 +152,43 @@ const F = {
 };
 const TAU = Math.PI * 2, around = (a, b) => ((Math.atan2(a, b) / TAU) % 1 + 1) % 1;
 
-function kitGeometry(src, f, offset, uvOf, iters) {
+// Drape: cloth hangs from the widest part of the body above it and bridges every hollow below
+// (the small of the back, the waist under the lats, the fold under the glutes) instead of clinging
+// into it. Per region (torso, pelvis, each leg), the garment is looked at in rings round a vertical
+// axis: scanning top-down, the fabric's radius in each direction may shrink by at most `taper`
+// per metre of drop, and every vertex is pushed out to that envelope. The envelope is smoothed
+// around the ring so the fabric reads as one soft surface rather than facets.
+function hang(pos, base, n, { region, taper }) {
+  const NA = 72, DY = 0.01, regs = new Map(), at = new Int32Array(n).fill(-1), ang = new Float32Array(n), rad = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const g = region(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]); if (!g) continue;
+    let R = regs.get(g.id); if (!R) regs.set(g.id, R = { g, cells: new Map(), top: -1e9, bot: 1e9, list: [] });
+    const dx = pos[i * 3] - g.cx, dz = pos[i * 3 + 2] - g.cz, yb = Math.round(pos[i * 3 + 1] / DY);
+    ang[i] = ((Math.atan2(dx, dz) / TAU) % 1 + 1) % 1 * NA; rad[i] = Math.hypot(dx, dz); at[i] = yb;
+    const a = Math.floor(ang[i]) % NA, row = R.cells.get(yb) || new Float32Array(NA);
+    row[a] = Math.max(row[a], rad[i]); R.cells.set(yb, row);
+    R.top = Math.max(R.top, yb); R.bot = Math.min(R.bot, yb); R.list.push(i);
+  }
+  for (const R of regs.values()) {
+    const env = new Map(); let prev = null;
+    for (let yb = R.top; yb >= R.bot; yb--) {
+      const row = R.cells.get(yb), e = new Float32Array(NA);
+      for (let a = 0; a < NA; a++) e[a] = Math.max(row ? row[a] : 0, prev ? prev[a] - taper * DY : 0);
+      // soften around the ring (circular 1-2-1, three passes)
+      for (let p = 0; p < 3; p++) { const c = Float32Array.from(e); for (let a = 0; a < NA; a++) e[a] = Math.max(row ? row[a] : 0, (c[(a + NA - 1) % NA] + 2 * c[a] + c[(a + 1) % NA]) / 4); }
+      env.set(yb, e); prev = e;
+    }
+    for (const i of R.list) {
+      const e = env.get(at[i]), a0 = Math.floor(ang[i]) % NA, t = ang[i] - Math.floor(ang[i]);
+      const want = e[a0] * (1 - t) + e[(a0 + 1) % NA] * t;
+      if (want <= rad[i] || rad[i] < 1e-5) continue;
+      const k = want / rad[i], g = R.g;
+      pos[i * 3] = g.cx + (pos[i * 3] - g.cx) * k; pos[i * 3 + 2] = g.cz + (pos[i * 3 + 2] - g.cz) * k;
+    }
+  }
+}
+
+function kitGeometry(src, f, offset, uvOf, iters, drape = null) {
   const P = src.attributes.position, N = src.attributes.normal, SI = src.attributes.skinIndex, SW = src.attributes.skinWeight, idx = src.index.array;
   // weld the skin's UV-seam duplicates so the garment is one connected sheet
   const canon = new Int32Array(P.count), seen = new Map();
@@ -208,6 +262,7 @@ function kitGeometry(src, f, offset, uvOf, iters) {
     }
     pos.set(tmp);
   }
+  if (drape) hang(pos, base, n, drape);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setIndex(tris); g.computeVertexNormals();
@@ -231,15 +286,20 @@ function kitGeometry(src, f, offset, uvOf, iters) {
 
 function buildKit(body) {
   const sleeve = x => Math.max(0, Math.abs(x) - 0.21);
+  // the jersey hangs from the chest and shoulder blades (below the yoke) down to the hem
   const shirt = kitGeometry(body, F.shirt,
-    (x, y) => 0.014 + (Math.abs(x) < 0.21 ? 0.026 * smooth(1.25, 0.98, y) : 0.008 + sleeve(x) * 0.09),
+    (x, y) => 0.014 + (Math.abs(x) < 0.21 ? 0.01 * smooth(1.2, 0.98, y) : 0.008 + sleeve(x) * 0.09),
     (x, y, z) => Math.abs(x) > 0.21
       ? [around(z + 0.065, (y - 1.455) * Math.sign(x)), 0.25 * (1 - sleeve(x) / 0.16)]
-      : [around(z, -x), 0.3 + 0.7 * clamp((y - 0.97) / 0.55, 0, 1)], 10);
+      : [around(z, -x), 0.3 + 0.7 * clamp((y - 0.97) / 0.55, 0, 1)], 10,
+    { region: (x, y) => (Math.abs(x) < 0.2 && y < 1.44 ? { id: 0, cx: 0, cz: -0.02 } : null), taper: 0.12 });
+  // the shorts hang from the seat (the widest point of the glutes) and fall straight past the fold
+  // beneath it; each leg is draped round its own axis so no web forms between the thighs
   const shorts = kitGeometry(body, F.shorts,
-    (x, y) => 0.02 + 0.035 * smooth(0.88, 0.7, y),
+    (x, y) => 0.02 + 0.01 * smooth(0.88, 0.7, y),
     // round the pelvis above the crotch, round each thigh below it; both put u = 0 / 0.5 on the flanks
-    (x, y, z) => [y > 0.93 ? around(z, -x) : around(z + 0.03, -(x - Math.sign(x) * 0.1)), clamp((y - 0.7) / 0.36, 0, 1)], 10);
+    (x, y, z) => [y > 0.93 ? around(z, -x) : around(z + 0.03, -(x - Math.sign(x) * 0.1)), clamp((y - 0.7) / 0.36, 0, 1)], 10,
+    { region: (x, y) => (y > 0.97 ? { id: 0, cx: 0, cz: -0.02 } : { id: Math.sign(x) || 1, cx: (Math.sign(x) || 1) * 0.1, cz: -0.015 }), taper: 0.04 });
   const socks = kitGeometry(body, F.socks, () => 0.005,
     (x, y, z) => [around(z + 0.04, -(x - Math.sign(x) * 0.114)), clamp((y - 0.07) / 0.4, 0, 1)], 2);
   const boots = kitGeometry(body, F.boots, (x, y) => 0.009 + 0.004 * smooth(0.03, 0, y),
@@ -255,24 +315,52 @@ function buildKit(body) {
 // ---------------------------------------------------------------- shared assets
 let ASSETS = null;
 export function resetPlayerAssets() { ASSETS = null; }
-export function loadPlayerAssets(renderer) {
+// Every file is downloaded with fetch and counted byte by byte (for the loading screen), then parsed
+// from memory: glTF from its buffer, images through createImageBitmap, clips from JSON.
+const HAIRS = ['buzzed', 'buzzedfemale', 'simpleparted', 'beard'];
+const FILES = ['body.glb', ...HAIRS.map(h => `hair_${h}.glb`), 'anims.json', 'body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'eye.png', 'hair_albedo.jpg', 'hair_normal.jpg'];
+const LINEAR = new Set(['body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'hair_normal.jpg']); // data, not colour
+// onProgress({ phase: 'download', loaded, total, files, filesDone, known }) then ({ phase: 'build' })
+export function loadPlayerAssets(renderer, onProgress = () => {}) {
   if (ASSETS) return ASSETS;
-  const base = '/models/', gl = new GLTFLoader(), tl = new THREE.TextureLoader();
-  const tex = (f, srgb = true) => new Promise((res, rej) => tl.load(base + f, t => { t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.flipY = false; t.anisotropy = 4; res(t); }, undefined, rej));
-  const gltf = f => new Promise((res, rej) => gl.load(base + f, res, undefined, rej));
-  ASSETS = Promise.all([
-    gltf('body.glb'), Promise.all(['buzzed', 'buzzedfemale', 'simpleparted', 'beard'].map(h => gltf(`hair_${h}.glb`).then(g => [h, g]))),
-    fetch(base + 'anims.json').then(r => r.json()),
-    tex('body_albedo.jpg', false), tex('body_normal.jpg', false), tex('body_rough.jpg', false), tex('eye.png'),
-    tex('hair_albedo.jpg'), tex('hair_normal.jpg', false),
-  ]).then(([body, hairs, anims, bAlb, bNor, bRough, eye, hA, hN]) => {
+  const base = '/models/', loaded = {}, total = {}, done = new Set();
+  const report = () => onProgress({
+    phase: 'download', files: FILES.length, filesDone: done.size, known: FILES.every(f => f in total),
+    loaded: Object.values(loaded).reduce((a, b) => a + b, 0), total: Object.values(total).reduce((a, b) => a + b, 0),
+  });
+  const download = async f => {
+    const r = await fetch(base + f, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
+    total[f] = +r.headers.get('Content-Length') || 0; loaded[f] = 0; report();
+    const reader = r.body.getReader(), parts = [];
+    for (;;) { const { done: end, value } = await reader.read(); if (end) break; parts.push(value); loaded[f] += value.length; report(); }
+    if (!total[f]) total[f] = loaded[f];
+    done.add(f); report();
+    const out = new Uint8Array(loaded[f]); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+    return out.buffer;
+  };
+  const texture = async (f, buf) => {
+    const bmp = await createImageBitmap(new Blob([buf], { type: f.endsWith('.png') ? 'image/png' : 'image/jpeg' }),
+      { imageOrientation: 'none', premultiplyAlpha: 'none', colorSpaceConversion: LINEAR.has(f) ? 'none' : 'default' });
+    const t = new THREE.Texture(bmp); t.flipY = false; t.anisotropy = 4; t.needsUpdate = true;
+    t.colorSpace = LINEAR.has(f) ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+    return t;
+  };
+  const gl = new GLTFLoader();
+  ASSETS = Promise.all(FILES.map(download)).then(async bufs => {
+    const B = Object.fromEntries(FILES.map((f, i) => [f, bufs[i]]));
+    onProgress({ phase: 'build' });
+    const [body, ...hairs] = await Promise.all(['body.glb', ...HAIRS.map(h => `hair_${h}.glb`)].map(f => gl.parseAsync(B[f], '')));
+    const anims = JSON.parse(new TextDecoder().decode(B['anims.json']));
+    const [bAlb, bNor, bRough, eye, hA, hN] = await Promise.all(['body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'eye.png', 'hair_albedo.jpg', 'hair_normal.jpg'].map(f => texture(f, B[f])));
+    await new Promise(r => setTimeout(r, 0)); // let the loading screen paint before the heavy build
     let skinned = null;
     body.scene.traverse(o => { if (o.isSkinnedMesh && o.name === 'SuperHero_Male') skinned = o; });
     const hairGeo = {};
-    for (const [h, g] of hairs) {
+    hairs.forEach((g, i) => {
       g.scene.updateMatrixWorld(true);
-      g.scene.traverse(o => { if (o.isMesh && !hairGeo[h]) hairGeo[h] = o.geometry.clone().applyMatrix4(o.matrixWorld); });
-    }
+      g.scene.traverse(o => { if (o.isMesh && !hairGeo[HAIRS[i]]) hairGeo[HAIRS[i]] = o.geometry.clone().applyMatrix4(o.matrixWorld); });
+    });
     let env = null;
     if (renderer) { const pm = new THREE.PMREMGenerator(renderer); env = pm.fromScene(new RoomEnvironment(), 0.04).texture; pm.dispose(); }
     return {
@@ -286,8 +374,30 @@ export function loadPlayerAssets(renderer) {
 }
 
 // ---------------------------------------------------------------- the character
-const _q = new THREE.Quaternion(), _qc = new THREE.Quaternion(), _Q = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3();
+const _D = new THREE.Quaternion(), _T = new THREE.Quaternion(), _S = new THREE.Quaternion(), _X = new THREE.Vector3(1, 0, 0), _Y = new THREE.Vector3(0, 1, 0);
+// Joint ranges are soft: up to 80% of the limit a rotation passes untouched, beyond that it eases
+// into the limit (continuous in value and slope), so motion that brushes a limit never kinks or
+// flat-tops. `soft(a, max)` maps |a| in [0, inf) onto [0, max).
+function soft(a, max) {
+  const s = Math.sign(a), x = Math.abs(a), knee = max * 0.8;
+  return x <= knee ? a : s * (knee + (max - knee) * (1 - Math.exp(-(x - knee) / (max - knee))));
+}
+function capAngle(q, max) { // shrink a rotation to at most `max` radians about the same axis
+  if (q.w < 0) q.set(-q.x, -q.y, -q.z, -q.w);
+  const w = Math.min(1, q.w), ang = 2 * Math.acos(w), s = Math.sqrt(1 - w * w);
+  if (s < 1e-6) return;
+  const a = soft(ang, max);
+  if (a === ang) return;
+  const k = Math.sin(a / 2) / s;
+  q.set(q.x * k, q.y * k, q.z * k, Math.cos(a / 2));
+}
+const _q = new THREE.Quaternion(), _qc = new THREE.Quaternion(), _Q = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const LOCO = ['Idle_Loop', 'Walk_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop'];
+const BOB = 0.07; // largest vertical pelvis bounce per stride, peak to peak, in metres of the character
+// target trunk lean for each gait (radians forward of vertical; idle is owned by the ready stance)
+const TRUNK = [0, 0.05, 0.12, 0.2];
+// how the posture correction is shared out: pelvis tuck (undone at the thighs), then spine and chest
+const POSTURE = [['hips', 0.25], ['thighL', -0.25], ['thighR', -0.25], ['spine', 0.4], ['chest', 0.35]];
 export class Human {
   constructor(kit) {
     this.kit = kit;
@@ -295,7 +405,7 @@ export class Human {
     this.ready = false; this.look = null; this.hair = [];
     this.cv = { shirt: canvas(512, 512), shorts: canvas(256, 256), socks: canvas(64, 128), boots: canvas(128, 128) };
     this.tx = Object.fromEntries(Object.entries(this.cv).map(([k, c]) => { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; t.wrapS = THREE.RepeatWrapping; return [k, t]; }));
-    this.phase = 0; this.groundY = 0;
+    this.phase = 0; this.groundY = 0; this.legFwd = { L: 0, R: 0 };
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (this.look) this.paint(); });
   }
   // called once the shared assets have loaded
@@ -304,7 +414,7 @@ export class Human {
     const root = cloneSkinned(A.scene);
     this.root = root; this.group.add(root);
     const env = { envMap: A.env, envMapIntensity: 0.45 };
-    const fabric = map => new THREE.MeshPhysicalMaterial({ map, normalMap: A.knit, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.72, sheen: 0.5, sheenRoughness: 0.6, sheenColor: new THREE.Color(0x555555), side: THREE.DoubleSide, ...env });
+    const fabric = map => new THREE.MeshPhysicalMaterial({ map, normalMap: A.knit, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.78, sheen: 0.3, sheenRoughness: 0.7, sheenColor: new THREE.Color(0x404040), side: THREE.DoubleSide, envMap: A.env, envMapIntensity: 0.3 });
     this.m = {
       skin: new THREE.MeshStandardMaterial({ map: A.tex.bAlb, normalMap: A.tex.bNor, roughnessMap: A.tex.bRough, roughness: 1, metalness: 0, ...env }),
       eyes: new THREE.MeshStandardMaterial({ map: A.tex.eye, roughness: 0.25, ...env }),
@@ -329,12 +439,42 @@ export class Human {
       body.parent.add(m); m.bind(body.skeleton, body.bindMatrix);
     }
     this.bone = {}; root.traverse(o => { if (o.isBone) this.bone[o.name] = o; });
-    this.headInv = body.skeleton.boneInverses[body.skeleton.bones.indexOf(this.bone.Head)];
+    const sk = body.skeleton, inv = n => sk.boneInverses[sk.bones.indexOf(this.bone[n])];
+    this.headInv = inv('Head');
+    // contact points on the boot soles (and the knee cap, for kneeling), in each bone's own space:
+    // the exact places that must never go below the grass
+    this.contacts = [];
+    for (const [s, k] of [[1, 'l'], [-1, 'r']]) {
+      const at = (bone, x, y, z) => this.contacts.push({ bone: this.bone[bone + k], p: new THREE.Vector3(s * 0.114 + x, y, z).applyMatrix4(inv(bone + k)) });
+      at('foot_', 0, -0.012, -0.145); at('foot_', 0.035 * s, -0.012, -0.1); at('foot_', -0.03 * s, -0.012, -0.1);
+      at('ball_', 0.045 * s, -0.012, 0.06); at('ball_', -0.04 * s, -0.012, 0.06); at('ball_', 0, -0.008, 0.16);
+      at('calf_', 0, 0.54, 0.065);
+    }
+    // fingers: the pack's run/idle clench them into fists; hands are eased halfway back to open
+    this.fingers = []; root.traverse(o => { if (o.isBone && FINGER.test(o.name)) this.fingers.push([o, o.quaternion.clone()]); });
     this.buildReference();
     this.mixer = new THREE.AnimationMixer(root);
     this.act = {};
     for (const c of A.clips) { const a = this.mixer.clipAction(c); a.play(); a.setEffectiveWeight(0); this.act[c.name] = a; }
     for (const n of LOCO) this.act[n].timeScale = 0; // driven by hand from one shared phase
+    // each gait's pelvis bounce: the cycle's mean position (the centre the bounce is measured from)
+    // and its peak-to-peak height, in the rig's own units along the rig's up axis
+    const upL = new THREE.Vector3(0, 1, 0).applyQuaternion(this.bone.pelvis.parent.getWorldQuaternion(new THREE.Quaternion()).invert());
+    this.gaitBob = LOCO.map(n => {
+      const tr = this.act[n].getClip().tracks.find(t => t.name === 'pelvis.position'), m = new THREE.Vector3();
+      if (!tr) return null;
+      const k = tr.values.length / 3; let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < k; i++) {
+        const x = tr.values[i * 3], y = tr.values[i * 3 + 1], z = tr.values[i * 3 + 2], u = x * upL.x + y * upL.y + z * upL.z;
+        m.x += x / k; m.y += y / k; m.z += z / k; lo = Math.min(lo, u); hi = Math.max(hi, u);
+      }
+      return { m, p2p: hi - lo };
+    });
+    this.clock = 0; this.env = []; // recent [time, required lift] samples for the stride envelope
+    this.trunk = LOCO.map(n => this._trunkLean(this.act[n]));
+    // every bone the layers in animate() edit in place, and what the mixer last produced for each
+    this.touched = [...new Set([...this.ref.flat().map(r => r.bone), ...this.fingers.map(f => f[0])])];
+    this.mixQ = null; this.mixP = new THREE.Vector3();
     this.ready = true;
     if (this.look) this.setLook(this.look);
   }
@@ -353,8 +493,29 @@ export class Human {
     this.root.updateMatrixWorld(true);
     this.ref = BONES.map(n => RIG[n].map(([bn, share]) => {
       const bone = b[bn];
-      return { bone, share, L: bone.quaternion.clone(), C: rootInv.clone().multiply(bone.parent.getWorldQuaternion(new THREE.Quaternion())) };
+      const L = bone.quaternion.clone(), C = rootInv.clone().multiply(bone.parent.getWorldQuaternion(new THREE.Quaternion()));
+      return { bone, share, L, C, Li: L.clone().invert(), Ci: C.clone().invert() };
     }));
+  }
+  // average forward pitch of the trunk (pelvis -> base of the neck, from vertical) over a clip's cycle
+  _trunkLean(act) {
+    const acts = Object.values(this.act), clip = act.getClip(), a = new THREE.Vector3(), b = new THREE.Vector3();
+    let sum = 0; const N = 12;
+    for (let k = 0; k < N; k++) {
+      for (const o of acts) o.setEffectiveWeight(o === act ? 1 : 0);
+      act.time = (k + 0.5) / N * clip.duration; this.mixer.update(0);
+      this.root.updateMatrixWorld(true);
+      this.root.worldToLocal(this.bone.pelvis.getWorldPosition(a)); this.root.worldToLocal(this.bone.neck_01.getWorldPosition(b));
+      b.sub(a); sum += Math.atan2(b.z, b.y); // the model faces +z
+    }
+    for (const o of acts) o.setEffectiveWeight(0);
+    return sum / N;
+  }
+  // image-based lighting for the whole character (the renderer passes the stadium's own)
+  setEnvironment(env) {
+    if (!this.ready) return;
+    const k = { skin: 0.55, eyes: 1, brows: 0.4, hair: 0.45, shirt: 0.4, shorts: 0.4, socks: 0.35, boots: 0.9 };
+    for (const [n, m] of Object.entries(this.m)) { m.envMap = env; m.envMapIntensity = k[n] ?? 0.5; m.needsUpdate = true; }
   }
   paint() {
     drawShirt(this.cv.shirt, this.kit, this.look); drawShorts(this.cv.shorts, this.kit); drawSocks(this.cv.socks, this.kit); drawBoots(this.cv.boots, BOOTS[this.look.boots % BOOTS.length]);
@@ -387,16 +548,64 @@ export class Human {
   // add: { pose: additive rotations, lift: extra height, clips: { name: weight } }
   animate(dt, t, speed, over, W, add) {
     if (!this.ready) return;
+    if (!(dt >= 0 && dt < 1)) dt = 0;
+    if (!Number.isFinite(speed) || speed < 0) speed = 0;
+    for (let i = 0; i < W.length; i++) W[i] = Number.isFinite(W[i]) ? clamp(W[i], 0, 1) : 0;
+    for (let i = 0; i < over.r.length; i++) if (!Number.isFinite(over.r[i])) { over.r[i] = 0; W[(i / 3) | 0] = 0; }
+    if (add.pose) for (let i = 0; i < add.pose.r.length; i++) if (!Number.isFinite(add.pose.r[i])) add.pose.r[i] = 0;
+    if (!Number.isFinite(add.lift)) add.lift = 0;
+    if (!Number.isFinite(this.phase)) this.phase = 0;
     const sc = this.group.scale.y, v = speed / sc; // metres per second at the character's own scale
     // locomotion: idle / walk / jog / sprint share one normalized phase so the feet stay in step
     const wIdle = 1 - smooth(0.15, 0.9, v), wSprint = smooth(3.6, 4.8, v);
     const wJog = smooth(1.5, 2.3, v) * (1 - wSprint), wWalk = Math.max(0, 1 - wIdle - wJog - wSprint);
-    this.phase = (this.phase + dt * (wWalk * 0.95 + wJog * 1.35 + wSprint * 1.5)) % 1;
+    // backpedalling plays the cycle in reverse, so the feet travel the way the body is moving
+    const dir = add.dir < 0 ? -1 : 1;
+    this.phase = (((this.phase + dir * dt * (wWalk * 0.95 + wJog * 1.35 + wSprint * 1.5)) % 1) + 1) % 1;
     const clipW = add.clips || {}; let other = 0; for (const k in clipW) other += clipW[k];
     const lk = Math.max(0, 1 - other);
     [wIdle, wWalk, wJog, wSprint].forEach((w, i) => { const a = this.act[LOCO[i]]; a.setEffectiveWeight(w * lk); a.time = i ? this.phase * a.getClip().duration : (t * 0.9) % a.getClip().duration; });
     this.act.Dance_Loop.setEffectiveWeight(clipW.Dance_Loop || 0);
+    // three's mixer only writes a bone when its blended value differs from the previous frame's. A
+    // bone whose clip value holds still would keep every edit made below, and the next frame's
+    // layers would stack on top of it: a braked sprint used to leave the lower spine bent at its
+    // limit for good. So each frame starts from exactly what the mixer last produced.
+    const pv = this.bone.pelvis;
+    if (this.mixQ) { this.touched.forEach((bn, i) => bn.quaternion.copy(this.mixQ[i])); pv.position.copy(this.mixP); }
     this.mixer.update(dt);
+    if (this.mixQ) this.touched.forEach((bn, i) => this.mixQ[i].copy(bn.quaternion)); else this.mixQ = this.touched.map(bn => bn.quaternion.clone());
+    this.mixP.copy(pv.position);
+    for (const [bone, open] of this.fingers) bone.quaternion.slerp(open, 0.5);
+    // The pack's jog and sprint bounce the pelvis (and with it the head) 15-20 cm per stride; a real
+    // footballer's runs 6-8 cm. Scale the vertical bounce about the blended gait's own cycle mean
+    // (exact, so it adds no lag) down to BOB peak-to-peak; gaits already inside that are untouched.
+    {
+      const pv = this.bone.pelvis, m = _v.set(0, 0, 0); let ws = 0, p2p = 0;
+      [wIdle, wWalk, wJog, wSprint].forEach((w, i) => { const g = this.gaitBob[i]; if (g && w > 0) { m.addScaledVector(g.m, w); p2p += g.p2p * w; ws += w; } });
+      if (ws > 0 && lk > 0) {
+        m.multiplyScalar(1 / ws); p2p /= ws;
+        const pws = pv.parent.getWorldScale(_v2).y, bobW = p2p * pws; // this gait's bounce in world units
+        const keep = 1 - lk * (1 - Math.min(1, BOB * sc / Math.max(bobW, 1e-6)));
+        if (keep < 0.999) {
+          const up = _v2.set(0, 1, 0).applyQuaternion(pv.parent.getWorldQuaternion(_q).invert());
+          const d = (pv.position.x - m.x) * up.x + (pv.position.y - m.y) * up.y + (pv.position.z - m.z) * up.z;
+          pv.position.addScaledVector(up, -d * (1 - keep));
+        }
+      }
+    }
+    // arms answer the legs: measure each thigh's swing in the mocap and swing the opposite arm with
+    // it (more at pace), so the arm action always matches the stride, whatever the clip does
+    // (legFwd is also read by the caller: a running shot loads the kicking leg on its backswing)
+    const run = smooth(1.2, 3.5, v) * lk;
+    for (const [k, s] of [['l', 'L'], ['r', 'R']]) {
+      const b = this.bone, hip = b['thigh_' + k].getWorldPosition(_v), knee = b['calf_' + k].getWorldPosition(_v2);
+      knee.sub(hip).applyQuaternion(this.group.getWorldQuaternion(_q).invert());
+      const fwd = Math.atan2(knee.z, -knee.y); // + when this leg is ahead
+      this.legFwd[s] = fwd;
+      if (run <= 0.01 || !add.pose) continue;
+      add.pose.add('arm' + s, fwd * 0.7 * run, 0, 0);
+      add.pose.add('fore' + s, -Math.abs(fwd) * 0.35 * run - 0.25 * run, 0, 0);
+    }
 
     // procedural overlay: slerp each rig bone toward its target by the bone's weight
     let wMax = 0;
@@ -405,23 +614,96 @@ export class Human {
       const x = over.r[i * 3], y = over.r[i * 3 + 1], z = over.r[i * 3 + 2];
       for (const r of this.ref[i]) r.bone.quaternion.slerp(_qc.copy(this._conj(r, x, y, z, ORDER[i])).multiply(r.L), w);
     }
+    // Posture. The pack's gaits run hunched (trunk ~13 deg forward at a walk, ~24 at a jog, ~39 in
+    // the sprint); a footballer runs tall, a few degrees forward at a walk and 10-12 flat out. The
+    // blend's measured lean (see _trunkLean) is brought to that target: the pelvis tucks (the thighs
+    // take it back, so the stride is untouched) and the spine and chest straighten over it. Bones a
+    // procedural pose owns are left to it.
+    {
+      let lean = 0, want = 0, ws = 0;
+      [wIdle, wWalk, wJog, wSprint].forEach((w, i) => { lean += this.trunk[i] * w; want += TRUNK[i] * w; ws += w; });
+      const c = ws > 0 ? (lean - want) / ws * lk : 0;
+      if (Math.abs(c) > 1e-4) for (const [n, k] of POSTURE) {
+        const i = BI[n], x = -c * k * (1 - W[i]);
+        for (const r of this.ref[i]) r.bone.quaternion.premultiply(this._conj(r, x, 0, 0, ORDER[i]));
+      }
+    }
     // additive layer (look at the ball, stun wobble) on top of whatever is there
     if (add.pose) for (let i = 0; i < BONES.length; i++) {
       const x = add.pose.r[i * 3], y = add.pose.r[i * 3 + 1], z = add.pose.r[i * 3 + 2];
       if (!x && !y && !z) continue;
       for (const r of this.ref[i]) r.bone.quaternion.premultiply(this._conj(r, x, y, z, ORDER[i]));
     }
-    // feet on the grass: move the pelvis so the lowest foot / knee point sits on y = 0
+    // temporal filter: every rig bone eases toward this frame's result at its own rate. Removes pops
+    // where layers blend in and out, and lets the torso and arms lag the hips for follow-through.
+    const snap = !this.filt || dt > 0.1;
+    if (!this.filt) this.filt = this.ref.map(rs => rs.map(() => new THREE.Quaternion()));
+    for (let i = 0; i < BONES.length; i++) {
+      const k = 1 - Math.exp(-RATE[i] * (add.fast && add.fast[i] ? add.fast[i] : 1) * dt);
+      this.ref[i].forEach((r, j) => {
+        const f = this.filt[i][j];
+        if (snap) f.copy(r.bone.quaternion); else f.slerp(r.bone.quaternion, k);
+        r.bone.quaternion.copy(f);
+        this._limit(r, LIMIT[i]);
+        f.copy(r.bone.quaternion);
+      });
+    }
+    // Ground contact. Hard rule: no sole point (or knee cap) is ever below the grass: if one would be,
+    // the body is lifted by exactly that much, immediately.
+    // Which way it may move otherwise depends on the gait. Chasing the lowest point every frame
+    // pulls a runner down through each flight phase and throws them back up at every footstrike (a
+    // sawtooth that shook the whole body). So the body height follows an envelope instead: the
+    // largest lift any frame of the last half-stride needed. Every stance foot still lands exactly
+    // on the grass, and in between the stride keeps its natural flight. Standing, kicking, sliding
+    // or celebrating, the window shrinks to a few frames and the feet settle straight onto the grass.
     const b = this.bone;
     this.group.updateWorldMatrix(true, true);
     const baseY = this.group.getWorldPosition(_v).y;
     let m = Infinity;
-    for (const k of ['l', 'r']) m = Math.min(m,
-      b['foot_' + k].getWorldPosition(_v).y - 0.085 * sc, b['ball_' + k].getWorldPosition(_v).y - 0.017 * sc,
-      b['ball_leaf_' + k].getWorldPosition(_v).y - 0.015 * sc, b['calf_' + k].getWorldPosition(_v).y - 0.06 * sc);
-    const target = -(m - baseY) / sc;
-    // mocap keeps its own flight phases (smoothed); procedural poses are pinned exactly
-    this.groundY = wMax > 0.3 ? target : this.groundY + (target - this.groundY) * (1 - Math.exp(-10 * dt));
-    b.pelvis.position.y += this.groundY + (add.lift || 0) / sc;
+    for (const c of this.contacts) m = Math.min(m, _v2.copy(c.p).applyMatrix4(c.bone.matrixWorld).y);
+    const target = baseY - m; // world units to move the body up (negative = down) to touch the grass
+    const lift = clamp(add.lift || 0, 0, 0.6);
+    let legW = 0; for (const i of LEG_I) legW = Math.max(legW, W[i]);
+    const rate = wWalk * 0.95 + wJog * 1.35 + wSprint * 1.5; // gait cycles per second
+    const gait = lk * (1 - legW) * smooth(0.3, 1.2, v);
+    const win = 0.05 + (rate > 0.2 ? gait * 0.55 / rate : 0);
+    this.clock += dt;
+    const env = this.env; env.push(this.clock, target);
+    while (env.length > 2 && env[0] < this.clock - win) env.splice(0, 2);
+    let need = -Infinity; for (let i = 1; i < env.length; i += 2) need = Math.max(need, env[i]);
+    this.groundY = need >= this.groundY ? need : this.groundY + (need - this.groundY) * (1 - Math.exp(-14 * dt));
+    this.groundY = clamp(Number.isFinite(this.groundY) ? this.groundY : 0, -0.5, 0.5);
+    // the pelvis moves in its parent's space; find world "up" there (the rig's root is rotated)
+    const up = _v.set(0, 1, 0).applyQuaternion(b.pelvis.parent.getWorldQuaternion(_q).invert());
+    b.pelvis.position.addScaledVector(up, (this.groundY + lift) / sc);
+    // last line of defence: a non-finite value anywhere puts the rig back to its reference pose
+    let ok = Number.isFinite(b.pelvis.position.x + b.pelvis.position.y + b.pelvis.position.z);
+    for (const rs of this.ref) for (const r of rs) { const q = r.bone.quaternion; if (!Number.isFinite(q.x + q.y + q.z + q.w)) ok = false; }
+    if (!ok) {
+      for (const rs of this.ref) for (const r of rs) r.bone.quaternion.copy(r.L);
+      b.pelvis.position.set(0, 0.043, 0.9491); this.filt = null; this.mixQ = null; this.groundY = 0; this.phase = 0; this.env.length = 0;
+    }
   }
+  // clamp one rig bone to its joint limit (see LIMIT), in the reference-aligned frame of its parent
+  _limit(r, lim) {
+    const D = _D.copy(r.C).multiply(r.bone.quaternion).multiply(r.Li).multiply(r.Ci).normalize();
+    if (D.w < 0) D.set(-D.x, -D.y, -D.z, -D.w);
+    if (lim.hinge) {
+      let l = Math.hypot(D.x, D.w); const tw = l > 1e-8 ? _T.set(D.x / l, 0, 0, D.w / l) : _T.identity();
+      const a = clamp(2 * Math.atan2(tw.x, tw.w), lim.hinge[0] * r.share, lim.hinge[1] * r.share);
+      if (lim.strict) D.setFromAxisAngle(_X, a);
+      else { const sw = _S.copy(D).multiply(tw.invert()); capAngle(sw, lim.swing); D.copy(sw).multiply(_T.setFromAxisAngle(_X, a)); }
+    } else {
+      if (lim.twist) { // swing-twist about y: clamp the twist, keep the swing
+        const l = Math.hypot(D.y, D.w), tw = l > 1e-8 ? _T.set(0, D.y / l, 0, D.w / l) : _T.identity();
+        const a = soft(2 * Math.atan2(tw.y, tw.w), lim.twist * r.share);
+        const sw = _S.copy(D).multiply(tw.invert());
+        D.copy(sw).multiply(_T.setFromAxisAngle(_Y, a));
+      }
+      capAngle(D, lim.cap * r.share);
+    }
+    r.bone.quaternion.copy(r.Ci).multiply(D).multiply(r.C).multiply(r.L);
+  }
+  // world position of a foot's ball joint (k: 'l' | 'r')
+  foot(k, out) { return this.bone['ball_' + k].getWorldPosition(out); }
 }

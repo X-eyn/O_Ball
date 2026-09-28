@@ -1,4 +1,6 @@
 import { createRenderer, KITS } from '/render3d.js';
+import { createRenderer2D } from '/render2d.js';
+import { probeGraphics, chooseTier, TIERS } from '/graphics.js';
 
 const C = OB.C, TPMS = 60 / 1000;
 const $ = id => document.getElementById(id);
@@ -225,17 +227,42 @@ addEventListener('keydown', () => Sound.init());
 // =====================================================================
 // 3D renderer
 // =====================================================================
+// Every machine gets a renderer that runs well on it (see graphics.js): the full floodlit stadium
+// on a real GPU, lighter builds of it on integrated graphics or software rendering, and a 2D
+// renderer where there is no WebGL at all. If the graphics context is ever lost (a driver reset,
+// a GPU too weak for the tier), the tier steps down and the page reloads into it.
 let R = null;
-try {
-  R = createRenderer($('c'));
-} catch (e) {
-  console.error(e);
-  $('fatal').innerHTML = 'Office Ball needs WebGL (3D graphics), which this browser has disabled.<br>Try Chrome or Edge with hardware acceleration turned on.';
-  $('fatal').classList.remove('hidden');
+if (window.__boot) window.__boot.codeReady(); // the game code has arrived and is running
+const GFX = probeGraphics();
+// ?gfx=2d|lite|medium|high forces a renderer for this visit (for support: "open it with ?gfx=2d")
+const urlGfx = new URLSearchParams(location.search).get('gfx');
+let graphicsPref = TIERS.includes(urlGfx) ? urlGfx : store.get('ob_graphics') || 'auto';
+let tier = chooseTier(GFX, graphicsPref, store.get('ob_gfx_fail'));
+function start2D() {
+  const old = $('c'), c = old.cloneNode(false); old.replaceWith(c); // a canvas that tried WebGL can't draw 2D
+  R = createRenderer2D(c); tier = '2d';
+  if (window.__boot) window.__boot.done();
 }
-const qualityNames = { auto: 'Auto', high: 'High', low: 'Low' };
-let quality = store.get('ob_quality') || 'auto';
-if (R) R.setQuality(quality);
+if (tier === '2d') start2D();
+else {
+  try {
+    R = createRenderer($('c'), { tier });
+    $('c').addEventListener('webglcontextlost', e => { e.preventDefault(); store.set('ob_gfx_fail', tier); location.reload(); });
+  } catch (e) {
+    console.error(e);
+    store.set('ob_gfx_fail', 'lite');
+    start2D();
+  }
+}
+const qualityNames = { auto: 'Auto', high: 'High', medium: 'Medium', lite: 'Low', '2d': '2D' };
+// On Auto, a tier this machine can't hold even at its lightest settings steps down a tier and the
+// choice is remembered, so the next visit starts there. Only ever between matches, never mid-play.
+let lastLive = false;
+setInterval(() => {
+  if (graphicsPref !== 'auto' || tier === '2d' || !R || !R.struggling || lastLive) return;
+  store.set('ob_gfx_fail', tier); location.reload();
+}, 2000);
+const qualityLabel = () => graphicsPref === 'auto' ? `Auto (${qualityNames[tier]})` : qualityNames[graphicsPref];
 function fitStage() { const r = $('view').getBoundingClientRect(); if (R && r.width > 0 && r.height > 0) R.resize(r.width, r.height); }
 new ResizeObserver(fitStage).observe($('view'));
 
@@ -399,10 +426,13 @@ function setupMenu() {
   $('sitBtn').onclick = () => { const me = room && room.members.find(m => m.id === myId); if (me) send({ t: 'sit', v: !me.sitting }); };
   $('renameBtn').onclick = () => askName(() => send({ t: 'name', name: myName() }));
   const qb = $('qualityBtn');
-  qb.textContent = qualityNames[quality];
+  qb.textContent = qualityLabel();
   qb.onclick = () => {
-    quality = { auto: 'high', high: 'low', low: 'auto' }[quality];
-    store.set('ob_quality', quality); if (R) R.setQuality(quality); qb.textContent = qualityNames[quality];
+    // a different renderer is built from scratch: remember the choice and reload into it (a
+    // reconnect puts you straight back in the room); choosing clears any remembered failure
+    graphicsPref = { auto: 'high', high: 'medium', medium: 'lite', lite: '2d', '2d': 'auto' }[graphicsPref] || 'auto';
+    store.set('ob_graphics', graphicsPref); store.set('ob_gfx_fail', '');
+    qb.textContent = qualityLabel(); setTimeout(() => location.reload(), 150);
   };
 }
 
@@ -462,7 +492,7 @@ function handle(m) {
     case 'emote': showEmote(m.id, m.n); break;
     case 'toast': toast(m.text); break;
     case 'lb': lbList = m.list; if (menuOpen()) $('lbTable').innerHTML = lbHtml(lbList, myName()); break;
-    case 'pong': pingMs = performance.now() - m.c; $('netInfo').textContent = `Connection ${pingMs.toFixed(0)} ms · smoothing ${Math.max(0, clock.delay * 16.7).toFixed(0)} ms · rendering at ${R ? ['low', 'medium', 'high'][R.level] : ''} quality`; break;
+    case 'pong': pingMs = performance.now() - m.c; $('netInfo').textContent = `Connection ${pingMs.toFixed(0)} ms · smoothing ${Math.max(0, clock.delay * 16.7).toFixed(0)} ms · rendering: ${qualityNames[tier]}${tier === '2d' ? '' : ' 3D'}`; break;
   }
 }
 
@@ -808,10 +838,9 @@ function renderScreens(s) {
   } else if (s.rp === 'prematch' && matchInfo) {
     const mi = matchInfo, secs = Math.max(1, Math.ceil((s.rt || 0) / 60));
     if (secs !== lastCountdown) { if (lastCountdown !== -1) Sound.fx.beep(false); else Sound.fx.whoosh(); lastCountdown = secs; }
-    if (mi.solo) {
-      setScreen('pre-solo', `<div class="scrim" style="opacity:.5"></div><div class="card"><div class="cap">Practice</div><h2>Solo shooting</h2><p>No opponent and no clock. Both goals count. ${K('R')} brings the ball to your feet.</p><p class="muted small">Want someone to play? Send the link. A ranked match starts the moment they join.</p>${inviteBox()}<div class="count" id="cnt"></div></div>`);
-    } else if (mi.bot) {
-      setScreen('pre-bot', `<div class="scrim" style="opacity:.55"></div><div class="card"><div class="cap">Practice</div><h2>Versus bot</h2><p>A ranked match starts the moment someone else joins.</p>${inviteBox()}<div class="count" id="cnt"></div></div>`);
+    if (mi.solo || mi.bot) {
+      // practice: straight into play. The pitch-side READY call is the countdown; no card on top.
+      setScreen('pre-practice', '');
     } else {
       const streak = i => mi.streak && mi.streak.slot === i && mi.streak.n >= 2 ? `<div class="vs-streak">${mi.streak.n} wins in a row</div>` : '';
       const h2h = mi.h2h ? (mi.h2h[0] + mi.h2h[1] ? `Head to head  ${mi.h2h[0]} – ${mi.h2h[1]}` : 'First meeting') : '';
@@ -953,6 +982,7 @@ function frame(now) {
   }
 
   const live = !!(s && s.rp === 'match' && (s.ph === 'play' || s.ph === 'goal') && !replaying);
+  lastLive = live;
   let localCt, aim = null, cursor = null;
   if (ms >= 0 && live) localCt = inp.kickDownAt !== null ? (performance.now() - inp.kickDownAt) * TPMS : -1;
   const me = world && ms >= 0 ? world.players[ms] : null;

@@ -344,7 +344,8 @@ class Room {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary' };
 const NODE_MODULES = path.join(__dirname, 'node_modules');
 function send(res, code, body, type = 'application/json', cache = false) {
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': cache ? 'public, max-age=86400' : 'no-store' }); res.end(body);
+  // Content-Length lets the loading screen report true download progress
+  res.writeHead(code, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), 'Cache-Control': cache ? 'public, max-age=86400' : 'no-store' }); res.end(body);
 }
 function serveFile(res, f, cache = false) { fs.readFile(f, (e, d) => e ? send(res, 404, 'Not found', 'text/plain') : send(res, 200, d, MIME[path.extname(f)] || 'application/octet-stream', cache)); }
 

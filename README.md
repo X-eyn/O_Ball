@@ -24,7 +24,8 @@ Keyboard, mouse/trackpad and game controllers all work. The game switches to whi
 | Chip | hold & release `E` | shift+click or middle-click | **Y** |
 | Tackle (fake while charging) | `Shift` / `K` | right-click (two-finger tap) | **X** / **B** / LB |
 
-- Release while the ring is **gold** for a PERFECT shot. An arrow on the grass shows where the kick will go.
+- Release while the ring is **gold** for a PERFECT shot: full power, and it goes exactly where you aim. A rushed or
+  overcharged shot, or one struck at a flat-out sprint, strays a little. An arrow on the grass shows the aim.
 - The ball goes where you're facing/pointing. Run one way and aim another to **curve** it.
 - Ease off and the ball stays close to your feet; sprint and it runs away from you (and can be nicked).
 - Tackle while you are charging a shot to cancel it: a shot fake.
@@ -36,8 +37,18 @@ Keyboard, mouse/trackpad and game controllers all work. The game switches to whi
 | Mute | `M` |
 | Menu (invite link, room, controls, settings) | `Esc` |
 
-Graphics are 3D (three.js). **Menu > Settings > Graphics** switches Auto / High / Low. Auto steps down
-on slow laptops.
+Graphics run on every PC, with or without a graphics card. **Auto** (the default) checks the machine and picks:
+
+| Setting | For | What you get |
+|---|---|---|
+| High | a real graphics card | the full floodlit stadium: four-way floodlight shadows, reflections, HDR effects |
+| Medium | laptop / integrated graphics | the same stadium with fewer shadows and lighter effects |
+| Low | no graphics acceleration (VMs, remote desktops) | the same stadium, lightest settings |
+| 2D | browsers with no 3D support | a 2D view of the same game |
+
+Resolution adjusts itself during play to keep it smooth. If a PC still can't keep up, Auto drops one
+setting between matches (never mid-match) and remembers it. Pick a setting yourself under
+**Menu > Settings > Graphics** (the page reloads into it).
 
 ## Rules
 
@@ -55,6 +66,10 @@ on slow laptops.
   Wi-Fi/Ethernet network is set to *Private* (Windows Settings → Network) and that Node.js is allowed
   through the firewall. If the host PC has several networks, **Menu > Invite** lists alternative addresses.
 - **Port 3000 busy:** run `set PORT=3001 && node server.js`.
+- **The game is slow or won't draw on someone's PC:** add `?gfx=2d` (or `lite`, `medium`, `high`) to the end of
+  the link to force a graphics setting for that visit, e.g. `http://192.168.1.23:3000/r/ABCD?gfx=2d`.
+- **After updating the game files, restart the server** (close the window and run `start.bat` again). The
+  server runs the match rules, so rule changes only take effect after a restart.
 
 ## Credits
 

@@ -5,6 +5,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { createLighting } from './lighting.js';
+import { KITS } from './kits.js';
+import { buildStadium } from './stadium.js';
 import { Human, Pose, HAIR_KEYS, MODEL_HEIGHT, loadPlayerAssets, resetPlayerAssets, boneIndex } from './human.js';
 
 const C = window.OB.C;
@@ -19,12 +23,10 @@ const BALL_R = 0.11;
 const PLAYER_H = 1.6;
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const smoothstep = (x, a, b) => { const u = clamp((x - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
 const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
 
-export const KITS = [
-  { shirt: 0xe0283c, shorts: 0xf2f2f2, socks: 0xe0283c, css: '#ff4d5e', light: 0xff8a96 },
-  { shirt: 0x1c8cf0, shorts: 0x0c1f3d, socks: 0x1c8cf0, css: '#3fa7ff', light: 0x7cc4ff },
-];
+export { KITS };
 const SKIN = [0xe9bb98, 0xd9a07a, 0xc08052, 0x9a6440, 0x6e4428, 0xf0c9a9];
 const HAIR = [0x1d1510, 0x3b2616, 0x6b4423, 0xb07b3e, 0x0d0d0d, 0x8a8a8a, 0xd8b36a];
 const hash = s => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
@@ -45,7 +47,8 @@ function pitchTexture() {
   const X = x => (x + W / 2) * ppu, Y = z => (z + H / 2) * ppu;
   const tex = canvasTex(cw, ch, g => {
     const bw = PW / 12;
-    for (let i = -3; i < 16; i++) { g.fillStyle = ((i % 2) + 2) % 2 ? '#3c8c3f' : '#337c36'; g.fillRect(X(-HW + i * bw), 0, bw * ppu + 1, ch); }
+    // the mowing bands are mostly a lighting effect (see the pitch material); only a little is baked
+    for (let i = -3; i < 16; i++) { g.fillStyle = ((i % 2) + 2) % 2 ? '#357a3a' : '#317236'; g.fillRect(X(-HW + i * bw), 0, bw * ppu + 1, ch); }
     const img = g.getImageData(0, 0, cw, ch), d = img.data;
     for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - 0.5) * 22; d[i] += n * 0.55; d[i + 1] += n; d[i + 2] += n * 0.45; }
     g.putImageData(img, 0, 0);
@@ -55,6 +58,20 @@ function pitchTexture() {
       gr.addColorStop(0, light ? 'rgba(170,230,120,0.07)' : 'rgba(5,35,8,0.09)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
       g.fillStyle = gr; g.fillRect(x - r, y - r, 2 * r, 2 * r);
     }
+    // wear: the goalmouths and the centre spot are played on hardest; thinner, drier, paler turf
+    const wear = (x, z, rx, rz, a) => {
+      g.save(); g.translate(X(x), Y(z)); g.scale(rx * ppu, rz * ppu);
+      const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1);
+      gr.addColorStop(0, `rgba(150,140,82,${a})`); gr.addColorStop(0.55, `rgba(120,130,70,${a * 0.5})`); gr.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore();
+      for (let i = 0; i < 260; i++) { // scuffs and divots
+        const r = Math.sqrt(Math.random()), t = Math.random() * Math.PI * 2;
+        g.fillStyle = `rgba(${95 + Math.random() * 40},${85 + Math.random() * 30},${50 + Math.random() * 20},${0.12 + Math.random() * 0.2})`;
+        g.fillRect(X(x + Math.cos(t) * r * rx), Y(z + Math.sin(t) * r * rz), 1 + Math.random() * 3, 1 + Math.random() * 3);
+      }
+    };
+    for (const sg of [-1, 1]) { wear(sg * (HW - 0.55), 0, 0.9, 1.9, 0.22); wear(sg * (HW - 1.6), 0, 0.45, 0.45, 0.14); }
+    wear(0, 0, 0.55, 0.55, 0.12);
     // darker run-off outside the lines
     g.fillStyle = 'rgba(0,20,0,0.18)';
     g.fillRect(0, 0, cw, Y(-HH)); g.fillRect(0, Y(HH), cw, ch - Y(HH)); g.fillRect(0, Y(-HH), X(-HW), PH * ppu); g.fillRect(X(HW), Y(-HH), cw - X(HW), PH * ppu);
@@ -78,6 +95,25 @@ function pitchTexture() {
     }
   });
   return { tex, W, H };
+}
+
+// grass micro-relief: a dense field of short blade strokes, turned into a tangent-space normal map
+function grassNormalTexture() {
+  const N = 256, c = document.createElement('canvas'); c.width = c.height = N;
+  const g = c.getContext('2d'); g.fillStyle = '#808080'; g.fillRect(0, 0, N, N);
+  for (let i = 0; i < 5200; i++) {
+    const x = Math.random() * N, y = Math.random() * N, a = -Math.PI / 2 + (Math.random() - 0.5) * 1.2, l = 2 + Math.random() * 5, v = 110 + Math.random() * 145;
+    g.strokeStyle = `rgb(${v},${v},${v})`; g.lineWidth = 0.6 + Math.random() * 0.8;
+    for (const ox of [-N, 0, N]) for (const oy of [-N, 0, N]) { g.beginPath(); g.moveTo(x + ox, y + oy); g.lineTo(x + ox + Math.cos(a) * l, y + oy + Math.sin(a) * l); g.stroke(); }
+  }
+  const src = g.getImageData(0, 0, N, N).data, out = g.createImageData(N, N), H = (x, y) => src[(((y + N) % N) * N + ((x + N) % N)) * 4] / 255;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const dx = (H(x + 1, y) - H(x - 1, y)) * 2.2, dy = (H(x, y + 1) - H(x, y - 1)) * 2.2, l = Math.hypot(dx, dy, 1), k = (y * N + x) * 4;
+    out.data[k] = (-dx / l * 0.5 + 0.5) * 255; out.data[k + 1] = (dy / l * 0.5 + 0.5) * 255; out.data[k + 2] = (1 / l * 0.5 + 0.5) * 255; out.data[k + 3] = 255;
+  }
+  g.putImageData(out, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.NoColorSpace;
+  return t;
 }
 
 function ballTexture() {
@@ -126,56 +162,16 @@ function boardTexture() {
   }, { repeat: true });
 }
 
-function netTexture() {
-  return canvasTex(64, 64, (g, w, h) => {
-    g.clearRect(0, 0, w, h); g.strokeStyle = 'rgba(255,255,255,0.95)'; g.lineWidth = 3;
-    g.strokeRect(0, 0, w, h);
-  }, { repeat: true });
-}
-
-function glowTexture() {
-  return canvasTex(128, 128, (g, w) => {
-    const gr = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2);
-    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.2, 'rgba(255,245,220,.6)'); gr.addColorStop(1, 'rgba(255,240,200,0)');
-    g.fillStyle = gr; g.fillRect(0, 0, w, w);
-  });
-}
-
-function skyTexture() {
-  return canvasTex(4, 512, (g, w, h) => {
-    const gr = g.createLinearGradient(0, 0, 0, h);
-    gr.addColorStop(0, '#03060f'); gr.addColorStop(0.55, '#0a1430'); gr.addColorStop(1, '#1b2b55');
-    g.fillStyle = gr; g.fillRect(0, 0, w, h);
-  });
-}
 
 // ---------------------------------------------------------------- shaders
-const arcVert = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
-const arcFrag = `uniform float progress; uniform vec3 color; uniform float opacity; uniform float inner; varying vec2 vUv;
-void main(){
-  vec2 p = vUv*2.0-1.0; float r = length(p);
-  if (r > 1.0 || r < inner) discard;
-  float a = atan(p.x, p.y); if (a < 0.0) a += 6.2831853;
-  if (a / 6.2831853 > progress) discard;
-  float e = smoothstep(1.0, 0.9, r) * smoothstep(inner, inner + 0.08, r);
-  gl_FragColor = vec4(color, opacity * e);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-}`;
-function arcMaterial(color, inner, opacity = 1) {
-  return new THREE.ShaderMaterial({
-    uniforms: { progress: { value: 1 }, color: { value: new THREE.Color(color) }, opacity: { value: opacity }, inner: { value: inner } },
-    vertexShader: arcVert, fragmentShader: arcFrag, transparent: true, depthWrite: false,
-  });
-}
 
 const partVert = `attribute float aSize; attribute float aAlpha; attribute vec3 aColor; uniform float uScale;
 varying float vAlpha; varying vec3 vColor;
 void main(){ vAlpha = aAlpha; vColor = aColor; vec4 mv = modelViewMatrix * vec4(position,1.0);
   gl_PointSize = aSize * uScale / -mv.z; gl_Position = projectionMatrix * mv; }`;
-const partFrag = `varying float vAlpha; varying vec3 vColor;
+const partFrag = `varying float vAlpha; varying vec3 vColor; uniform float uGain;
 void main(){ if (vAlpha < 0.01) discard; vec2 c = gl_PointCoord - 0.5; float d = length(c); if (d > 0.5) discard;
-  gl_FragColor = vec4(vColor, smoothstep(0.5, 0.25, d) * vAlpha);
+  gl_FragColor = vec4(vColor * uGain, smoothstep(0.5, 0.25, d) * vAlpha);
   #include <colorspace_fragment>
 }`;
 
@@ -192,7 +188,7 @@ class Particles {
     g.setAttribute('aColor', new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aSize', new THREE.BufferAttribute(this.size, 1).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aAlpha', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
-    this.mat = new THREE.ShaderMaterial({ uniforms: { uScale: { value: 800 } }, vertexShader: partVert, fragmentShader: partFrag, transparent: true, depthWrite: false });
+    this.mat = new THREE.ShaderMaterial({ uniforms: { uScale: { value: 800 }, uGain: { value: 1 } }, vertexShader: partVert, fragmentShader: partFrag, transparent: true, depthWrite: false });
     this.points = new THREE.Points(g, this.mat); this.points.frustumCulled = false; this.points.renderOrder = 5;
     scene.add(this.points); this.geo = g; this.cursor = 0; this.tmp = new THREE.Color();
   }
@@ -235,12 +231,108 @@ function playerGeoms() {
   if (PG) return PG;
   PG = {
     star: new THREE.OctahedronGeometry(0.06),
-    arrow: new THREE.ConeGeometry(0.13, 0.24, 4).rotateX(Math.PI),
-    baseRing: new THREE.RingGeometry(PR + 0.06, PR + 0.14, 48).rotateX(-Math.PI / 2),
-    reachRing: new THREE.RingGeometry(C.REACH * S - 0.025, C.REACH * S, 64).rotateX(-Math.PI / 2),
-    disc: new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+    plate: new THREE.PlaneGeometry(2 * PLATE_R, 2 * PLATE_R).rotateX(-Math.PI / 2),
   };
   return PG;
+}
+
+// ---------------------------------------------------------------- player HUD decals
+// One ground decal per player, drawn analytically in a shader so every edge is anti-aliased at any
+// zoom: a thin team ring with a facing notch, the kick charge meter (with the PERFECT window marked in
+// gold on its track) and the dash cooldown. Distances are in world units.
+const PLATE_R = 1.0, RING_R = 0.46, CHARGE_R = 0.6, COOL_R = 0.39, REACH_R = C.REACH * S;
+const decalVert = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+const plateFrag = `
+uniform vec3 uTeam; uniform float uMine, uCharge, uPerf, uCool, uTime, uR, uLive;
+varying vec2 vUv;
+float band(float d, float w){ float aa = fwidth(d) * 1.2; return 1.0 - smoothstep(w * 0.5 - aa, w * 0.5 + aa, abs(d)); }
+void main(){
+  vec2 p = (vUv - 0.5) * 2.0 * uR;
+  float r = length(p);
+  float a = fract(atan(p.x, -p.y) / 6.2831853 + 1.0);          // 0 at the facing direction, clockwise
+  float ad = min(a, 1.0 - a);                                     // angular distance from the front (0..0.5)
+  vec4 acc = vec4(0.0);
+  #define ADD(c, al) { float _a = clamp(al, 0.0, 1.0); acc.rgb = acc.rgb * (1.0 - _a) + (c) * _a; acc.a = acc.a + _a * (1.0 - acc.a); }
+  // soft contact shade + team ring
+  ADD(vec3(0.0), (1.0 - smoothstep(0.0, ${RING_R.toFixed(3)}, r)) * 0.18);
+  float ringA = band(r - ${RING_R.toFixed(3)}, mix(0.026, 0.042, uMine)) * mix(0.6, 1.0, uMine);
+  ADD(uTeam, ringA);
+  // facing notch: a small solid chevron just outside the ring
+  float nr = r - ${(RING_R + 0.05).toFixed(3)};
+  float notch = step(abs(nr), 0.045) * (1.0 - smoothstep(0.0, 0.004 + fwidth(ad), ad * 6.2831853 * r - (0.045 - nr) * 0.9));
+  ADD(uTeam, notch * mix(0.5, 0.95, uMine));
+  if (uLive > 0.5 && uCharge >= 0.0) {
+    // kick reach, dashed
+    float dash = step(0.5, fract(a * 48.0));
+    ADD(vec3(1.0), band(r - ${REACH_R.toFixed(3)}, 0.012) * dash * 0.28);
+    // charge track, gold PERFECT window, fill
+    float trk = band(r - ${CHARGE_R.toFixed(3)}, 0.065);
+    ADD(vec3(1.0), trk * 0.16);
+    float inPerfZone = step(uPerf, a);
+    ADD(vec3(1.0, 0.83, 0.3), trk * inPerfZone * 0.45);
+    float over = step(1.0, uCharge), fill = min(uCharge, 1.0);
+    float perfect = step(uPerf, uCharge) * (1.0 - over);
+    vec3 fc = over > 0.5 ? vec3(0.45, 0.47, 0.53) : perfect > 0.5 ? vec3(1.0, 0.86, 0.35) : vec3(1.0);
+    float fillA = trk * step(a, fill) * (0.95 - 0.1 * over);
+    ADD(fc, fillA);
+    // leading edge tick + glow while in the window
+    ADD(fc, band(r - ${CHARGE_R.toFixed(3)}, 0.09) * (1.0 - smoothstep(0.0, 0.012, abs(a - fill))) * (1.0 - over));
+    ADD(vec3(1.0, 0.85, 0.4), perfect * (1.0 - smoothstep(0.0, 0.09, abs(r - ${CHARGE_R.toFixed(3)}))) * (0.25 + 0.15 * sin(uTime * 22.0)));
+  }
+  if (uLive > 0.5 && uCool > 0.0) {
+    // dash recharging: a thin arc that closes as the dash comes back
+    ADD(vec3(1.0), band(r - ${COOL_R.toFixed(3)}, 0.014) * step(a, 1.0 - uCool) * 0.5);
+  }
+  if (acc.a < 0.003) discard;
+  gl_FragColor = vec4(acc.rgb, acc.a);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+function plateMaterial(color) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTeam: { value: new THREE.Color(color) }, uMine: { value: 0 }, uCharge: { value: -1 }, uPerf: { value: C.CHARGE_FULL / C.PERF_END }, uCool: { value: 0 }, uTime: { value: 0 }, uR: { value: PLATE_R }, uLive: { value: 0 } },
+    vertexShader: decalVert, fragmentShader: plateFrag, transparent: true, depthWrite: false, toneMapped: false,
+  });
+}
+// aim beam: tapered strip with chevrons flowing outward; x along the beam (0 at the player), y across
+const beamFrag = `
+uniform vec3 uColor; uniform float uTime, uLen; varying vec2 vUv;
+void main(){
+  float x = vUv.x, y = abs(vUv.y - 0.5) * 2.0;
+  float taper = 1.0 - x * 0.55;
+  float edge = 1.0 - smoothstep(taper - 0.12 - fwidth(y), taper, y);
+  float c = fract(x * uLen * 2.4 + y * 0.55 * taper - uTime * 2.2); // tips lead: > > >
+  float chev = smoothstep(0.0, 0.1, c) * (1.0 - smoothstep(0.42, 0.55, c));
+  float spine = 1.0 - smoothstep(0.0, 0.14 + fwidth(y), y);
+  float fadeIn = smoothstep(0.0, 0.18, x), fadeOut = 1.0 - smoothstep(0.7, 1.0, x);
+  float a = (chev * 0.9 + spine * 0.4) * edge * fadeIn * fadeOut;
+  if (a < 0.003) discard;
+  gl_FragColor = vec4(uColor, a);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+// target marker for mouse steering: thin ring and a dot, anti-aliased
+const markFrag = `
+uniform float uTime; varying vec2 vUv;
+float band(float d, float w){ float aa = fwidth(d) * 1.2; return 1.0 - smoothstep(w * 0.5 - aa, w * 0.5 + aa, abs(d)); }
+void main(){
+  float r = length(vUv - 0.5) * 2.0;
+  float ringR = 0.72 + 0.04 * sin(uTime * 5.0);
+  float a = band(r - ringR, 0.07) * 0.75 + (1.0 - smoothstep(0.1, 0.1 + fwidth(r) * 1.5, r)) * 0.85;
+  if (a < 0.003) discard;
+  gl_FragColor = vec4(vec3(1.0), a);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+// the "you" marker over your own player: a soft-edged chevron sprite
+function chevronTexture(color) {
+  return canvasTex(128, 128, g => {
+    g.clearRect(0, 0, 128, 128);
+    const path = () => { g.beginPath(); g.moveTo(24, 36); g.lineTo(64, 84); g.lineTo(104, 36); g.lineTo(88, 30); g.lineTo(64, 58); g.lineTo(40, 30); g.closePath(); };
+    g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = 10; g.shadowOffsetY = 3;
+    g.fillStyle = color; path(); g.fill();
+    g.shadowColor = 'transparent'; g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.9)'; g.lineJoin = 'round'; path(); g.stroke();
+  });
 }
 
 const EYES = [0x4a2f1b, 0x2b1a10, 0x3d6b8f, 0x5b7a3a, 0x6b4a2a, 0x1e120a];
@@ -260,6 +352,10 @@ function lookFor(name, slot) {
 // Conventions: +x on a thigh/arm swings it back, +x on a shin bends the knee, -x on a forearm bends
 // the elbow, +y on an arm twists it about its own length, +x on a foot points the toes; +z on the left (L, +x side) limb lifts it outward.
 const SIDES = [[1, 'L'], [-1, 'R']];
+const LEG_BONES = new Set(['thigh', 'shin', 'foot', 'toe'].flatMap(n => [boneIndex(n + 'L'), boneIndex(n + 'R')]));
+const KICK_LEG = Object.fromEntries(['L', 'R'].map(k => [k, new Set(['thigh', 'shin', 'foot', 'toe'].map(n => boneIndex(n + k)))]));
+// every number that carries animation state from frame to frame; reset if one ever goes non-finite
+const STATE_KEYS = ['hipTurn', 'lead', 'speed', 'vx', 'vz', 'svx', 'svz', 'ax', 'az', 'roll', 'pitch', 'yaw', 'yawVel', 'phase', 'windup', 'kickT', 'swingT', 'dashW', 'celW', 'sadW', 'stunW', 'lookY', 'lookX', 'brace', 'cut', 'celebrate', 'cock', 'commit', 'commitYaw', 'shufW', 'shufPh', 'shufDir'];
 function runPose(P, ph, A, t, seed) {
   const idle = 1 - Math.min(1, A * 2.5), br = Math.sin(t * 1.9 + seed);
   P.zero();
@@ -284,20 +380,72 @@ function runPose(P, ph, A, t, seed) {
   P.set('head', 0.04 * idle, -A * 0.04 * tw);
   P.lift = A * 0.025 * Math.max(0, -Math.cos(ph * 2));
 }
+// standing: an athletic ready stance (feet under the hips, soft knees, arms loose) that breathes and
+// shifts its weight, instead of the pack's lean-back idle. The model's rest pose has a strong
+// anterior pelvic tilt (hollow lower back, seat pushed out), so the pelvis is tucked to neutral
+// (TUCK) and the thighs take the tuck back, keeping the legs and feet where they were; the spine
+// then stacks the chest straight over the hips rather than pitching it forward.
+const TUCK = 0.13;
+function readyPose(Q, t, seed) {
+  Q.zero();
+  const br = Math.sin(t * 1.7 + seed), sway = Math.sin(t * 0.55 + seed * 2);
+  for (const [s, k] of SIDES) {
+    const load = 1 + s * sway * 0.25;
+    Q.set('thigh' + k, TUCK - 0.16 * load, s * 0.06, s * 0.05);
+    Q.set('shin' + k, 0.3 * load);
+    Q.set('foot' + k, -0.14 * load, -s * 0.06, -s * 0.05);
+    Q.set('clav' + k, 0, 0, s * br * 0.015);
+    Q.set('arm' + k, 0.05 + br * 0.02, s * 0.1, s * (0.16 + Math.sin(t * 1.1 + s + seed) * 0.02));
+    Q.set('fore' + k, -0.42 - br * 0.03, 0, 0);
+    Q.set('hand' + k, 0.1, 0, s * 0.12);
+  }
+  Q.set('hips', -TUCK, 0, sway * 0.04);
+  Q.set('spine', 0.09, 0, -sway * 0.025);
+  Q.set('chest', 0.04 + br * 0.012);
+  Q.set('neck', -0.01);
+  Q.set('head', -0.01);
+}
+// side-shuffle (jockeying, feinting): a low athletic stance, chest up and over the knees, stepping
+// sideways along the body's left/right axis. dir in [-1, 1] is the direction of travel (+1 = to the
+// body's left); the lead leg steps out on the first half of each cycle and the trail leg closes on the
+// second, and the pelvis shifts its weight over whichever foot is planted. amp 0 = just the stance.
+function shufflePose(Q, ph, amp, dir, t, seed) {
+  Q.zero();
+  const br = Math.sin(t * 1.9 + seed), step = Math.sin(ph), open = Math.max(0, step), close = Math.max(0, -step);
+  const hips = -TUCK + 0.12;
+  for (const [s, k] of SIDES) {
+    const lead = 0.5 + 0.5 * dir * s, lift = amp * (lead * open + (1 - lead) * close);
+    const thighW = -0.42 - 0.26 * lift, shin = 0.82 + 0.45 * lift;
+    Q.set('thigh' + k, thighW - hips, s * 0.05, s * (0.08 + amp * (lead * 0.17 * open - (1 - lead) * 0.06 * close)));
+    Q.set('shin' + k, shin);
+    Q.set('foot' + k, -(thighW + shin) + 0.12 * lift, -s * 0.05, -s * 0.06);
+    Q.set('toe' + k, -0.1 * lift);
+    Q.set('clav' + k, 0, 0, s * br * 0.012);
+    Q.set('arm' + k, -0.08, s * 0.08, s * (0.3 + 0.06 * amp));
+    Q.set('fore' + k, -0.75);
+    Q.set('hand' + k, 0.05, 0, s * 0.12);
+  }
+  const shift = amp * step * dir;
+  Q.set('hips', hips, 0, -shift * 0.06);
+  Q.set('spine', 0.13, 0, shift * 0.035);
+  Q.set('chest', 0.05, 0, shift * 0.02);
+  Q.set('neck', -0.08);
+  Q.set('head', -0.06);
+}
 // kick leg K: windup (w, 0..1), swing progress (u, 0..1, or -1), follow-through (ft, 1 -> 0)
 function kickPose(Q, K, w, u, ft) {
   const S = K === 'L' ? 'R' : 'L', sk = K === 'L' ? 1 : -1, ss = -sk;
   let th, kn, fo = 0.55, tw;
   if (u >= 0) {
     const e = u * u * (3 - 2 * u);
-    th = 0.9 - 2.25 * e;
-    kn = u < 0.55 ? 1.75 - 0.35 * u / 0.55 : 1.4 * Math.pow(1 - (u - 0.55) / 0.45, 1.6) + 0.08;
+    th = 0.6 - 1.95 * e;
+    kn = u < 0.55 ? 1.35 - 0.2 * u / 0.55 : 1.15 * Math.pow(1 - (u - 0.55) / 0.45, 1.6) + 0.08;
     tw = sk * (0.3 - 0.7 * e);
   } else if (ft > 0) { th = -1.35; kn = 0.12 + 0.3 * (1 - ft); tw = -sk * 0.4; }
-  else { th = 0.9; kn = 1.75; tw = sk * 0.3; }
+  else { th = 0.6; kn = 1.35; tw = sk * 0.25; }
   Q.set('thigh' + K, th, 0, sk * 0.06); Q.set('shin' + K, kn); Q.set('foot' + K, fo); Q.set('toe' + K, 0.1);
   Q.set('thigh' + S, -0.28, 0, ss * 0.06); Q.set('shin' + S, 0.45); Q.set('foot' + S, -0.12); Q.set('toe' + S, 0);
-  Q.set('hips', 0.06, tw, 0); Q.set('spine', -0.06, tw * 0.3); Q.set('chest', -0.06, tw * 0.6);
+  Q.set('hips', 0.06, tw * 0.7, 0); Q.set('spine', -0.06, tw * 0.15); Q.set('chest', -0.06, tw * 0.3);
   Q.set('arm' + S, -0.35, 0, ss * 1.1); Q.set('fore' + S, -0.45);
   Q.set('arm' + K, 0.55, 0, sk * 0.4); Q.set('fore' + K, -0.7);
   Q.set('neck', 0.22); Q.set('head', 0.28);
@@ -348,6 +496,31 @@ function sadPose(Q, style, t) {
   }
 }
 
+// Lite tier (software rendering, no shadow maps): each player stands in a baked picture of what
+// the floodlight banks would throw: a soft shadow away from each bank (two from the main-stand roof
+// toward the cameras, two from the TV gantry away from them), each as long as that bank's height
+// and distance make it, for a player standing mid-pitch
+const BANKS = [[-5.5, 10.7, -(HH + 3.7)], [5.5, 10.7, -(HH + 3.7)], [-6.5, 17, HH + 12], [6.5, 17, HH + 12]];
+let TIER = 'high', fakeShadowTex = null;
+function floodShadowTexture() {
+  if (fakeShadowTex) return fakeShadowTex;
+  const N = 256, M = 4.6; // texture spans M metres
+  fakeShadowTex = canvasTex(N, N, g => {
+    g.clearRect(0, 0, N, N); const ppm = N / M;
+    for (const [bx, by, bz] of BANKS) {
+      const len = Math.min(2.1, PLAYER_H * Math.hypot(bx, bz) / by);
+      // canvas y runs along world +z (the plane is laid flat with its top edge toward -z)
+      g.save(); g.translate(N / 2, N / 2); g.rotate(Math.atan2(-bz, -bx));
+      const gr = g.createLinearGradient(0, 0, len * ppm, 0); gr.addColorStop(0, 'rgba(0,0,0,0.32)'); gr.addColorStop(0.75, 'rgba(0,0,0,0.12)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = gr; g.filter = 'blur(3px)'; g.beginPath(); g.ellipse(len * ppm / 2, 0, len * ppm / 2, 0.16 * ppm, 0, 0, Math.PI * 2); g.fill(); g.restore();
+    }
+    const c = g.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, 0.35 * ppm); c.addColorStop(0, 'rgba(0,0,0,0.45)'); c.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = c; g.fillRect(0, 0, N, N);
+  });
+  fakeShadowTex.size = M;
+  return fakeShadowTex;
+}
+
 class Player {
   constructor(scene, slot) {
     const G = playerGeoms(), kit = KITS[slot];
@@ -361,18 +534,18 @@ class Player {
     const mStar = new THREE.MeshBasicMaterial({ color: 0xffd34d });
     for (let k = 0; k < 3; k++) { const s = new THREE.Mesh(G.star, mStar); this.stars.add(s); }
     // ground decals
-    this.baseRing = new THREE.Mesh(G.baseRing, new THREE.MeshBasicMaterial({ color: kit.css, transparent: true, opacity: 0.35, depthWrite: false }));
-    this.baseRing.position.y = 0.012; this.root.add(this.baseRing);
-    this.reach = new THREE.Mesh(G.reachRing, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, depthWrite: false }));
-    this.reach.position.y = 0.014; this.root.add(this.reach);
-    this.charge = new THREE.Mesh(G.disc, arcMaterial(0xffffff, 0.8)); this.charge.scale.setScalar((PR + 0.32) * 2); this.charge.position.y = 0.02; this.root.add(this.charge);
-    this.cool = new THREE.Mesh(G.disc, arcMaterial(0xffffff, 0.86, 0.45)); this.cool.scale.setScalar((PR + 0.17) * 2); this.cool.position.y = 0.016; this.root.add(this.cool);
-    this.arrow = new THREE.Mesh(G.arrow, new THREE.MeshBasicMaterial({ color: kit.light })); this.arrow.position.y = 1.95; this.root.add(this.arrow);
-    for (const o of [this.baseRing, this.reach, this.charge, this.cool]) o.renderOrder = 2;
+    this.plate = new THREE.Mesh(G.plate, plateMaterial(kit.css)); this.plate.position.y = 0.015; this.plate.renderOrder = 2; this.root.add(this.plate);
+    if (TIER === 'lite') {
+      const t = floodShadowTexture();
+      this.fakeShadow = new THREE.Mesh(new THREE.PlaneGeometry(t.size, t.size).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }));
+      this.fakeShadow.position.y = 0.012; this.fakeShadow.renderOrder = 1; this.fakeShadow.visible = false; scene.add(this.fakeShadow);
+    }
+    this.arrow = new THREE.Sprite(new THREE.SpriteMaterial({ map: chevronTexture(kit.css), depthTest: false, transparent: true }));
+    this.arrow.scale.setScalar(0.3); this.arrow.renderOrder = 6; this.root.add(this.arrow);
     Object.assign(this, {
       phase: 0, yaw: slot ? -Math.PI / 2 : Math.PI / 2, lastX: null, lastZ: null, speed: 0, kickT: 0, windup: 0, identity: null,
-      celebrate: 0, swingT: 0, swingDur: 0.1, vx: 0, vz: 0, ax: 0, az: 0, roll: 0, pitch: 0,
-      dashW: 0, celW: 0, sadW: 0, stunW: 0, lookY: 0, lookX: 0, celStyle: 'jump', sadStyle: 'head', wasCel: false, wasSad: false,
+      celebrate: 0, swingT: 0, swingDur: 0.1, vx: 0, vz: 0, svx: 0, svz: 0, ax: 0, az: 0, roll: 0, pitch: 0,
+      dashW: 0, celW: 0, sadW: 0, stunW: 0, lookY: 0, lookX: 0, yawVel: 0, brace: 0, cut: 0, cock: 0, commit: 0, commitYaw: 0, flipAxis: 0, flips: [], shufW: 0, shufPh: 0, shufDir: 1, feet: { l: 1, r: 1 }, celStyle: 'jump', sadStyle: 'head', wasCel: false, wasSad: false,
     });
     this.setIdentity('');
     this.root.visible = false;
@@ -386,24 +559,60 @@ class Player {
   update(p, dt, t, o) {
     // p: sim player array [x,y,fx,fy,ct,stun,dash,dashCd,recover]
     this.root.visible = true;
+    if (!(dt >= 0 && dt < 1)) dt = 0;
+    for (const k of STATE_KEYS) if (!Number.isFinite(this[k])) { this[k] = 0; this.lastX = null; }
+    if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) return;
     const x = wx(p[0]), z = wz(p[1]);
-    if (this.lastX === null || Math.hypot(x - this.lastX, z - this.lastZ) > 1.5) { this.lastX = x; this.lastZ = z; this.vx = this.vz = 0; }
+    if (this.lastX === null || Math.hypot(x - this.lastX, z - this.lastZ) > 1.5) { this.lastX = x; this.lastZ = z; this.vx = this.vz = this.svx = this.svz = 0; }
     const ivx = dt > 0 ? (x - this.lastX) / dt : 0, ivz = dt > 0 ? (z - this.lastZ) / dt : 0;
-    const pvx = this.vx, pvz = this.vz;
     this.vx = damp(this.vx, ivx, 14, dt); this.vz = damp(this.vz, ivz, 14, dt);
-    if (dt > 0) { this.ax = damp(this.ax, (this.vx - pvx) / dt, 8, dt); this.az = damp(this.az, (this.vz - pvz) / dt, 8, dt); }
+    // Acceleration is the slope of a second, slower low-pass of the velocity: for s' = K (v - s) that
+    // slope is exact and as smooth as s itself. Differencing velocity frame to frame instead turns
+    // every uneven frame or packet into a spike, and the whole-body lean below amplified those into
+    // a shaking head.
+    const AK = 6;
+    this.svx = damp(this.svx, this.vx, AK, dt); this.svz = damp(this.svz, this.vz, AK, dt);
+    this.ax = (this.vx - this.svx) * AK; this.az = (this.vz - this.svz) * AK;
     const sp = Math.hypot(this.vx, this.vz);
     this.speed = damp(this.speed, sp, 12, dt); this.lastX = x; this.lastZ = z;
-    // body weight: lean into turns (lateral acceleration) and forward/back with speed changes
-    const hx = sp > 0.3 ? this.vx / sp : 0, hz = sp > 0.3 ? this.vz / sp : 0;
-    const lat = hx * this.az - hz * this.ax, fwd = hx * this.ax + hz * this.az;
-    this.roll = damp(this.roll, clamp(lat * 0.035, -0.38, 0.38), 10, dt);
-    this.pitch = damp(this.pitch, clamp(fwd * 0.022, -0.3, 0.25), 10, dt);
     this.root.position.set(x, 0, z);
+    if (this.fakeShadow) { this.fakeShadow.position.x = x; this.fakeShadow.position.z = z; this.fakeShadow.visible = true; }
     const stun = !!p[5], dash = !!p[6], ct = o.ct;
-    const tgtYaw = Math.atan2(p[2], p[3]);
-    let dy = tgtYaw - this.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-    this.yaw += dy * (1 - Math.exp(-(stun ? 2 : 16) * dt));
+    // ---- heading. The sim's facing is the stick direction, so it flips 180 degrees on every
+    // left/right reversal. A real player feinting side to side doesn't spin round each time: they
+    // settle on one heading, square to the line they are shuffling along and facing the play, and
+    // side-step. Reversals are counted over a short window; two or more commit the body to such a
+    // heading (released smoothly once they stop). Winding up a shot always squares the body to it.
+    const face = Math.atan2(p[2], p[3]), ang = a => Math.atan2(Math.sin(a), Math.cos(a));
+    if (this.lastFace !== undefined && Math.abs(ang(face - this.lastFace)) > 1.9) { this.flips.push(t); this.flipAxis = face; }
+    this.lastFace = face;
+    while (this.flips.length && t - this.flips[0] > 0.9) this.flips.shift();
+    const striking = ct >= 0 || this.swingT > 0 || this.kickT > 0.3 || dash;
+    const spam = striking || stun ? 0 : smoothstep(this.flips.length, 1, 2.5);
+    if (spam > 0.5 && this.commit < 0.05) {
+      // pick the side of the shuffle line that faces the opponent, else the ball, else the camera
+      const rx = o.other ? o.other[0] - x : o.ball ? o.ball[0] - x : 0, rz = o.other ? o.other[1] - z : o.ball ? o.ball[1] - z : 1;
+      const perp = this.flipAxis + Math.PI / 2, s = Math.sin(perp) * rx + Math.cos(perp) * rz >= 0 ? 1 : -1;
+      this.commitYaw = s > 0 ? perp : perp + Math.PI;
+    }
+    this.commit = damp(this.commit, spam, spam > this.commit ? 14 : striking ? 20 : 2.2, dt);
+    const tgtYaw = this.commit > 0.001 ? face + ang(this.commitYaw - face) * this.commit : face;
+    let dy = ang(tgtYaw - this.yaw);
+    // ---- body weight, from acceleration in the body's own frame (the velocity's direction flips on
+    // every reversal, and leaning against it rocked the body back and forth). Leaning into a turn at
+    // pace (centripetal) is kept from the velocity frame; a shuffle only shifts its weight.
+    const hx = sp > 0.3 ? this.vx / sp : 0, hz = sp > 0.3 ? this.vz / sp : 0;
+    const bfx = Math.sin(this.yaw), bfz = Math.cos(this.yaw);
+    const latV = hx * this.az - hz * this.ax, fwdV = hx * this.ax + hz * this.az;
+    const latB = bfx * this.az - bfz * this.ax, fwdB = bfx * this.ax + bfz * this.az;
+    const cm = this.commit, lat = latV + (latB - latV) * cm, fwd = fwdV + (fwdB - fwdV) * cm;
+    const rMax = 0.38 - 0.28 * cm, pMax = 0.25 - 0.17 * cm;
+    this.roll = damp(this.roll, clamp(lat * (0.035 - 0.02 * cm), -rMax, rMax), 10, dt);
+    this.pitch = damp(this.pitch, clamp(fwd * (0.022 - 0.012 * cm), -pMax, pMax), 10, dt);
+    // turn on a critically damped spring: the body swings round with momentum instead of snapping;
+    // a committed shuffle only drifts its heading
+    const om = stun ? 4 : 15 - 7 * cm;
+    if (dt > 0) { this.yawVel = clamp(this.yawVel + (om * om * dy - 2 * om * this.yawVel) * dt, -16, 16); this.yaw += this.yawVel * dt; }
     this.root.rotation.y = this.yaw;
     const amp = clamp(this.speed / 4.5, 0, 1.25), A = Math.min(amp, 1.1);
     this.phase += dt * (6 + this.speed * 2.2) * (amp > 0.05 ? 1 : 0);
@@ -424,14 +633,37 @@ class Player {
         W[i] = nw;
       }
     };
+    const idleW = 1 - smoothstep(this.speed, 0.3, 1.4);
+    if (idleW > 0.001) { readyPose(Q, t, L.seed); layer(() => idleW); }
+    // committed to a heading (see above): side-shuffle along the body's left/right axis, in time with
+    // how fast the body is actually moving sideways
+    {
+      const vL = this.vx * Math.cos(this.yaw) - this.vz * Math.sin(this.yaw), aL = Math.abs(vL);
+      const amp = smoothstep(aL, 0.1, 1.2);
+      this.shufW = damp(this.shufW, this.commit * (1 - smoothstep(this.speed, 3, 4)), 9, dt);
+      if (aL > 0.08) this.shufDir = damp(this.shufDir, Math.sign(vL), 10, dt);
+      if (amp > 0.03) this.shufPh += dt * Math.PI * 2 * (1.5 + 1.3 * aL);
+      if (this.shufW > 0.001) { shufflePose(Q, this.shufPh, amp, this.shufDir, t, L.seed); layer(() => this.shufW); }
+    }
     const swinging = this.swingT > 0;
     const kw = Math.max(this.windup, swinging ? 1 : 0, this.kickT);
+    // Charging on the move is a loaded run: the kicking leg is drawn back into the backswing and
+    // held there, while the standing leg keeps running but shortens toward the plant (the skip step
+    // a real player takes into a strike). The leg is never snapped backwards out of its forward
+    // swing; once loaded it stays loaded.
+    const moving = clamp((this.speed - 0.8) / 1.7, 0, 1);
+    // picked up while behind the body or sweeping back under it (the push-off), never mid forward swing
+    const lf = this.h.legFwd[K] || 0, behind = lf < 0.12 || lf < (this.lastLf ?? lf) - 0.004; this.lastLf = lf;
+    const cockT = this.windup > 0.08 ? smoothstep(this.windup, 0.08, 0.5) : 0;
+    if (cockT > this.cock) { if (behind || this.cock > 0.35 || moving < 0.2) this.cock = damp(this.cock, cockT, 16, dt); }
+    else this.cock = damp(this.cock, cockT, 10, dt);
     if (kw > 0.001) {
-      // while only winding up, the standing leg keeps running on the mocap
       runPose(Q, this.phase, A, t, L.seed); kickPose(Q, K, this.windup, swinging ? 1 - this.swingT / this.swingDur : -1, this.kickT);
-      const support = new Set(['thigh', 'shin', 'foot', 'toe'].map(n => boneIndex(n + S2)));
       const full = swinging || this.kickT > 0;
-      layer(i => (support.has(i) && !full ? kw * 0.25 : kw));
+      const kickLeg = full ? kw : Math.max(this.windup * (1 - moving), this.cock * 0.92);
+      const plantLeg = full ? kw : this.windup * (1 - moving) + this.windup * moving * 0.35;
+      const bodyW = full ? kw : this.windup * (1 - 0.6 * moving);
+      layer(i => (KICK_LEG[K].has(i) ? kickLeg : LEG_BONES.has(i) ? plantLeg : bodyW));
     }
     this.dashW = damp(this.dashW, dash ? 1 : 0, dash ? 20 : 7, dt);
     if (this.dashW > 0.001) { dashPose(Q, K); layer(() => this.dashW); }
@@ -456,14 +688,40 @@ class Player {
     }
     // eyes on the ball: the head turns toward it and tips down when it is close
     const free = 1 - Math.max(this.celW, this.sadW);
+    // Only the neck and head turn. A ball at the feet is watched by looking down, not by turning (its
+    // bearing jumps about as it is dribbled), and a ball behind the player is let go rather than
+    // whipping the head across when it passes directly behind.
+    let lyT = 0, lxT = 0;
     if (o.ball) {
-      const bx = o.ball[0] - x, bz = o.ball[1] - z;
+      const bx = o.ball[0] - x, bz = o.ball[1] - z, d = Math.hypot(bx, bz);
       let a = Math.atan2(bx, bz) - this.yaw; a = Math.atan2(Math.sin(a), Math.cos(a));
-      this.lookY = damp(this.lookY, clamp(a, -1.15, 1.15) * free, 7, dt);
-      this.lookX = damp(this.lookX, clamp(0.5 - Math.hypot(bx, bz) * 0.12, 0, 0.4) * free, 4, dt);
-    } else { this.lookY = damp(this.lookY, 0, 4, dt); this.lookX = damp(this.lookX, 0, 4, dt); }
-    AD.add('neck', this.lookX * 0.4, this.lookY * 0.4); AD.add('head', this.lookX * 0.6, this.lookY * 0.55);
-    AD.add('chest', 0, this.lookY * 0.12);
+      if (Math.abs(a) < 1.5) lyT = clamp(a, -0.9, 0.9) * smoothstep(d, 0.9, 2.2);
+      lxT = clamp(0.45 - d * 0.1, 0, 0.35);
+    }
+    this.lookY = damp(this.lookY, lyT * free, 4, dt); this.lookX = damp(this.lookX, lxT * free, 4, dt);
+    AD.add('neck', this.lookX * 0.4, this.lookY * 0.4); AD.add('head', this.lookX * 0.6, this.lookY * 0.6);
+
+    // weight: the chest leads a turn, hard braking sinks the hips, a sharp cut flares the arms and loads
+    // the outside leg. These read as mass without touching the (server-side) physics.
+    // A turn runs up the body: the eyes and head go first, the shoulders follow, the hips come last
+    // (rather than the whole body turning as one rigid block)
+    this.lead = damp(this.lead || 0, clamp(dy, -0.9, 0.9) * free, 10, dt);
+    AD.add('hips', 0, -this.lead * 0.06); AD.add('chest', 0, this.lead * 0.16);
+    AD.add('neck', 0, this.lead * 0.2); AD.add('head', 0, this.lead * 0.26);
+    this.brace = damp(this.brace, clamp(-fwd / 14, 0, 1) * clamp(this.speed / 2, 0, 1) * free, 9, dt);
+    this.cut = damp(this.cut, clamp(Math.abs(lat) / 13, 0, 1) * free, 9, dt);
+    const load = Math.max(this.brace, this.cut * 0.7), side = lat > 0 ? 1 : -1;
+    for (const [s, k] of SIDES) {
+      const outside = s === side ? 1 : 0.5;
+      AD.add('thigh' + k, -0.3 * load * outside, 0, s * 0.08 * this.cut);
+      AD.add('shin' + k, 0.55 * load * outside);
+      AD.add('foot' + k, -0.2 * load * outside);
+      AD.add('arm' + k, -0.15 * this.brace, 0, s * (0.45 * this.cut * (1 - 0.7 * this.commit) + 0.25 * this.brace));
+      AD.add('fore' + k, -0.25 * this.cut);
+    }
+    AD.add('spine', -0.12 * this.brace); AD.add('head', 0.06 * this.brace);
+    // a little hop off the standing foot as the kick follows through
+    if (this.kickT > 0) lift += 0.05 * Math.sin(Math.PI * (1 - this.kickT)) * this.kickT;
 
     // whole-body lean from the feet (the mocap already leans with speed)
     let lean = this.pitch + this.dashW * 0.12 + (swinging ? -0.05 : 0);
@@ -471,180 +729,402 @@ class Player {
     lean *= free; roll *= free;
     if (this.celStyle === 'plane') roll += Math.sin(this.celebrate * 2.2) * 0.28 * this.celW;
     roll += Math.sin(t * 9) * 0.22 * this.stunW;
-    this.lean.rotation.set(lean, 0, roll);
+    this.lean.rotation.set(clamp(lean, -0.4, 0.45), 0, clamp(roll, -0.5, 0.5));
     AD.add('neck', -lean * 0.5);
-    this.h.animate(dt, t, this.speed, P, W, { pose: AD, lift, clips });
+    let fast = null;
+    if (swinging || this.kickT > 0.5 || this.dashW > 0.5) { fast = this.fast || (this.fast = new Float32Array(W.length)); fast.fill(1); for (const n of ['thigh', 'shin', 'foot', 'toe']) for (const k of ['L', 'R']) fast[boneIndex(n + k)] = 2.5; }
+    // moving across or against the way the body faces (turning, charging a shot while drifting):
+    // the hips and legs turn toward the direction of travel and the chest stays on the aim;
+    // going backwards plays the stride in reverse
+    let travelDir = 1;
+    if (this.speed > 1 && free > 0.5) {
+      let rel = Math.atan2(this.vx, this.vz) - this.yaw; rel = Math.atan2(Math.sin(rel), Math.cos(rel));
+      const back = Math.abs(rel) > 2.0;
+      if (back) travelDir = -1;
+      const side = back ? Math.atan2(Math.sin(rel - Math.PI), Math.cos(rel - Math.PI)) : rel;
+      this.hipTurn = damp(this.hipTurn || 0, clamp(side, -0.4, 0.4) * (1 - this.shufW), 8, dt);
+    } else this.hipTurn = damp(this.hipTurn || 0, 0, 8, dt);
+    AD.add('hips', 0, this.hipTurn); AD.add('chest', 0, -this.hipTurn * 0.6);
+    this.h.animate(dt, t, this.speed, P, W, { pose: AD, lift, clips, fast, dir: travelDir * (this.speed > 0.5 ? 1 : 0) || 1 });
+    // footfalls: when a foot comes down at pace, kick up a little turf
+    if (this.h.ready && o.step && this.speed > 2.2 && !this.celW) {
+      const sc = this.h.group.scale.y;
+      for (const k of ['l', 'r']) {
+        const f = this.h.foot(k, this._fv || (this._fv = new THREE.Vector3())), air = f.y > 0.045 * sc;
+        if (!air && this.feet[k]) o.step(f.x, f.z, clamp((this.speed - 2.2) / 3, 0, 1));
+        this.feet[k] = air;
+      }
+    }
 
     // stun stars
     this.stars.visible = stun;
     if (stun) this.stars.children.forEach((s, k) => { const a = t * 5 + k * 2.09; s.position.set(Math.cos(a) * 0.3, Math.sin(t * 7 + k) * 0.04, Math.sin(a) * 0.3); s.rotation.y = t * 6; });
     // decals
-    const mine = o.mine;
-    this.baseRing.material.opacity = mine ? 0.75 : 0.35;
+    const mine = o.mine, u = this.plate.material.uniforms;
+    u.uMine.value = mine ? 1 : 0; u.uLive.value = o.live ? 1 : 0; u.uTime.value = t;
+    u.uCharge.value = charging ? ct / C.PERF_END : -1;
+    u.uCool.value = p[7] > 0 ? p[7] / C.DASH_CD : 0;
     this.arrow.visible = mine && o.live;
-    this.arrow.position.y = 2.0 + Math.sin(t * 5) * 0.06; this.arrow.rotation.y = t * 2;
-    this.reach.visible = charging && o.live;
-    this.charge.visible = charging && o.live;
-    if (charging) {
-      const perfect = ct >= C.CHARGE_FULL && ct <= C.PERF_END, over = ct > C.PERF_END;
-      const u = this.charge.material.uniforms;
-      u.progress.value = Math.min(ct / C.CHARGE_FULL, 1);
-      u.color.value.setHex(perfect ? 0xffd34d : over ? 0x6f7588 : 0xffffff);
-      u.opacity.value = perfect ? 1 : 0.85;
-      this.charge.scale.setScalar((PR + 0.32) * 2 * (perfect ? 1 + Math.sin(t * 30) * 0.04 : 1));
-    }
-    this.cool.visible = o.live && p[7] > 0;
-    if (this.cool.visible) this.cool.material.uniforms.progress.value = 1 - p[7] / C.DASH_CD;
+    this.arrow.position.y = 2.02 + Math.sin(t * 3.2) * 0.035;
   }
-  hide() { this.root.visible = false; this.lastX = null; }
+  hide() { this.root.visible = false; this.lastX = null; if (this.fakeShadow) this.fakeShadow.visible = false; }
   startSwing(sec) { this.swingT = this.swingDur = Math.max(0.03, sec); this.kickT = 0; }
 }
 
 // ---------------------------------------------------------------- goals / nets
+// The net is real netting: knots on a 10 cm mesh joined by cords. Every cord is a rope (an XPBD
+// distance constraint that resists stretching with a little give and goes slack under compression),
+// the knots have mass and hang under gravity, and every edge is laced to the frame: posts, bar, roof
+// stays, back bar, uprights and ground frame. Once the ball is over the line, the drawn ball becomes a
+// body in the same solve: it stretches the cords it presses into, the net's tension slows and holds
+// it, and it drops into the bag. Drawn as round cords along every row and column of knots, rebuilt
+// only while the net moves; the whole net sleeps once it is still.
+const MESH = 0.1, CORD_R = 0.0065;
+const KNOT_W = 1 / 0.004, BALL_W = 1 / 0.43; // inverse masses: a 4 g knot, the 430 g ball
+const CORD_COMPLIANCE = 2e-5;                // m/N per 10 cm cord (braided PE, EA ~ 5 kN): taut, with a little give
+const NET_DRAG = 2.2, NET_GRAV = 9.81, NET_GRIP = 5; // 1/s: energy the net takes from a ball it holds
+const MU_S = 0.9, MU_K = 0.6;                // cord-on-leather friction, static / kinetic
+class Net {
+  // panels: [{ a, b, c, d, slack }], corners a (u0 v0), b (u1 v0), c (u0 v1), d (u1 v1)
+  constructor(parent, panels, mat) {
+    const pos = [], w = [], links = [], lines = [];
+    for (const pn of panels) {
+      const nu = Math.max(2, Math.round(pn.a.distanceTo(pn.b) / MESH)), nv = Math.max(2, Math.round(pn.a.distanceTo(pn.c) / MESH));
+      const base = pos.length / 3, id = (i, j) => base + j * (nu + 1) + i, P = new THREE.Vector3();
+      for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) {
+        const u = i / nu, v = j / nv;
+        P.set(0, 0, 0).addScaledVector(pn.a, (1 - u) * (1 - v)).addScaledVector(pn.b, u * (1 - v)).addScaledVector(pn.c, (1 - u) * v).addScaledVector(pn.d, u * v);
+        pos.push(P.x, P.y, P.z); w.push(i === 0 || j === 0 || i === nu || j === nv ? 0 : KNOT_W);
+      }
+      // outward-ish reference normal for the cords' cross-sections
+      const N = new THREE.Vector3().subVectors(pn.b, pn.a).cross(new THREE.Vector3().subVectors(pn.c, pn.a)).normalize();
+      const addLine = L => {
+        lines.push({ k: L, N });
+        for (let q = 0; q + 1 < L.length; q++) {
+          const a = L[q], b = L[q + 1];
+          if (!w[a] && !w[b]) continue; // a cord lying along the frame never moves
+          links.push(a, b, Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]) * (1 + pn.slack));
+        }
+      };
+      for (let j = 0; j <= nv; j++) { const L = []; for (let i = 0; i <= nu; i++) L.push(id(i, j)); addLine(L); }
+      for (let i = 0; i <= nu; i++) { const L = []; for (let j = 0; j <= nv; j++) L.push(id(i, j)); addLine(L); }
+    }
+    const n = w.length;
+    this.n = n; this.x = Float32Array.from(pos); this.v = new Float32Array(n * 3); this.p = new Float32Array(n * 3);
+    this.w = Float32Array.from(w); this.links = Float32Array.from(links); this.lines = lines; this.cf = new Uint8Array(n); this.off = new Float32Array(n * 3); this.near = new Int32Array(n);
+    this.ball = null; // { x, y, z, vx, vy, vz, r } in goal-group space while the ball is in the net
+    // cords: a round (triangular-section, smooth-shaded) tube along every line of knots
+    let nv = 0; for (const L of lines) nv += L.k.length * 3;
+    const geo = new THREE.BufferGeometry(), idx = [];
+    this.gp = new Float32Array(nv * 3); this.gn = new Float32Array(nv * 3);
+    let o = 0;
+    for (const L of lines) {
+      for (let q = 0; q + 1 < L.k.length; q++) for (let s = 0; s < 3; s++) {
+        const a = o + q * 3 + s, b = o + q * 3 + (s + 1) % 3, c = a + 3, d = b + 3;
+        idx.push(a, c, b, b, c, d);
+      }
+      o += L.k.length * 3;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(this.gp, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute('normal', new THREE.BufferAttribute(this.gn, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setIndex(idx);
+    this.geo = geo; this.mesh = new THREE.Mesh(geo, mat); this.mesh.frustumCulled = false; this.mesh.receiveShadow = true;
+    parent.add(this.mesh);
+    // settle into its natural hang before the first frame, then sleep
+    for (let i = 0; i < 360; i++) this.step(1 / 240);
+    this.v.fill(0);
+    // warm the ball-in-the-net path (a throwaway shot, then the hang is restored) so the first real
+    // goal doesn't stall a frame while the engine compiles it
+    const x0 = Float32Array.from(this.x), c = panels[0];
+    this.ball = { x: (c.a.x + c.d.x) / 2, y: 0.5, z: 0, vx: Math.sign(c.a.x) * 8, vy: 0, vz: 0, r: 0.11 };
+    for (let i = 0; i < 40; i++) this.step(1 / 480);
+    this.ball = null; this.x.set(x0); this.v.fill(0);
+    this.build(); this.still = 1;
+  }
+  wake() { this.still = 0; }
+  // the frame rattles the net (post / bar hits)
+  shake(amount) {
+    const v = this.v, w = this.w;
+    for (let k = 0; k < this.n; k++) if (w[k]) { v[k * 3] += (Math.random() - 0.5) * amount; v[k * 3 + 1] += (Math.random() - 0.5) * amount; v[k * 3 + 2] += (Math.random() - 0.5) * amount; }
+    this.wake();
+  }
+  // one substep of length h (predict, project cords / ball / ground, then derive velocities)
+  step(h) {
+    const x = this.x, v = this.v, p = this.p, w = this.w, n = this.n, L = this.links, B = this.ball;
+    const drag = Math.exp(-NET_DRAG * h), g = NET_GRAV * h;
+    for (let k = 0; k < n; k++) {
+      const i = k * 3;
+      if (!w[k]) { p[i] = x[i]; p[i + 1] = x[i + 1]; p[i + 2] = x[i + 2]; continue; }
+      v[i] *= drag; v[i + 1] = v[i + 1] * drag - g; v[i + 2] *= drag;
+      p[i] = x[i] + v[i] * h; p[i + 1] = x[i + 1] + v[i + 1] * h; p[i + 2] = x[i + 2] + v[i + 2] * h;
+    }
+    let bx = 0, by = 0, bz = 0, vyIn = 0;
+    if (B) { B.vy -= g; vyIn = B.vy; bx = B.x + B.vx * h; by = B.y + B.vy * h; bz = B.z + B.vz * h; }
+    const at = CORD_COMPLIANCE / (h * h), R = B ? B.r + CORD_R : 0, cf = this.cf, off = this.off, near = this.near;
+    // knots close enough to touch the ball this substep (the only ones the contact pass looks at)
+    let nn = 0;
+    if (B) {
+      cf.fill(0);
+      const reach = R + Math.hypot(B.vx, B.vy, B.vz) * h + 0.05;
+      for (let k = 0; k < n; k++) {
+        const i = k * 3;
+        if (Math.abs(p[i] - bx) < reach && Math.abs(p[i + 1] - by) < reach && Math.abs(p[i + 2] - bz) < reach) near[nn++] = k;
+      }
+    }
+    // Knots pressed by the ball ride on its surface: they are held as offsets from its centre, so the
+    // cords pulling on them pull the ball (it carries their tension, at its own mass) and every knot
+    // on it moves with it. That is what makes the net's tension, not its knots' few grams, stop a shot.
+    const contacts = () => {
+      for (let q = 0; q < nn; q++) {
+        const k = near[q], i = k * 3;
+        if (cf[k]) { p[i] = bx + off[i]; p[i + 1] = by + off[i + 1]; p[i + 2] = bz + off[i + 2]; }
+        const dx = p[i] - bx, dy = p[i + 1] - by, dz = p[i + 2] - bz, d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= R * R || d2 < 1e-12) { if (cf[k] && d2 > R * R * 1.02) cf[k] = 0; continue; }
+        const d = Math.sqrt(d2), f = (R - d) / d;
+        if (!w[k]) { bx -= dx * f; by -= dy * f; bz -= dz * f; continue; } // a laced edge: the frame's cord
+        p[i] += dx * f; p[i + 1] += dy * f; p[i + 2] += dz * f;
+        if (!cf[k]) {
+          // Coulomb friction as it first touches: rough cord grips a ball driving into it (a
+          // frictionless net slips over the ball), but a ball only resting on the net slides down it
+          const nx = dx / d, ny = dy / d, nz = dz / d, dn = R - d;
+          let rx = p[i] - x[i] - (bx - B.x), ry = p[i + 1] - x[i + 1] - (by - B.y), rz = p[i + 2] - x[i + 2] - (bz - B.z);
+          const rn = rx * nx + ry * ny + rz * nz; rx -= nx * rn; ry -= ny * rn; rz -= nz * rn;
+          const rt = Math.hypot(rx, ry, rz), fk = rt <= MU_S * dn ? 1 : Math.min(1, MU_K * dn / (rt || 1));
+          p[i] -= rx * fk; p[i + 1] -= ry * fk; p[i + 2] -= rz * fk;
+          cf[k] = 1;
+        }
+        off[i] = p[i] - bx; off[i + 1] = p[i + 1] - by; off[i + 2] = p[i + 2] - bz;
+      }
+    };
+    for (let it = 0, its = B ? 4 : 2; it < its; it++) {
+      if (B) contacts();
+      for (let s = 0; s < L.length; s += 3) {
+        const a = L[s], b = L[s + 1], ia = a * 3, ib = b * 3, ca = B && cf[a], cb = B && cf[b];
+        const ax = ca ? bx + off[ia] : p[ia], ay = ca ? by + off[ia + 1] : p[ia + 1], az = ca ? bz + off[ia + 2] : p[ia + 2];
+        const qx = cb ? bx + off[ib] : p[ib], qy = cb ? by + off[ib + 1] : p[ib + 1], qz = cb ? bz + off[ib + 2] : p[ib + 2];
+        const dx = qx - ax, dy = qy - ay, dz = qz - az, d = Math.hypot(dx, dy, dz);
+        const C = d - L[s + 2];
+        if (C <= 0 || d < 1e-9 || (ca && cb)) continue; // a cord only pulls; one lying on the ball is slack
+        const wa = ca ? BALL_W : w[a], wb = cb ? BALL_W : w[b];
+        if (wa + wb === 0) continue;
+        const lam = C / (wa + wb + at) / d, ka = lam * wa, kb = lam * wb;
+        if (ca) { bx += dx * ka; by += dy * ka; bz += dz * ka; } else { p[ia] += dx * ka; p[ia + 1] += dy * ka; p[ia + 2] += dz * ka; }
+        if (cb) { bx -= dx * kb; by -= dy * kb; bz -= dz * kb; } else { p[ib] -= dx * kb; p[ib + 1] -= dy * kb; p[ib + 2] -= dz * kb; }
+      }
+      for (let k = 0; k < n; k++) if (w[k] && p[k * 3 + 1] < 0.004) p[k * 3 + 1] = 0.004; // the grass
+      if (B) {
+        if (by < B.r) by = B.r;
+        const m = this.mouth; // a ball that is in stays in: the mouth plane holds it
+        if (m && m.s * (bx - m.x) < B.r) bx = m.x + m.s * B.r;
+      }
+    }
+    if (B) { contacts(); for (let q = 0; q < nn; q++) { const k = near[q], i = k * 3; if (cf[k]) { p[i] = bx + off[i]; p[i + 1] = by + off[i + 1]; p[i + 2] = bz + off[i + 2]; } } }
+    let mx = 0;
+    for (let k = 0; k < n; k++) {
+      if (!w[k]) continue;
+      const i = k * 3;
+      v[i] = (p[i] - x[i]) / h; v[i + 1] = (p[i + 1] - x[i + 1]) / h; v[i + 2] = (p[i + 2] - x[i + 2]) / h;
+      x[i] = p[i]; x[i + 1] = p[i + 1]; x[i + 2] = p[i + 2];
+      mx = Math.max(mx, Math.abs(v[i]) + Math.abs(v[i + 1]) + Math.abs(v[i + 2]));
+    }
+    if (B) {
+      B.vx = (bx - B.x) / h; B.vy = (by - B.y) / h; B.vz = (bz - B.z) / h;
+      // netting is lossy: it soaks up most of a shot instead of firing it back out
+      let touching = false; for (let k = 0; k < n; k++) if (cf[k]) { touching = true; break; }
+      if (touching) { const f = Math.exp(-NET_GRIP * h); B.vx *= f; B.vy *= f; B.vz *= f; }
+      B.x = bx; B.y = by; B.z = bz;
+      if (by <= B.r + 1e-4) { // on the grass: bounce a little, roll with some resistance
+        B.vy = vyIn < -1 ? -vyIn * 0.42 : Math.max(0, B.vy);
+        const f = Math.exp(-1.6 * h); B.vx *= f; B.vz *= f;
+      }
+    }
+    return mx;
+  }
+  // advance by dt (substeps small enough that a fast ball can't slip between knots)
+  update(dt) {
+    if (this.still > 0.6 && !this.ball) return;
+    const B = this.ball, sp = B ? Math.hypot(B.vx, B.vy, B.vz) : 0;
+    const steps = Math.min(16, Math.max(Math.ceil(dt * 240), Math.ceil(sp * dt / 0.035)));
+    let mx = 0;
+    for (let s = 0; s < steps; s++) mx = Math.max(mx, this.step(dt / steps));
+    this.still = mx < 0.03 && !B ? this.still + dt : 0;
+    this.build();
+  }
+  // rewrite the cord tubes from the knot positions
+  build() {
+    const x = this.x, P = this.gp, Nn = this.gn;
+    let o = 0;
+    for (const L of this.lines) {
+      const k = L.k, m = k.length, N = L.N;
+      for (let q = 0; q < m; q++) {
+        const a = k[Math.max(0, q - 1)] * 3, b = k[Math.min(m - 1, q + 1)] * 3, c = k[q] * 3;
+        let tx = x[b] - x[a], ty = x[b + 1] - x[a + 1], tz = x[b + 2] - x[a + 2];
+        const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+        // b1 = t x N, b2 = b1 x t: a frame round the cord
+        let ux = ty * N.z - tz * N.y, uy = tz * N.x - tx * N.z, uz = tx * N.y - ty * N.x;
+        const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+        const vx = uy * tz - uz * ty, vy = uz * tx - ux * tz, vz = ux * ty - uy * tx;
+        for (let s = 0; s < 3; s++) {
+          const an = s * 2.0943951, ca = Math.cos(an), sa = Math.sin(an);
+          const nx = ux * ca + vx * sa, ny = uy * ca + vy * sa, nz = uz * ca + vz * sa, j = (o + q * 3 + s) * 3;
+          P[j] = x[c] + nx * CORD_R; P[j + 1] = x[c + 1] + ny * CORD_R; P[j + 2] = x[c + 2] + nz * CORD_R;
+          Nn[j] = nx; Nn[j + 1] = ny; Nn[j + 2] = nz;
+        }
+      }
+      o += m * 3;
+    }
+    this.geo.attributes.position.needsUpdate = true; this.geo.attributes.normal.needsUpdate = true;
+  }
+}
+
+// The goal frame: posts and crossbar are one extrusion of an elliptical profile (deeper than it is
+// wide, like a match goal's) along the frame's path, with welded mitre joints at the top corners.
+// The profile is swept, not assembled from parts, so there are no end caps, overlaps or seams: a
+// single white section runs from one post foot, over the bar, down to the other.
+// path: points in one plane; u: unit normal of that plane (the profile's depth axis);
+// a: half-depth (along u), b: half-width (in the plane)
+function mitredFrame(path, u, a, b, seg = 28) {
+  const pos = [], nor = [], idx = [];
+  const T = [], Nv = [];
+  for (let i = 0; i + 1 < path.length; i++) { const t = path[i + 1].clone().sub(path[i]).normalize(); T.push(t); Nv.push(new THREE.Vector3().crossVectors(t, u).normalize()); }
+  // miter offset at a path vertex: the in-plane normal that meets both neighbouring segments
+  const miter = i => {
+    if (i === 0) return Nv[0].clone(); if (i === path.length - 1) return Nv[Nv.length - 1].clone();
+    const p = Nv[i - 1], q = Nv[i]; return p.clone().add(q).multiplyScalar(1 / (1 + p.dot(q)));
+  };
+  for (let s = 0; s < T.length; s++) {
+    const n = Nv[s], ends = [[path[s], miter(s)], [path[s + 1], miter(s + 1)]];
+    const base = pos.length / 3;
+    for (const [p, m] of ends) for (let k = 0; k <= seg; k++) {
+      const f = k / seg * Math.PI * 2, cu = Math.cos(f) * a, cv = Math.sin(f) * b;
+      pos.push(p.x + u.x * cu + m.x * cv, p.y + u.y * cu + m.y * cv, p.z + u.z * cu + m.z * cv);
+      const nu = Math.cos(f) / a, nv = Math.sin(f) / b, l = Math.hypot(nu, nv);
+      nor.push((u.x * nu + n.x * nv) / l, (u.y * nu + n.y * nv) / l, (u.z * nu + n.z * nv) / l);
+    }
+    for (let k = 0; k < seg; k++) { const i0 = base + k, i1 = base + seg + 1 + k; idx.push(i0, i0 + 1, i1, i0 + 1, i1 + 1, i1); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setIndex(idx); return g;
+}
+// The net's support frame: round tube along a path, with a sphere of the tube's own radius at each
+// joint. A cylinder meets a sphere of its radius tangentially, so every corner is a clean rounded
+// bend with no crease, gap or protruding cap.
+function tubeFrame(paths, r) {
+  const parts = [];
+  for (const path of paths) for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i], b = path[i + 1], len = a.distanceTo(b);
+    const c = new THREE.CylinderGeometry(r, r, len, 14, 1, true);
+    c.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize())));
+    c.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2); parts.push(c);
+    if (i > 0) { const s = new THREE.SphereGeometry(r, 14, 10); s.translate(a.x, a.y, a.z); parts.push(s); }
+  }
+  return parts;
+}
+
 class Goal {
-  constructor(scene, side, netTex) {
+  constructor(scene, side, netMat) {
     this.side = side; const gx = side * HW; this.gx = gx;
     const g = new THREE.Group(); scene.add(g); this.g = g; this.shakeT = 0;
-    const white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.1 });
-    const post = new THREE.CylinderGeometry(0.075, 0.075, GOAL_H, 16);
-    for (const s of [-1, 1]) { const m = new THREE.Mesh(post, white); m.position.set(gx, GOAL_H / 2, s * GW / 2); m.castShadow = true; g.add(m); }
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, GW + 0.15, 16), white);
-    bar.rotation.x = Math.PI / 2; bar.position.set(gx, GOAL_H, 0); bar.castShadow = true; g.add(bar);
-    const backH = GOAL_H * 0.72, bx = gx + side * GDP;
-    const thin = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.5 });
-    for (const s of [-1, 1]) { const m = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, backH, 8), thin); m.position.set(bx, backH / 2, s * GW / 2); g.add(m); }
-    const netMat = (rx, ry) => { const t = netTex.clone(); t.needsUpdate = true; t.repeat.set(rx, ry); return new THREE.MeshBasicMaterial({ map: t, transparent: true, side: THREE.DoubleSide, depthWrite: false, opacity: 0.85 }); };
-    // back net (rippling)
-    const back = new THREE.PlaneGeometry(GW, backH, 24, 10);
-    this.backBase = back.attributes.position.array.slice();
-    this.back = new THREE.Mesh(back, netMat(GW / 0.14, backH / 0.14));
-    this.back.rotation.y = side * Math.PI / 2; this.back.position.set(bx, backH / 2, 0); g.add(this.back);
-    // roof
-    const slant = Math.hypot(GDP, GOAL_H - backH);
-    const roof = new THREE.Mesh(new THREE.PlaneGeometry(GW, slant), netMat(GW / 0.14, slant / 0.14));
-    roof.position.set(gx + side * GDP / 2, (GOAL_H + backH) / 2, 0);
-    roof.rotation.order = 'YXZ'; roof.rotation.y = side * Math.PI / 2; roof.rotation.x = -Math.PI / 2 + Math.atan2(GOAL_H - backH, GDP) * 1;
-    g.add(roof);
-    // sides
-    for (const s of [-1, 1]) {
-      const sg = new THREE.PlaneGeometry(GDP, GOAL_H, 4, 8), pa = sg.attributes.position;
-      for (let i = 0; i < pa.count; i++) {
-        const u = (pa.getX(i) + GDP / 2) / GDP, y = pa.getY(i) + GOAL_H / 2;
-        pa.setY(i, y * (1 - 0.28 * u)); pa.setX(i, u * GDP * side);
+    // gloss white enamel over aluminium: a clear coat that carries the floodlights' reflections
+    const white = new THREE.MeshPhysicalMaterial({ color: 0xd9dce2, roughness: 0.34, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.1 });
+    const hw = GW / 2, backH = GOAL_H * 0.72, bx = gx + side * GDP, V = (x, y, z) => new THREE.Vector3(x, y, z);
+    // posts and bar: centre line from post foot (just below the grass) over the bar to the other foot
+    const PA = 0.068, PB = 0.056; // half-depth, half-width of the elliptical section
+    const frame = new THREE.Mesh(mitredFrame([V(gx, -0.02, -hw), V(gx, GOAL_H, -hw), V(gx, GOAL_H, hw), V(gx, -0.02, hw)], V(1, 0, 0), PA, PB), white);
+    frame.castShadow = true; frame.receiveShadow = true; g.add(frame);
+    // support frame: roof stays from each top corner back to the rear bar, the rear uprights, and a
+    // ground frame round the base, all one tube (it starts and ends inside the posts)
+    const TR = 0.019, gy = TR;
+    const thin = new THREE.MeshStandardMaterial({ color: 0xdadde2, roughness: 0.4, metalness: 0.25 });
+    const into = gx + side * PA * 0.3; // the ends of the stays sit inside the post section
+    const tube = tubeFrame([
+      [V(into, GOAL_H - PB * 0.4, -hw), V(bx, backH, -hw), V(bx, backH, hw), V(into, GOAL_H - PB * 0.4, hw)],
+      [V(bx, backH, -hw), V(bx, gy, -hw)], [V(bx, backH, hw), V(bx, gy, hw)],
+      [V(into, gy, -hw), V(bx, gy, -hw), V(bx, gy, hw), V(into, gy, hw)],
+    ], TR);
+    const support = new THREE.Mesh(mergeGeometries(tube), thin); tube.forEach(p => p.dispose());
+    support.castShadow = true; support.receiveShadow = true; g.add(support);
+    // the net is laced on along the back of the posts and bar, not through their centre line; the
+    // roof and back hang with a little more slack than the sides, as a real net is strung
+    const nx = gx + side * PA * 0.6, ny = GOAL_H - PB * 0.55;
+    this.net = new Net(g, [
+      { a: V(bx, backH, -hw), b: V(bx, backH, hw), c: V(bx, 0, -hw), d: V(bx, 0, hw), slack: 0.045 },   // back
+      { a: V(nx, ny, -hw), b: V(nx, ny, hw), c: V(bx, backH, -hw), d: V(bx, backH, hw), slack: 0.05 },  // roof
+      { a: V(nx, ny, -hw), b: V(bx, backH, -hw), c: V(nx, 0, -hw), d: V(bx, 0, -hw), slack: 0.035 },   // sides
+      { a: V(nx, ny, hw), b: V(bx, backH, hw), c: V(nx, 0, hw), d: V(bx, 0, hw), slack: 0.035 },
+    ], netMat);
+    this.hw = hw; this.bx = bx; this.nx = nx; this.handoff = 0; this._out = { x: 0, y: 0, z: 0 };
+    this.net.mouth = { x: gx, s: side };
+  }
+  // a goal: the ball is already in the net's own solve (see step); just make sure it is awake
+  hit() { this.net.wake(); }
+  // Advance the net, and own the ball while it is in the goal. `ball` is the sim's ball as drawn
+  // (world centre, velocity, drawn radius) or null. Returns where to draw the ball while this goal
+  // holds it, else null. The ball is taken over as it crosses the line, with the sim's velocity, and
+  // handed back when the sim puts it somewhere else (kick-off, a replay rewinding).
+  step(dt, ball) {
+    if (this.shakeT > 0) {
+      const was = this.shakeT; this.shakeT = Math.max(0, this.shakeT - dt); const a = this.shakeT * 0.06;
+      this.g.position.set(Math.sin(this.shakeT * 90) * a, 0, Math.cos(this.shakeT * 77) * a * 0.5);
+      if (was > 0.45 && this.shakeT <= 0.45) this.net.shake(0.6); // the frame rattles the net
+    }
+    const N = this.net, s = this.side, gp = this.g.position;
+    const past = b => s * (b.x - gp.x - this.gx);       // how far over the line (m)
+    if (ball) {
+      const inside = past(ball) > 0 && Math.abs(ball.z - gp.z) < this.hw && ball.y < GOAL_H;
+      if (!N.ball && inside && this.handoff <= 0) {
+        N.ball = { x: ball.x - gp.x, y: ball.y, z: ball.z - gp.z, vx: ball.vx, vy: ball.vy, vz: ball.vz, r: ball.rDraw };
+        N.wake();
+      } else if (N.ball) {
+        const B = N.ball, far = Math.hypot(ball.x - gp.x - B.x, ball.z - gp.z - B.z) > 2.5;
+        if (far || past(ball) < -1) { N.ball = null; this.handoff = far ? 0 : 0.2; this._out.x = B.x + gp.x; this._out.y = B.y; this._out.z = B.z + gp.z; }
       }
-      const m = new THREE.Mesh(sg, netMat(GDP / 0.14, GOAL_H / 0.14)); m.position.set(gx, 0, s * GW / 2); g.add(m);
+    } else if (N.ball) N.ball = null;
+    N.update(dt);
+    const B = N.ball;
+    if (B) {
+      // failsafe: the net is the only thing holding the ball; keep it inside the goal's volume
+      const lo = Math.min(this.gx, this.bx) - 1, hi = Math.max(this.gx, this.bx) + 1;
+      B.x = clamp(B.x, lo, hi); B.z = clamp(B.z, -this.hw - 0.8, this.hw + 0.8); B.y = Math.min(B.y, GOAL_H + 0.8);
+      this._out.x = B.x + gp.x; this._out.y = B.y; this._out.z = B.z + gp.z;
+      return this._out;
     }
-    this.ripple = null;
-  }
-  hit(zWorld, strength = 1) { this.ripple = { lx: -this.side * zWorld, t: 0, s: strength }; }
-  update(dt) {
-    if (this.shakeT > 0) { this.shakeT = Math.max(0, this.shakeT - dt); const a = this.shakeT * 0.06; this.g.position.set(Math.sin(this.shakeT * 90) * a, 0, Math.cos(this.shakeT * 77) * a * 0.5); }
-    if (!this.ripple) return;
-    const r = this.ripple; r.t += dt;
-    const pa = this.back.geometry.attributes.position, base = this.backBase;
-    const decay = Math.exp(-r.t * 2.2) * r.s;
-    for (let i = 0; i < pa.count; i++) {
-      const x = base[i * 3], y = base[i * 3 + 1];
-      const d2 = (x - r.lx) ** 2 + (y + 0.1) ** 2;
-      pa.setZ(i, 0.38 * decay * Math.exp(-d2 / 0.7) * Math.cos(r.t * 16 - Math.sqrt(d2) * 5));
+    if (this.handoff > 0 && ball) { // ease back onto the sim's ball
+      this.handoff = Math.max(0, this.handoff - dt); const u = 1 - this.handoff / 0.2, o = this._out;
+      o.x += (ball.x - o.x) * u; o.y += (ball.y - o.y) * u; o.z += (ball.z - o.z) * u;
+      return this.handoff > 0 ? o : null;
     }
-    pa.needsUpdate = true;
-    if (decay < 0.01) { this.ripple = null; for (let i = 0; i < pa.count; i++) pa.setZ(i, 0); pa.needsUpdate = true; }
+    this.handoff = 0;
+    return null;
   }
-}
-
-// ---------------------------------------------------------------- stadium
-function crowdMaterial(uniforms) {
-  const m = new THREE.MeshLambertMaterial({ vertexColors: false });
-  m.onBeforeCompile = sh => {
-    Object.assign(sh.uniforms, uniforms);
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aPhase; attribute float aSide; uniform float uTime; uniform float uHype; uniform float uHypeR; uniform float uHypeB;')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-        float hype = uHype + (aSide > 0.5 && aSide < 1.5 ? uHypeR : 0.0) + (aSide > 1.5 ? uHypeB : 0.0);
-        float bob = abs(sin(uTime * (2.5 + aPhase * 3.0) + aPhase * 40.0));
-        transformed.y += bob * (0.025 + 0.42 * clamp(hype, 0.0, 1.3));`);
-  };
-  return m;
-}
-
-function buildStadium(scene, uniforms) {
-  const concrete = new THREE.MeshStandardMaterial({ color: 0x232a3a, roughness: 0.92 });
-  const seatA = new THREE.MeshStandardMaterial({ color: 0x1a2340, roughness: 0.8 });
-  const people = [];
-  const reds = [0xd7263d, 0xb81d2e, 0xf2f2f2, 0xe0283c, 0x8e1020];
-  const blues = [0x1c8cf0, 0x0c5bb0, 0xf2f2f2, 0x0c1f3d, 0x49a6ff];
-  const mixed = [0xd7263d, 0x1c8cf0, 0xf2f2f2, 0x222222, 0xffd34d, 0x3ddc84, 0x8e44ad, 0xe67e22, 0x7f8c8d];
-  const sections = [
-    { axis: 'x', a0: -HW - 6.5, a1: HW + 6.5, base: -(HH + 2.4), dir: -1, rows: 13, side: 0, pal: mixed },
-    { axis: 'x', a0: -HW - 6.5, a1: HW + 6.5, base: HH + 3.4, dir: 1, rows: 5, side: 0, pal: mixed },
-    { axis: 'z', a0: -HH - 1.6, a1: HH + 1.6, base: -(HW + 3.2), dir: -1, rows: 10, side: 1, pal: reds },
-    { axis: 'z', a0: -HH - 1.6, a1: HH + 1.6, base: HW + 3.2, dir: 1, rows: 10, side: 2, pal: blues },
-  ];
-  const STEP = 0.7, RISE = 0.42;
-  for (const sec of sections) {
-    const L = sec.a1 - sec.a0, mid = (sec.a0 + sec.a1) / 2;
-    for (let r = 0; r < sec.rows; r++) {
-      const off = sec.base + sec.dir * (r * STEP + STEP / 2), h = 0.55 + r * RISE;
-      const box = new THREE.Mesh(new THREE.BoxGeometry(sec.axis === 'x' ? L : STEP, h, sec.axis === 'x' ? STEP : L), r % 2 ? concrete : seatA);
-      if (sec.axis === 'x') box.position.set(mid, h / 2, off); else box.position.set(off, h / 2, mid);
-      box.receiveShadow = true; scene.add(box);
-      for (let a = sec.a0 + 0.25; a < sec.a1 - 0.2; a += 0.34) {
-        if (Math.random() < 0.1) continue;
-        const aa = a + rand(-0.05, 0.05), oo = off + rand(-0.08, 0.08);
-        people.push({ x: sec.axis === 'x' ? aa : oo, z: sec.axis === 'x' ? oo : aa, y: h, side: sec.side, color: sec.pal[(Math.random() * sec.pal.length) | 0] });
-      }
-    }
-    // back wall
-    const topH = 0.55 + sec.rows * RISE + 1.4, backOff = sec.base + sec.dir * (sec.rows * STEP + 0.2);
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(sec.axis === 'x' ? L : 0.4, topH, sec.axis === 'x' ? 0.4 : L), concrete);
-    if (sec.axis === 'x') wall.position.set(mid, topH / 2, backOff); else wall.position.set(backOff, topH / 2, mid);
-    scene.add(wall);
-    // light strip on top of wall
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(sec.axis === 'x' ? L : 0.1, 0.08, sec.axis === 'x' ? 0.1 : L), new THREE.MeshBasicMaterial({ color: 0xbfd6ff }));
-    if (sec.axis === 'x') strip.position.set(mid, topH, backOff - sec.dir * 0.21); else strip.position.set(backOff - sec.dir * 0.21, topH, mid);
-    scene.add(strip);
-  }
-  // crowd (instanced; animated in the vertex shader)
-  const n = people.length;
-  const bodyG = new THREE.BoxGeometry(0.22, 0.36, 0.16), headG = new THREE.SphereGeometry(0.08, 8, 6);
-  const phase = new Float32Array(n), side = new Float32Array(n);
-  people.forEach((p, i) => { phase[i] = Math.random(); side[i] = p.side; });
-  for (const g of [bodyG, headG]) { g.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phase, 1)); g.setAttribute('aSide', new THREE.InstancedBufferAttribute(side, 1)); }
-  const mat = crowdMaterial(uniforms);
-  const bodies = new THREE.InstancedMesh(bodyG, mat, n), heads = new THREE.InstancedMesh(headG, mat, n);
-  const m4 = new THREE.Matrix4(), col = new THREE.Color();
-  people.forEach((p, i) => {
-    m4.makeTranslation(p.x, p.y + 0.2, p.z); bodies.setMatrixAt(i, m4); bodies.setColorAt(i, col.setHex(p.color));
-    m4.makeTranslation(p.x, p.y + 0.47, p.z); heads.setMatrixAt(i, m4); heads.setColorAt(i, col.setHex(SKIN[(Math.random() * SKIN.length) | 0]));
-  });
-  bodies.frustumCulled = heads.frustumCulled = false;
-  scene.add(bodies, heads);
-  return people.length;
 }
 
 // ---------------------------------------------------------------- renderer
-export function createRenderer(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+// opts.tier: 'high' | 'medium' | 'lite' (graphics.js picks it for the machine)
+export function createRenderer(canvas, { tier = 'high' } = {}) {
+  const lite = tier === 'lite';
+  // high/medium antialias in their own HDR target; lite renders straight to the canvas unsmoothed
+  // (on a software rasteriser multisampling costs a whole extra pass of every pixel)
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // start downloading the players first, so the network works while the stadium is built below
+  // (loadPlayers further down picks up this same request)
+  loadPlayerAssets(renderer, e => {
+    const b = window.__boot; if (!b) return;
+    if (e.phase === 'download') b.download(e.loaded, e.total, e.files, e.filesDone, e.known); else b.build();
+  }).catch(() => {});
   const aniso = renderer.capabilities.getMaxAnisotropy();
 
   const scene = new THREE.Scene();
-  scene.background = skyTexture();
-  scene.fog = new THREE.Fog(0x0e1a3a, 45, 95);
   const camera = new THREE.PerspectiveCamera(32, 16 / 9, 0.1, 300);
-
-  // lights
-  scene.add(new THREE.HemisphereLight(0xc4d4ff, 0x1d3b1d, 1.1));
-  const key = new THREE.DirectionalLight(0xfff3dd, 2.6);
-  key.position.set(-9, 24, 14); key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
-  Object.assign(key.shadow.camera, { left: -15, right: 15, top: 11, bottom: -11, near: 5, far: 60 });
-  key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02;
-  scene.add(key);
-  const fill = new THREE.DirectionalLight(0xcfe0ff, 0.9); fill.position.set(10, 18, -12); scene.add(fill);
+  // floodlights, sky, image-based lighting and the post chain (lighting.js)
+  TIER = tier;
+  const light = createLighting(renderer, scene, camera, { HW, HH, PW, PH, GDP }, tier);
+  if (lite) { // the grade's vignette, for free
+    const v = document.createElement('div'); v.style.cssText = 'position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,8,0.45) 100%)';
+    if (canvas.parentElement) canvas.parentElement.appendChild(v);
+  }
 
   // ground + pitch
   const outer = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x10161f, roughness: 1 }));
@@ -652,7 +1132,23 @@ export function createRenderer(canvas) {
   const track = new THREE.Mesh(new THREE.PlaneGeometry(PW + 13, PH + 7.5), new THREE.MeshStandardMaterial({ color: 0x1a4a2a, roughness: 1 }));
   track.rotation.x = -Math.PI / 2; track.position.y = -0.01; track.receiveShadow = true; scene.add(track);
   const pt = pitchTexture(); pt.tex.anisotropy = aniso;
-  const pitch = new THREE.Mesh(new THREE.PlaneGeometry(pt.W, pt.H), new THREE.MeshStandardMaterial({ map: pt.tex, roughness: 0.95 }));
+  // Grass under floodlights: blades laid by the mower scatter light toward or away from the camera
+  // depending on which way they lie, so the bands brighten and darken with the view (pan the camera
+  // and they shift, as on TV). Plus a fine blade relief that catches the lamps as a soft sheen.
+  const gn = grassNormalTexture(); gn.repeat.set(pt.W / 0.9, pt.H / 0.9); gn.anisotropy = aniso;
+  const pitchMat = new THREE.MeshStandardMaterial({ map: pt.tex, roughness: 0.9, normalMap: gn, normalScale: new THREE.Vector2(0.45, 0.45), envMapIntensity: 0.2 });
+  pitchMat.onBeforeCompile = sh => {
+    sh.uniforms.uBand = { value: PW / 12 }; sh.uniforms.uHW = { value: HW };
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vPitchW;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPitchW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vPitchW; uniform float uBand, uHW;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        float band = floor((vPitchW.x + uHW) / uBand);
+        float lay = mod(band, 2.0) < 0.5 ? 1.0 : -1.0;             // blades laid toward / away from the main stand
+        vec3 Vg = normalize(cameraPosition - vPitchW);
+        diffuseColor.rgb *= 1.0 + 0.26 * lay * Vg.z;`);
+  };
+  const pitch = new THREE.Mesh(new THREE.PlaneGeometry(pt.W, pt.H), pitchMat);
   pitch.rotation.x = -Math.PI / 2; pitch.receiveShadow = true; scene.add(pitch);
 
   // ad boards = the walls the ball bounces off
@@ -664,37 +1160,38 @@ export function createRenderer(canvas) {
   };
   const dark = new THREE.MeshStandardMaterial({ color: 0x0b0f18, roughness: 0.6 });
   const BH = 0.26, BT = 0.07;
+  // the LED boards light the turf in front of them: a soft wash that falls off over a metre
+  const spillTex = canvasTex(4, 128, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.18, 'rgba(255,255,255,0.5)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.14)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  });
+  const spillMat = new THREE.MeshBasicMaterial({ map: spillTex, color: new THREE.Color(0.62, 0.7, 1.0), transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending, depthWrite: false });
+  const SPILL = 1.3;
   const board = (len, x, z, alongX) => {
     const face = boardMatFor(len);
     const mats = alongX ? [dark, dark, dark, dark, face, face] : [face, face, dark, dark, dark, dark];
     const m = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len : BT, BH, alongX ? BT : len), mats);
     m.position.set(x, BH / 2, z); m.castShadow = true; scene.add(m);
+    // bright edge (the plane's local -z) against the board, fading out onto the pitch
+    const ix = alongX ? 0 : -Math.sign(x), iz = alongX ? -Math.sign(z) : 0;
+    const sp = new THREE.Mesh(new THREE.PlaneGeometry(len, SPILL).rotateX(-Math.PI / 2), spillMat);
+    sp.position.set(x + ix * (BT / 2 + SPILL / 2), 0.011, z + iz * (BT / 2 + SPILL / 2));
+    sp.rotation.y = Math.atan2(ix, iz); sp.renderOrder = 1; scene.add(sp);
   };
   board(PW + 0.2, 0, -HH - BT / 2 - 0.02, true);
   board(PW + 0.2, 0, HH + BT / 2 + 0.02, true);
   const endLen = HH - GW / 2;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) board(endLen, sx * (HW + BT / 2 + 0.02), sz * (GW / 2 + endLen / 2), false);
 
-  const netTex = netTexture();
-  const goals = [new Goal(scene, -1, netTex), new Goal(scene, 1, netTex)];
+  // net cord: braided polyethylene, matte white
+  const netMat = new THREE.MeshStandardMaterial({ color: 0xeef0f3, roughness: 0.78, metalness: 0 });
+  const goals = [new Goal(scene, -1, netMat), new Goal(scene, 1, netMat)];
 
-  const crowdU = { uTime: { value: 0 }, uHype: { value: 0 }, uHypeR: { value: 0 }, uHypeB: { value: 0 } };
-  buildStadium(scene, crowdU);
+  // the bowl: stands, roofs and their ring of floodlights, the crowd, the light show (stadium.js)
+  const stadium = buildStadium(scene, { HW, HH, GDP }, tier, bTex);
 
-  // floodlights
-  const glowTex = glowTexture();
-  const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff8e8 });
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x3a4152, roughness: 0.6, metalness: 0.4 });
-  const lamps = [];
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    const x = sx * (HW + 8.5), z = sz * (HH + 7.8), h = 17;
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, h, 10), poleMat); pole.position.set(x, h / 2, z); scene.add(pole);
-    const head = new THREE.Group(); head.position.set(x, h + 0.6, z); head.lookAt(0, 0, 0); scene.add(head);
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.4, 0.2), poleMat); head.add(panel);
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) { const l = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.55), lampMat); l.position.set(-0.85 + i * 0.85, -0.32 + j * 0.64, 0.11); head.add(l); }
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xfff1d6, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.85 }));
-    glow.scale.setScalar(9); glow.position.copy(head.position); scene.add(glow); lamps.push(glow);
-  }
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x2c3342, roughness: 0.55, metalness: 0.7 });
   // stars in the sky
   {
     const n = 400, pos = new Float32Array(n * 3);
@@ -702,26 +1199,15 @@ export function createRenderer(canvas) {
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0xaab8ff, size: 0.35, fog: false, transparent: true, opacity: 0.7 })));
   }
-  // camera flashes in the crowd
-  const flashes = [];
-  for (let i = 0; i < 18; i++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0 }));
-    s.scale.setScalar(0.9); scene.add(s); flashes.push({ s, t: 0 });
-  }
-  const placeFlash = f => {
-    const side = Math.random();
-    if (side < 0.5) f.s.position.set(rand(-HW - 5, HW + 5), rand(1, 5.5), -(HH + 2.4 + rand(0.5, 8)));
-    else f.s.position.set((Math.random() < 0.5 ? -1 : 1) * (HW + 3.2 + rand(0.5, 6)), rand(1, 4.5), rand(-HH, HH));
-  };
 
   // jumbotron
   const jCanvas = document.createElement('canvas'); jCanvas.width = 768; jCanvas.height = 256;
   const jTex = new THREE.CanvasTexture(jCanvas); jTex.colorSpace = THREE.SRGBColorSpace; jTex.anisotropy = aniso;
-  const jumbo = new THREE.Group(); jumbo.position.set(0, 9.4, -(HH + 2.4 + 13 * 0.7 + 0.6)); scene.add(jumbo);
+  // the big screen stands on the home end's roof, facing down the pitch
+  const jumbo = new THREE.Group(); jumbo.position.set(-(HW + GDP + 7.2), 12.9, 0); jumbo.rotation.y = Math.PI / 2; scene.add(jumbo);
   const jScreen = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 2.4), new THREE.MeshBasicMaterial({ map: jTex, toneMapped: false }));
   jumbo.add(jScreen);
   const jFrame = new THREE.Mesh(new THREE.BoxGeometry(7.6, 2.8, 0.3), poleMat); jFrame.position.z = -0.2; jumbo.add(jFrame);
-  const jLegs = new THREE.Mesh(new THREE.BoxGeometry(0.3, 9.4, 0.3), poleMat); jLegs.position.set(0, -4.7, -0.25); jumbo.add(jLegs);
   let jKey = '';
   function drawJumbo(info, flash) {
     const k = JSON.stringify(info) + (flash || '');
@@ -752,23 +1238,39 @@ export function createRenderer(canvas) {
 
   // players, ball, trail, particles
   const players = [new Player(scene, 0), new Player(scene, 1)];
-  // player models load in the background; retry a few times so a hiccup never leaves invisible players
-  const loadPlayers = (tries = 0) => loadPlayerAssets(renderer).then(A => {
-    players.forEach(P => P.h.init(A));
-    try { renderer.compile(scene, camera); } catch { }
+  // Player models: downloaded (with real progress on the loading screen), built, and every shader
+  // compiled before the loading screen goes, so the first seconds of play never stutter.
+  // A failed download is retried a few times before the loading screen reports it.
+  const boot = window.__boot || null, MAX_TRIES = 4;
+  const loadPlayers = (tries = 0) => loadPlayerAssets(renderer, e => {
+    if (!boot) return;
+    if (e.phase === 'download') boot.download(e.loaded, e.total, e.files, e.filesDone, e.known); else boot.build();
+  }).then(async A => {
+    players.forEach(P => { P.h.init(A); P.h.setEnvironment(light.env); });
+    if (boot) boot.shaders();
+    await new Promise(r => setTimeout(r, 0));
+    try { if (renderer.compileAsync) await renderer.compileAsync(scene, camera); else renderer.compile(scene, camera); } catch (e) { console.warn('shader precompile', e); }
+    // one full frame behind the loading screen compiles what compile() can't reach (shadow depth,
+    // AO and post-pass programs), so the first frame of play doesn't stall on it
+    try { light.render(); } catch (e) { console.warn('warm-up frame', e); }
+    warm = true;
+    if (boot) boot.done();
   }).catch(e => {
     console.error('player models failed to load', e);
     resetPlayerAssets();
-    if (tries < 5) setTimeout(() => loadPlayers(tries + 1), 1500 * (tries + 1));
+    if (tries + 1 < MAX_TRIES) { if (boot) boot.retry(tries + 1, MAX_TRIES - 1); setTimeout(() => loadPlayers(tries + 1), 1200 * (tries + 1)); }
+    else if (boot) boot.fail('The player models could not be downloaded from the host PC.<br>Check the host is still running, then reload.');
   });
   loadPlayers();
-  const ballMat = new THREE.MeshStandardMaterial({ map: ballTexture(), roughness: 0.45, emissive: 0xffc02e, emissiveIntensity: 0 });
+  const ballMat = new THREE.MeshPhysicalMaterial({ map: ballTexture(), roughness: 0.5, clearcoat: 0.8, clearcoatRoughness: 0.18, emissive: 0xffc02e, emissiveIntensity: 0 });
   const ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 32, 20), ballMat);
   ball.castShadow = true; ball.visible = false; scene.add(ball);
   const ballLight = new THREE.PointLight(0xffc34d, 0, 4, 2); scene.add(ballLight);
   const ballBlob = new THREE.Mesh(new THREE.CircleGeometry(BALL_R * 1.3, 24).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false }));
   ballBlob.position.y = 0.013; scene.add(ballBlob);
-  let lastBall = null, ballHot = 0;
+  let lastBall = null, simBall = null, ballHot = 0, ballSpd = 0;
+  // the sim's ball as drawn: centre, velocity and drawn radius (what a goal's net takes over)
+  const ballInfo = { x: 0, y: 0, z: 0, rDraw: BALL_R, vx: 0, vy: 0, vz: 0 }; let ballLive = false;
 
   const TRAIL = 26;
   const trailPts = [];
@@ -787,30 +1289,45 @@ export function createRenderer(canvas) {
   const trail = new THREE.Mesh(trailGeo, trailMat); trail.frustumCulled = false; scene.add(trail);
 
   const parts = new Particles(scene);
+  const bankOn = [1, 1, 1, 1];
 
-  // post-processing
-  let composer = null, bloom = null;
-  function buildComposer() {
-    composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
-    bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.32, 0.45, 0.93);
-    composer.addPass(bloom);
-    composer.addPass(new OutputPass());
-  }
-  buildComposer();
-
-  // quality. Changing level never recompiles shaders (that would freeze a frame); it only toggles
-  // bloom and render resolution, and auto-changes are deferred until play is paused.
-  let quality = 'auto', level = 2; // 2 = bloom + hi-res, 1 = no bloom, 0 = no bloom + 1x resolution
-  let ftAvg = 16, ftFrames = 0, cssW = 1, cssH = 1, pendingLevel = null;
-  function setQuality(q) {
-    quality = q; level = q === 'low' ? 0 : 2; ftFrames = 0; ftAvg = 16; pendingLevel = null;
-    resize(cssW, cssH);
+  // Holding the frame rate. The tier sets what is drawn; within it, render resolution follows the
+  // measured frame time live (a lower scale is a smaller buffer, never a shader recompile), and if
+  // even the smallest scale can't keep up, the heaviest post passes switch off.
+  // level: 2 = full post chain, 1 = no AO, 0 = grade only
+  const PR_CAP = { high: 1.75, medium: 1.25, lite: 1 }[tier] || 1.5, MIN_SCALE = { high: 0.6, medium: 0.55, lite: 0.4 }[tier] || 0.6;
+  let quality = 'auto', level = 2, scale = lite ? 0.75 : 1;
+  let ftAvg = 16, cssW = 1, cssH = 1, lastScaleT = 0, upBlockUntil = 0, lastCheck = 0, lastUp = -1;
+  function setQuality(q) { quality = q; }
+  // struggling: already at the smallest scale and the lightest post, and still slow for seconds
+  // on end. The client then steps down a tier (see client.js); it never happens mid-match.
+  // A display or remote session that caps the browser at 30 fps looks slow too, but ticks with
+  // metronome regularity; a machine that can't keep up is ragged. Only the ragged kind counts.
+  let struggleT = 0, ftVar = 0;
+  function adapt(now, rawDt) {
+    const ms = rawDt * 1000;
+    ftAvg += (ms - ftAvg) * 0.06; ftVar += ((ms - ftAvg) ** 2 - ftVar) * 0.06;
+    const capped = Math.abs(ftAvg - 33.33) < 1.5 && Math.sqrt(ftVar) < 1.5;
+    struggleT = scale <= MIN_SCALE + 1e-3 && level === 0 && ftAvg > 26 && !capped ? struggleT + rawDt : 0;
+    if (now - lastCheck < 1.2) return; lastCheck = now;
+    const slow = ftAvg > 21, fast = ftAvg < 15.5;
+    if (slow) {
+      if (lastUp > 0 && now - lastUp < 4) upBlockUntil = now + 30; // the last step up was one too many
+      let acted = true;
+      if (scale > MIN_SCALE + 1e-3) { scale = Math.max(MIN_SCALE, scale * 0.82); lastScaleT = now; resize(cssW, cssH); }
+      else if (level > 0) { level--; light.setLevel(level); }
+      else acted = false;
+      if (acted) { ftAvg = 16.5; ftVar = 0; } // measure the new setting afresh
+      lastUp = -1;
+    } else if (fast && scale < 1 && now - lastScaleT > 6 && now > upBlockUntil) {
+      scale = Math.min(1, scale * 1.12); lastScaleT = lastUp = now; resize(cssW, cssH);
+    }
   }
 
   // camera: a TV-broadcast framing. The full depth of the pitch is always visible; the width is
   // framed at ~80% and the camera pans with the ball so each goal comes fully into view.
-  const EL = THREE.MathUtils.degToRad(46);
+  // a main-stand broadcast camera: high enough to read the whole pitch, low enough for perspective
+  const EL = THREE.MathUtils.degToRad(40);
   const camDir = new THREE.Vector3(0, Math.sin(EL), Math.cos(EL));
   let fitD = 22, fitZ = 0.4, maxPan = 0, visHalf = 8, fitDFull = 28, camDist = 22;
   const camPos = new THREE.Vector3(0, 20, 18), camTgt = new THREE.Vector3();
@@ -836,7 +1353,10 @@ export function createRenderer(canvas) {
     const horiz = [new THREE.Vector3(-hx, 0, 0), new THREE.Vector3(hx, 0, 0)];
     // vertical framing: the top of a player (plus name tag) standing on the far boundary and the
     // near boundary must both be on screen. The scoreboard lives in its own bar, not over the view.
-    const far = new THREE.Vector3(0, 2.45, -HH + PR), near = new THREE.Vector3(0, 0, HH + 0.35);
+    // ...and above the far touchline, the front rows of the main stand and its LED ribbon, so
+    // play always happens in a stadium rather than on a diagram of a pitch
+    // (that point sits above and behind a far player's name tag, so it bounds both)
+    const far = new THREE.Vector3(0, 3.3, -(HH + 3.2)), near = new THREE.Vector3(0, 0, HH + 0.35);
     const topLimit = 0.97, botLimit = -0.97;
     let d = 22, tz = 0.5;
     for (let it = 0; it < 14; it++) {
@@ -863,27 +1383,21 @@ export function createRenderer(canvas) {
   }
   function resize(w, h) {
     cssW = w; cssH = h;
-    const pr = Math.min(window.devicePixelRatio || 1, level === 0 ? 1 : level === 1 ? 1.5 : 1.75);
+    const pr = Math.min(window.devicePixelRatio || 1, PR_CAP) * scale;
     renderer.setPixelRatio(pr); renderer.setSize(w, h, false);
-    composer.setPixelRatio(pr); composer.setSize(w, h);
-    bloom.resolution.set(w * pr / 2, h * pr / 2);
+    light.setSize(w, h, pr); light.setLevel(level);
     camera.aspect = w / h; camera.updateProjectionMatrix();
     parts.mat.uniforms.uScale.value = h * pr / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
     fit();
   }
 
   // aim arrow (own player, while charging) and mouse target marker
-  const arrowShape = new THREE.Shape();
-  arrowShape.moveTo(0.5, -0.05); arrowShape.lineTo(1.25, -0.05); arrowShape.lineTo(1.25, -0.16); arrowShape.lineTo(1.6, 0);
-  arrowShape.lineTo(1.25, 0.16); arrowShape.lineTo(1.25, 0.05); arrowShape.lineTo(0.5, 0.05); arrowShape.closePath();
-  const aimMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
-  const aimArrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape).rotateX(-Math.PI / 2), aimMat);
-  aimArrow.position.y = 0.025; aimArrow.renderOrder = 3; aimArrow.visible = false; scene.add(aimArrow);
-  const cursor = new THREE.Group(); cursor.visible = false; scene.add(cursor);
-  const curMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false });
-  cursor.add(new THREE.Mesh(new THREE.RingGeometry(0.2, 0.26, 32).rotateX(-Math.PI / 2), curMat));
-  cursor.add(new THREE.Mesh(new THREE.CircleGeometry(0.05, 16).rotateX(-Math.PI / 2), curMat));
-  cursor.children.forEach(m => { m.position.y = 0.02; m.renderOrder = 3; });
+  const aimMat = new THREE.ShaderMaterial({ uniforms: { uColor: { value: new THREE.Color(0xffffff) }, uTime: { value: 0 }, uLen: { value: 2 } }, vertexShader: decalVert, fragmentShader: beamFrag, transparent: true, depthWrite: false, toneMapped: false });
+  const aimArrow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).translate(0.5, 0, 0).rotateX(-Math.PI / 2), aimMat);
+  aimArrow.renderOrder = 3; aimArrow.visible = false; scene.add(aimArrow);
+  const curMat = new THREE.ShaderMaterial({ uniforms: { uTime: { value: 0 } }, vertexShader: decalVert, fragmentShader: markFrag, transparent: true, depthWrite: false, toneMapped: false });
+  const cursor = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5).rotateX(-Math.PI / 2), curMat);
+  cursor.position.y = 0.02; cursor.renderOrder = 3; cursor.visible = false; scene.add(cursor);
 
   // shockwave rings on hard contact
   const waves = Array.from({ length: 6 }, () => {
@@ -926,14 +1440,14 @@ export function createRenderer(canvas) {
     wall(x, y, sp) { if (sp > 12) shake = Math.max(shake, 0.06); },
     goal(scorer, x, y) {
       const goal = goals[x > C.CX ? 1 : 0];
-      goal.hit(wz(y), 1);
+      goal.hit();
       const X = wx(x), Z = wz(y), col = KITS[scorer];
       parts.burst(X, 0.6, Z, 90, { colors: [col.shirt, 0xffffff, col.light, 0xffd34d], speed: 5, up: 8, size: 0.13, life: 2.2, grav: 3.5, drag: 1.2, sway: 0.6 });
       shake = 0.35; zoom = 1; camKick.x += (x > C.CX ? 1 : -1) * 0.5;
       if (scorer === 0) hypeR = 1.4; else hypeB = 1.4;
       hype = 1;
       jumboFlash = { text: 'GOAL!', color: col.css }; jumboFlashT = 3;
-      for (const f of flashes) { placeFlash(f); f.t = rand(0, 0.8); }
+      stadium.goal(col.shirt); // the stands' LED ribbons and roof ring flash the scorer's colour
     },
     win(slot) {
       const col = KITS[slot];
@@ -943,6 +1457,8 @@ export function createRenderer(canvas) {
     shake(a) { shake = Math.max(shake, a); },
   };
 
+  // turf kicked up by a footfall at pace
+  const stepFx = (x, z, k) => parts.burst(x, 0.02, z, 2 + Math.round(k * 3), { colors: [0x4f9a45, 0x3d8b3f, 0x6e5a3c], speed: 0.5 + k * 0.6, up: 0.6 + k * 0.8, size: 0.04 + k * 0.02, life: 0.3, grav: 6 });
   const _proj = new THREE.Vector3();
   function project(x, y, h = 0) {
     _proj.set(wx(x), h, wz(y)).project(camera);
@@ -955,24 +1471,21 @@ export function createRenderer(canvas) {
     return { x: _hit.x / S + C.CX, y: _hit.z / S + C.CY };
   }
 
-  // compile every shader now so nothing stalls the first time it appears mid-game
-  try { renderer.compile(scene, camera); } catch { }
 
   let lastT = null;
+  // Nothing is drawn until the players are built and every shader compiled: browsers without
+  // parallel shader compilation (Firefox) would otherwise stall the page compiling the menu's scene
+  // mid-download. The loading screen covers the view until then.
+  let warm = false;
   function frame(view, nowMs) {
+    if (!warm) return;
     const now = (nowMs !== undefined ? nowMs : performance.now()) / 1000;
     const rawDt = lastT === null ? 1 / 60 : Math.min(0.05, Math.max(0, now - lastT)); lastT = now;
     const dt = rawDt * (view.timeScale !== undefined ? view.timeScale : 1); // slow motion slows the world, not the UI
     const t = now;
-    crowdU.uTime.value = t;
     const live = !!view.live;
 
-    // auto quality: measure continuously, but only switch while play is paused
-    if (quality === 'auto') {
-      ftAvg = ftAvg * 0.97 + rawDt * 1000 * 0.03;
-      if (++ftFrames > 240 && ftAvg > 22 && level > 0 && pendingLevel === null) pendingLevel = level - 1;
-      if (pendingLevel !== null && !live) { level = pendingLevel; pendingLevel = null; ftFrames = 0; ftAvg = 16; resize(cssW, cssH); }
-    }
+    if (rawDt > 0) adapt(now, rawDt);
 
     // entities
     const W = view.world;
@@ -984,7 +1497,9 @@ export function createRenderer(canvas) {
         P.update(p, dt, t, {
           ct: i === view.mySlot && view.localCt !== undefined ? view.localCt : p[4],
           mine: i === view.mySlot, live, ball: W.ball ? [wx(W.ball[0]), wz(W.ball[1])] : null,
+          other: (() => { const q = W.players[1 - i]; return q && !(view.hide && view.hide[1 - i]) ? [wx(q[0]), wz(q[1])] : null; })(),
           celebrate: view.celebrate === i, sad: view.celebrate === 1 - i,
+          step: live ? stepFx : null,
         });
       });
     } else players.forEach(P => P.hide());
@@ -994,24 +1509,36 @@ export function createRenderer(canvas) {
     const ct = view.localCt;
     aimArrow.visible = !!(me && live && ct !== undefined && ct >= 0 && view.aim);
     if (aimArrow.visible) {
-      const perfect = ct >= C.CHARGE_FULL && ct <= C.PERF_END;
-      aimArrow.position.set(wx(me[0]), 0.025, wz(me[1]));
-      aimArrow.rotation.y = Math.atan2(-view.aim[1], view.aim[0]);
-      const k = 0.75 + 0.45 * Math.min(ct / C.CHARGE_FULL, 1);
-      aimArrow.scale.set(k, 1, 1);
-      aimMat.color.setHex(perfect ? 0xffd34d : ct > C.PERF_END ? 0x8a90a0 : view.localLob ? 0x7fdcff : 0xffffff);
+      const perfect = ct >= C.CHARGE_FULL && ct <= C.PERF_END, len = 1.3 + 1.1 * Math.min(ct / C.CHARGE_FULL, 1);
+      const dx = view.aim[0], dz = view.aim[1];
+      aimArrow.position.set(wx(me[0]) + dx * 0.42, 0.022, wz(me[1]) + dz * 0.42);
+      aimArrow.rotation.y = Math.atan2(-dz, dx);
+      aimArrow.scale.set(len, 1, 0.56);
+      aimMat.uniforms.uLen.value = len; aimMat.uniforms.uTime.value = t;
+      aimMat.uniforms.uColor.value.setHex(perfect ? 0xffd34d : ct > C.PERF_END ? 0x8a90a0 : view.localLob ? 0x7fdcff : 0xffffff);
     }
     cursor.visible = !!(view.cursor && live);
-    if (cursor.visible) { cursor.position.set(wx(view.cursor[0]), 0, wz(view.cursor[1])); const s2 = 1 + Math.sin(t * 6) * 0.08; cursor.scale.set(s2, 1, s2); }
+    if (cursor.visible) { cursor.position.set(wx(view.cursor[0]), 0.02, wz(view.cursor[1])); curMat.uniforms.uTime.value = t; }
 
     if (W && W.ball) {
-      const bx = wx(W.ball[0]), bz = wz(W.ball[1]), bh = (W.ball[3] || 0) * S;
+      let bx = wx(W.ball[0]), bz = wz(W.ball[1]), bh = (W.ball[3] || 0) * S;
       ball.visible = true;
+      const by = BALL_R + bh;
+      if (simBall && Math.hypot(bx - simBall.x, bz - simBall.z) < 2 && dt > 0) {
+        ballInfo.vx = damp(ballInfo.vx, (bx - simBall.x) / dt, 20, dt); ballInfo.vz = damp(ballInfo.vz, (bz - simBall.z) / dt, 20, dt); ballInfo.vy = damp(ballInfo.vy, (by - ballInfo.y) / dt, 20, dt);
+      } else { ballInfo.vx = ballInfo.vy = ballInfo.vz = 0; }
+      ballInfo.x = bx; ballInfo.y = by; ballInfo.z = bz; ballLive = true;
+      if (!simBall) simBall = { x: bx, z: bz }; else { simBall.x = bx; simBall.z = bz; }
+      // in a goal, the net's solve owns the ball (it bulges the netting and drops into the bag)
+      let held = null;
+      for (const g of goals) { const r = g.step(dt, ballInfo); if (r) held = r; }
+      if (held) { bx = held.x; bz = held.z; bh = Math.max(0, held.y - BALL_R); }
       if (lastBall && Math.hypot(bx - lastBall.x, bz - lastBall.z) < 2) {
         const dx = bx - lastBall.x, dz = bz - lastBall.z, dist = Math.hypot(dx, dz);
+        if (dt > 0) ballSpd = damp(ballSpd, dist / dt, 12, dt);
         if (dist > 1e-5) { v3.set(dz, 0, -dx).normalize(); ball.quaternion.premultiply(tmpQ.setFromAxisAngle(v3, dist / BALL_R * (bh > 0.05 ? 0.5 : 1))); }
         if (W.ball[2]) ballHot = 1;
-      } else trailPts.length = 0;
+      } else { trailPts.length = 0; ballSpd = 0; }
       if (!lastBall) lastBall = { x: bx, z: bz }; else { lastBall.x = bx; lastBall.z = bz; }
       ball.position.set(bx, BALL_R + bh, bz);
       ballSquash = Math.max(0, ballSquash - dt * 7);
@@ -1020,35 +1547,39 @@ export function createRenderer(canvas) {
       ballBlob.position.set(bx, 0.013, bz); ballBlob.visible = true;
       const hs = 1 + bh * 0.9; ballBlob.scale.set(hs, 1, hs); ballBlob.material.opacity = 0.38 / (1 + bh * 1.6);
       if (!W.ball[2]) ballHot = Math.max(0, ballHot - dt * 3);
-      ballMat.emissiveIntensity = ballHot * (1.4 + Math.sin(t * 30) * 0.3);
+      ballMat.emissiveIntensity = ballHot * (3.2 + Math.sin(t * 30) * 0.6);
       ballLight.position.set(bx, 0.6 + bh, bz); ballLight.intensity = ballHot * 6;
-      // trail
-      if (!trailPts.length || Math.hypot(bx - trailPts[0].x, bz - trailPts[0].z) > 0.04) {
-        const pt = trailPts.length >= TRAIL ? trailPts.pop() : {}; pt.x = bx; pt.z = bz; pt.h = bh; trailPts.unshift(pt);
+      // trail: a short streak behind a fast ball. Driven by the ball's real speed and by how old each
+      // sample is, so it shrinks away as the ball slows and is gone when the ball is still.
+      if (!trailPts.length || Math.hypot(bx - trailPts[0].x, bz - trailPts[0].z) > 0.03) {
+        const pt = trailPts.length >= TRAIL ? trailPts.pop() : {}; pt.x = bx; pt.z = bz; pt.h = bh; pt.t = now; trailPts.unshift(pt);
       }
-      const speedish = trailPts.length > 3 ? Math.hypot(trailPts[0].x - trailPts[3].x, trailPts[0].z - trailPts[3].z) : 0;
+      const show = clamp((ballSpd - 5) / 7, 0, 1) * (ballHot > 0.1 ? 0.85 : 0.3);
       trailMat.uniforms.color.value.setHex(ballHot > 0.1 ? 0xffc02e : 0xffffff);
       const n = trailPts.length;
       for (let i = 0; i < TRAIL; i++) {
         const a = trailPts[Math.min(i, n - 1)], b = trailPts[Math.min(i + 1, n - 1)];
-        let nx = -(b.z - a.z), nz = b.x - a.x; const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l;
-        const f = 1 - i / TRAIL, wdt = BALL_R * 0.8 * f, o = i * 6;
+        let nx = -(b.z - a.z), nz = b.x - a.x; const l = Math.hypot(nx, nz); if (l > 1e-6) { nx /= l; nz /= l; } else { nx = 0; nz = 0; }
+        const f = 1 - i / TRAIL, wdt = BALL_R * 0.75 * f, o = i * 6;
         const th = BALL_R + (a.h || 0);
         trailPos[o] = a.x + nx * wdt; trailPos[o + 1] = th; trailPos[o + 2] = a.z + nz * wdt;
         trailPos[o + 3] = a.x - nx * wdt; trailPos[o + 4] = th; trailPos[o + 5] = a.z - nz * wdt;
-        trailA[i * 2] = trailA[i * 2 + 1] = i < n ? f * clamp(speedish * 2.2 - 0.2, 0, 1) * (ballHot > 0.1 ? 0.9 : 0.35) : 0;
+        const age = clamp(1 - (now - a.t) / 0.22, 0, 1);
+        trailA[i * 2] = trailA[i * 2 + 1] = i < n - 1 ? f * age * show : 0;
       }
       trailGeo.attributes.position.needsUpdate = true; trailGeo.attributes.aA.needsUpdate = true;
       trail.visible = !view.noTrail;
       const near = Math.max(0, 1 - (HW - Math.abs(bx)) / 5) * (Math.abs(bz) < 4 ? 1 : 0.4);
       hype = Math.max(hype * Math.exp(-dt * 0.8), near * 0.45);
-    } else { ball.visible = false; ballBlob.visible = false; trail.visible = false; ballLight.intensity = 0; }
+    } else { ball.visible = false; ballBlob.visible = false; trail.visible = false; ballLight.intensity = 0; ballLive = false; simBall = null; for (const g of goals) g.step(dt, null); }
 
     hypeR *= Math.exp(-dt * 0.45); hypeB *= Math.exp(-dt * 0.45);
-    crowdU.uHype.value = hype * 0.6; crowdU.uHypeR.value = hypeR; crowdU.uHypeB.value = hypeB;
+    // kick-off: in the pre-match intro the floodlights come on bank by bank, then the roof ring
+    const power = view.mode === 'intro' ? clamp(view.introT ?? 1, 0, 1) : 1;
+    for (let i = 0; i < 4; i++) bankOn[i] = power >= 1 ? 1 : clamp((power - (0.08 + i * 0.14)) / 0.05, 0, 1) * (power < 0.08 + i * 0.14 + 0.08 ? 0.6 + 0.4 * (Math.random() < 0.5 ? 1 : 0) : 1);
+    light.setFlood(stadium.update(dt, t, hype * 0.6, hypeR, hypeB, power) * (0.12 + 0.88 * Math.min(1, power / 0.66)), bankOn);
     view.hype = hype;
 
-    goals.forEach(g => g.update(dt));
     for (const w of waves) {
       if (!w.m.visible) continue;
       w.t += dt; const u = w.t / w.dur;
@@ -1057,12 +1588,7 @@ export function createRenderer(canvas) {
     }
     parts.update(dt, t);
     for (const tx of boardTexs) tx.offset.x = (tx.offset.x + dt * 0.035) % 1;
-    for (const f of flashes) {
-      f.t -= dt;
-      if (f.t <= 0) { if (Math.random() < dt * (hype > 0.6 ? 6 : 0.25)) { placeFlash(f); f.t = 0.12; } f.s.material.opacity = 0; }
-      else f.s.material.opacity = Math.min(1, f.t * 10);
-    }
-    for (let i = 0; i < lamps.length; i++) lamps[i].material.opacity = 0.8 + Math.sin(t * 1.3 + i) * 0.05;
+    light.update(dt, t);
 
     // jumbotron (redraws only when its content changes)
     if (jumboFlashT > 0) { jumboFlashT -= dt; drawJumbo(null, (t * 4 | 0) % 2 ? jumboFlash : { text: jumboFlash.text, color: '#050b18' }); }
@@ -1139,14 +1665,14 @@ export function createRenderer(canvas) {
     v3.copy(camTgt).addScaledVector(camKick, 0.6);
     camera.lookAt(v3);
 
-    if (level >= 2) composer.render(); else renderer.render(scene, camera);
+    light.render();
   }
 
   function snapCamera() { camPos.set(0, 0, fitZ).addScaledVector(camDir, fitD); camTgt.set(0, 0, fitZ); }
 
   return {
     frame, resize, project, pickGround, fx, setQuality, snapCamera,
-    get quality() { return quality; }, get level() { return level; },
-    debugCam: () => ({ fitD, fitDFull, camDist, visHalf, fitZ, cssW, cssH, aspect: camera.aspect, cam: camera.position.toArray().map(v => +v.toFixed(2)), tgt: camTgt.toArray().map(v => +v.toFixed(2)) }),
+    get quality() { return quality; }, get level() { return level; }, get struggling() { return struggleT > 6; },
+    debugCam: () => ({ perf: { tier, scale: +scale.toFixed(2), level, ft: +ftAvg.toFixed(1) }, fitD, fitDFull, camDist, visHalf, fitZ, cssW, cssH, aspect: camera.aspect, cam: camera.position.toArray().map(v => +v.toFixed(2)), tgt: camTgt.toArray().map(v => +v.toFixed(2)) }),
   };
 }
