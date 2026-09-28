@@ -7,6 +7,11 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// Shadows of the kit: its four pieces, merged into one skinned caster that only the floodlights'
+// shadow cameras see (this layer), so each shadow map draws a player's kit once, not four times.
+export const SHADOW_LAYER = 1;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -284,7 +289,11 @@ function kitGeometry(src, f, offset, uvOf, iters, drape = null) {
   return out;
 }
 
-function buildKit(body) {
+// Fitting the kit is the one expensive computation in the boot (most of a second), and its result
+// depends only on the body model and this code. So it is done once per machine and kept (see
+// packKit); `step` is called after each garment, so the loading screen shows it happening.
+const KIT_PARTS = ['shirt', 'shorts', 'socks', 'boots', 'skin'];
+async function buildKit(body, step) {
   const sleeve = x => Math.max(0, Math.abs(x) - 0.21);
   // the jersey hangs from the chest and shoulder blades (below the yoke) down to the hem
   const shirt = kitGeometry(body, F.shirt,
@@ -293,6 +302,7 @@ function buildKit(body) {
       ? [around(z + 0.065, (y - 1.455) * Math.sign(x)), 0.25 * (1 - sleeve(x) / 0.16)]
       : [around(z, -x), 0.3 + 0.7 * clamp((y - 0.97) / 0.55, 0, 1)], 10,
     { region: (x, y) => (Math.abs(x) < 0.2 && y < 1.44 ? { id: 0, cx: 0, cz: -0.02 } : null), taper: 0.12 });
+  await step('shirt');
   // the shorts hang from the seat (the widest point of the glutes) and fall straight past the fold
   // beneath it; each leg is draped round its own axis so no web forms between the thighs
   const shorts = kitGeometry(body, F.shorts,
@@ -300,77 +310,112 @@ function buildKit(body) {
     // round the pelvis above the crotch, round each thigh below it; both put u = 0 / 0.5 on the flanks
     (x, y, z) => [y > 0.93 ? around(z, -x) : around(z + 0.03, -(x - Math.sign(x) * 0.1)), clamp((y - 0.7) / 0.36, 0, 1)], 10,
     { region: (x, y) => (y > 0.97 ? { id: 0, cx: 0, cz: -0.02 } : { id: Math.sign(x) || 1, cx: (Math.sign(x) || 1) * 0.1, cz: -0.015 }), taper: 0.04 });
+  await step('shorts');
   const socks = kitGeometry(body, F.socks, () => 0.005,
     (x, y, z) => [around(z + 0.04, -(x - Math.sign(x) * 0.114)), clamp((y - 0.07) / 0.4, 0, 1)], 2);
+  await step('socks');
   const boots = kitGeometry(body, F.boots, (x, y) => 0.009 + 0.004 * smooth(0.03, 0, y),
     (x, y, z) => [around(y - 0.05, (x - Math.sign(x) * 0.114) * Math.sign(x)), clamp((z + 0.16) / 0.31, 0, 1)], 3);
+  await step('boots');
   // the skin mesh, minus what the kit fully covers (a margin in from every edge)
   const P = body.attributes.position, idx = body.index.array, kept = [];
   const covered = i => { const x = P.getX(i), y = P.getY(i), z = P.getZ(i); return F.shirt(x, y, z) > 0.03 || F.shorts(x, y) > 0.03 || F.socks(x, y) > 0.03 || F.boots(x, y) > 0.025; };
   for (let t = 0; t < idx.length; t += 3) if (!(covered(idx[t]) && covered(idx[t + 1]) && covered(idx[t + 2]))) kept.push(idx[t], idx[t + 1], idx[t + 2]);
   const skin = body.clone(); skin.setIndex(kept);
+  await step('skin');
   return { shirt, shorts, socks, boots, skin };
+}
+// A fitted kit as plain typed arrays (what IndexedDB stores), and back. The skin is the body's own
+// geometry with fewer triangles, so only its index is kept.
+function packKit(kit) {
+  const geo = g => ({ index: g.index ? g.index.array : null, attrs: Object.fromEntries(Object.entries(g.attributes).map(([k, a]) => [k, { array: a.array, size: a.itemSize, norm: a.normalized }])) });
+  const out = { v: 1, skin: kit.skin.index.array };
+  for (const k of KIT_PARTS) if (k !== 'skin') out[k] = geo(kit[k]);
+  return out;
+}
+function unpackKit(p, body) {
+  if (!p || p.v !== 1 || !ArrayBuffer.isView(p.skin)) return null;
+  const kit = {};
+  for (const k of KIT_PARTS) {
+    if (k === 'skin') continue;
+    const d = p[k]; if (!d || !d.attrs || !d.attrs.position || !d.attrs.skinIndex || !d.attrs.skinWeight) return null;
+    const g = new THREE.BufferGeometry();
+    for (const [n, a] of Object.entries(d.attrs)) g.setAttribute(n, new THREE.BufferAttribute(a.array, a.size, a.norm));
+    if (d.index) g.setIndex(new THREE.BufferAttribute(d.index, 1));
+    g.computeBoundingSphere();
+    kit[k] = g;
+  }
+  kit.skin = body.clone(); kit.skin.setIndex(new THREE.BufferAttribute(p.skin, 1));
+  return kit;
 }
 
 // ---------------------------------------------------------------- shared assets
-let ASSETS = null;
-export function resetPlayerAssets() { ASSETS = null; }
-// Every file is downloaded with fetch and counted byte by byte (for the loading screen), then parsed
-// from memory: glTF from its buffer, images through createImageBitmap, clips from JSON.
+// The files arrive through the boot loader (loader.js: downloaded with exact progress, or read back
+// from this PC's store), then are parsed from memory here: glTF from its buffer, images through
+// createImageBitmap (decoded off the main thread), clips from JSON. Each step is reported to the
+// loading screen's "players" stage.
 const HAIRS = ['buzzed', 'buzzedfemale', 'simpleparted', 'beard'];
-const FILES = ['body.glb', ...HAIRS.map(h => `hair_${h}.glb`), 'anims.json', 'body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'eye.png', 'hair_albedo.jpg', 'hair_normal.jpg'];
+const GLBS = ['body.glb', ...HAIRS.map(h => `hair_${h}.glb`)];
+const TEXTURES = ['body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'eye.png', 'hair_albedo.jpg', 'hair_normal.jpg'];
+const FILES = [...GLBS, 'anims.json', ...TEXTURES];
 const LINEAR = new Set(['body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'hair_normal.jpg']); // data, not colour
-// onProgress({ phase: 'download', loaded, total, files, filesDone, known }) then ({ phase: 'build' })
-export function loadPlayerAssets(renderer, onProgress = () => {}) {
-  if (ASSETS) return ASSETS;
-  const base = '/models/', loaded = {}, total = {}, done = new Set();
-  const report = () => onProgress({
-    phase: 'download', files: FILES.length, filesDone: done.size, known: FILES.every(f => f in total),
-    loaded: Object.values(loaded).reduce((a, b) => a + b, 0), total: Object.values(total).reduce((a, b) => a + b, 0),
-  });
-  const download = async f => {
-    const r = await fetch(base + f, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
-    total[f] = +r.headers.get('Content-Length') || 0; loaded[f] = 0; report();
-    const reader = r.body.getReader(), parts = [];
-    for (;;) { const { done: end, value } = await reader.read(); if (end) break; parts.push(value); loaded[f] += value.length; report(); }
-    if (!total[f]) total[f] = loaded[f];
-    done.add(f); report();
-    const out = new Uint8Array(loaded[f]); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
-    return out.buffer;
-  };
-  const texture = async (f, buf) => {
-    const bmp = await createImageBitmap(new Blob([buf], { type: f.endsWith('.png') ? 'image/png' : 'image/jpeg' }),
+// boot: the loader's API. extraSteps: steps the caller will report on the same stage afterwards
+export async function loadPlayerAssets(renderer, boot, { extraSteps = 0, lite = false } = {}) {
+  const nextTask = boot.yield; // lets the loading screen paint between steps
+  const B = Object.fromEntries(await Promise.all(FILES.map(async f => [f, await boot.asset(f)])));
+  const kitKey = boot.derived.kit, packed = boot.cache.get(kitKey);
+  const S = boot.stage('players');
+  // models + animations + each texture + the kit (one step when it is kept, a step per part when it
+  // is fitted now) + the lighting, then the caller's own steps
+  S.begin(2 + TEXTURES.length + (packed ? 1 : KIT_PARTS.length) + 1 + extraSteps, 'steps', 'Reading the models');
+  const gl = new GLTFLoader();
+  const [body, ...hairs] = await Promise.all(GLBS.map(f => gl.parseAsync(B[f], '')));
+  S.step(1, 'Reading the animations');
+  await nextTask();
+  const anims = JSON.parse(new TextDecoder().decode(B['anims.json']));
+  // parse() leaves uuid unset here, and the mixer caches actions by clip uuid
+  const clips = anims.map(c => { const k = THREE.AnimationClip.parse(c); k.uuid = THREE.MathUtils.generateUUID(); return k; });
+  S.step(1, 'Decoding textures');
+  const texture = async f => {
+    const bmp = await createImageBitmap(new Blob([B[f]], { type: f.endsWith('.png') ? 'image/png' : 'image/jpeg' }),
       { imageOrientation: 'none', premultiplyAlpha: 'none', colorSpaceConversion: LINEAR.has(f) ? 'none' : 'default' });
     const t = new THREE.Texture(bmp); t.flipY = false; t.anisotropy = 4; t.needsUpdate = true;
     t.colorSpace = LINEAR.has(f) ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+    S.step(1);
     return t;
   };
-  const gl = new GLTFLoader();
-  ASSETS = Promise.all(FILES.map(download)).then(async bufs => {
-    const B = Object.fromEntries(FILES.map((f, i) => [f, bufs[i]]));
-    onProgress({ phase: 'build' });
-    const [body, ...hairs] = await Promise.all(['body.glb', ...HAIRS.map(h => `hair_${h}.glb`)].map(f => gl.parseAsync(B[f], '')));
-    const anims = JSON.parse(new TextDecoder().decode(B['anims.json']));
-    const [bAlb, bNor, bRough, eye, hA, hN] = await Promise.all(['body_albedo.jpg', 'body_normal.jpg', 'body_rough.jpg', 'eye.png', 'hair_albedo.jpg', 'hair_normal.jpg'].map(f => texture(f, B[f])));
-    await new Promise(r => setTimeout(r, 0)); // let the loading screen paint before the heavy build
-    let skinned = null;
-    body.scene.traverse(o => { if (o.isSkinnedMesh && o.name === 'SuperHero_Male') skinned = o; });
-    const hairGeo = {};
-    hairs.forEach((g, i) => {
-      g.scene.updateMatrixWorld(true);
-      g.scene.traverse(o => { if (o.isMesh && !hairGeo[HAIRS[i]]) hairGeo[HAIRS[i]] = o.geometry.clone().applyMatrix4(o.matrixWorld); });
-    });
-    let env = null;
-    if (renderer) { const pm = new THREE.PMREMGenerator(renderer); env = pm.fromScene(new RoomEnvironment(), 0.04).texture; pm.dispose(); }
-    return {
-      scene: body.scene, kit: buildKit(skinned.geometry), hairGeo, env, knit: knitNormal(),
-      // parse() leaves uuid unset here, and the mixer caches actions by clip uuid
-      clips: anims.map(c => { const k = THREE.AnimationClip.parse(c); k.uuid = THREE.MathUtils.generateUUID(); return k; }),
-      tex: { bAlb, bNor, bRough, eye, hair: [hA, hN] },
-    };
+  const [bAlb, bNor, bRough, eye, hA, hN] = await Promise.all(TEXTURES.map(texture));
+  let skinned = null;
+  body.scene.traverse(o => { if (o.isSkinnedMesh && o.name === 'SuperHero_Male') skinned = o; });
+  const hairGeo = {};
+  hairs.forEach((g, i) => {
+    g.scene.updateMatrixWorld(true);
+    g.scene.traverse(o => { if (o.isMesh && !hairGeo[HAIRS[i]]) hairGeo[HAIRS[i]] = o.geometry.clone().applyMatrix4(o.matrixWorld); });
   });
-  return ASSETS;
+  // the kit: kept from an earlier visit if this exact body and fitting code made it, else fitted now
+  let kit = packed ? unpackKit(packed, skinned.geometry) : null;
+  if (kit) S.step(1, 'Kits (fitted on an earlier visit)');
+  else {
+    if (packed) S.total += KIT_PARTS.length - 1; // a kept kit that doesn't read back: fit it after all
+    S.note('Fitting the kits');
+    await nextTask();
+    let n = 0;
+    kit = await buildKit(skinned.geometry, async part => { S.step(1, `Fitting the kits · ${part} (${++n} of ${KIT_PARTS.length})`); await nextTask(); });
+    boot.cache.put(kitKey, packKit(kit));
+  }
+  S.note('Lighting the players');
+  await nextTask();
+  let env = null;
+  if (renderer) { const pm = new THREE.PMREMGenerator(renderer); env = pm.fromScene(new RoomEnvironment(), 0.04).texture; pm.dispose(); }
+  S.step(1);
+  // the kit's shadow caster: shirt, shorts, socks and boots as one geometry (only what a depth pass
+  // reads: positions and skin binding)
+  const kitShadow = mergeGeometries(['shirt', 'shorts', 'socks', 'boots'].map(k => {
+    const g = new THREE.BufferGeometry(), a = kit[k].attributes;
+    g.setAttribute('position', a.position); g.setAttribute('skinIndex', a.skinIndex); g.setAttribute('skinWeight', a.skinWeight);
+    return g;
+  }));
+  return { scene: body.scene, kit, kitShadow, hairGeo, env, knit: lite ? null : knitNormal(), clips, lite, tex: { bAlb, bNor, bRough, eye, hair: [hA, hN] } };
 }
 
 // ---------------------------------------------------------------- the character
@@ -414,7 +459,9 @@ export class Human {
     const root = cloneSkinned(A.scene);
     this.root = root; this.group.add(root);
     const env = { envMap: A.env, envMapIntensity: 0.45 };
-    const fabric = map => new THREE.MeshPhysicalMaterial({ map, normalMap: A.knit, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.78, sheen: 0.3, sheenRoughness: 0.7, sheenColor: new THREE.Color(0x404040), side: THREE.DoubleSide, envMap: A.env, envMapIntensity: 0.3 });
+    const fabric = map => A.lite
+      ? new THREE.MeshStandardMaterial({ map, roughness: 0.78, side: THREE.DoubleSide, envMap: A.env, envMapIntensity: 0.3 })
+      : new THREE.MeshPhysicalMaterial({ map, normalMap: A.knit, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.78, sheen: 0.3, sheenRoughness: 0.7, sheenColor: new THREE.Color(0x404040), side: THREE.DoubleSide, envMap: A.env, envMapIntensity: 0.3 });
     this.m = {
       skin: new THREE.MeshStandardMaterial({ map: A.tex.bAlb, normalMap: A.tex.bNor, roughnessMap: A.tex.bRough, roughness: 1, metalness: 0, ...env }),
       eyes: new THREE.MeshStandardMaterial({ map: A.tex.eye, roughness: 0.25, ...env }),
@@ -430,14 +477,19 @@ export class Human {
       o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false;
       if (o.name === 'SuperHero_Male') { body = o; o.geometry = A.kit.skin; o.material = this.m.skin; }
       else if (o.name === 'Eyes') { o.material = this.m.eyes; o.castShadow = false; }
-      else { o.material = this.m.brows; o.castShadow = false; }
+      else { o.material = this.m.brows; o.castShadow = false; o.visible = !A.lite; }
     });
     this.body = body;
     for (const k of ['shirt', 'shorts', 'socks', 'boots']) {
       const m = new THREE.SkinnedMesh(A.kit[k], this.m[k]);
-      m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false;
+      m.castShadow = false; m.receiveShadow = true; m.frustumCulled = false; // its shadow: the caster below
       body.parent.add(m); m.bind(body.skeleton, body.bindMatrix);
     }
+    // the kit's shadow, drawn once per shadow map: double-sided like the fabric it stands for, and
+    // on a layer only the shadow cameras render (never drawn in the view itself)
+    const ks = new THREE.SkinnedMesh(A.kitShadow, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, colorWrite: false, depthWrite: false }));
+    ks.castShadow = true; ks.receiveShadow = false; ks.frustumCulled = false; ks.layers.set(SHADOW_LAYER);
+    body.parent.add(ks); ks.bind(body.skeleton, body.bindMatrix);
     this.bone = {}; root.traverse(o => { if (o.isBone) this.bone[o.name] = o; });
     const sk = body.skeleton, inv = n => sk.boneInverses[sk.bones.indexOf(this.bone[n])];
     this.headInv = inv('Head');

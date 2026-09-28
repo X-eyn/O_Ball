@@ -8,9 +8,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
 // 5700 K LED: a clean, very slightly cool white
@@ -95,11 +93,10 @@ class StreakPass extends Pass {
         void main(){ vec3 s = vec3(0.0); float wt = 0.0;
           for (int i = -6; i <= 6; i++) { float f = float(i); float w = exp(-f * f / 18.0); s += texture2D(tDiffuse, vUv + vec2(f * uStep, 0.0)).rgb * w; wt += w; }
           gl_FragColor = vec4(s / wt, 1.0); }` });
-    this.comp = new THREE.ShaderMaterial({ uniforms: { tDiffuse: { value: null }, tStreak: { value: null }, uK: { value: 0.2 }, uTint: { value: new THREE.Color(0.55, 0.72, 1.0) } },
-      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: 'uniform sampler2D tDiffuse, tStreak; uniform float uK; uniform vec3 uTint; varying vec2 vUv; void main(){ vec4 c = texture2D(tDiffuse, vUv); c.rgb += texture2D(tStreak, vUv).rgb * uTint * uK; gl_FragColor = c; }' });
     this.q = new FullScreenQuad(null);
+    this.needsSwap = false; // it only fills its own small targets; the finish pass adds the result
   }
+  get texture() { return this.out ? this.out.texture : null; }
   setSize(w, h) { const W = Math.max(1, Math.round(w / 4)), H = Math.max(1, Math.round(h / 4)); this.a.setSize(W, H); this.b.setSize(W, H); this.px = 1 / W; }
   render(renderer, writeBuffer, readBuffer) {
     this.bright.uniforms.tDiffuse.value = readBuffer.texture; this.bright.uniforms.uTh.value = this.threshold;
@@ -109,37 +106,99 @@ class StreakPass extends Pass {
       this.blur.uniforms.tDiffuse.value = src.texture; this.blur.uniforms.uStep.value = this.px * reach;
       this.q.material = this.blur; renderer.setRenderTarget(dst); this.q.render(renderer); [src, dst] = [dst, src];
     }
-    this.comp.uniforms.tDiffuse.value = readBuffer.texture; this.comp.uniforms.tStreak.value = src.texture; this.comp.uniforms.uK.value = this.strength;
-    this.q.material = this.comp; renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer); this.q.render(renderer);
+    this.out = src;
   }
   dispose() { this.a.dispose(); this.b.dispose(); this.q.dispose(); }
 }
 
-// ---------------------------------------------------------------- post: broadcast grade
-// Display-referred, after tone mapping: a gentle S-curve, a touch more colour, cool shadows and
+// ---------------------------------------------------------------- post: bloom
+// three's bloom, minus its last step: instead of a full-resolution pass blending the glow onto the
+// frame, the glow (its half-resolution composite) is added in the finish pass below. Same image,
+// one full-screen pass fewer. (Mirrors UnrealBloomPass.render of the pinned three version.)
+class BloomPass extends UnrealBloomPass {
+  get texture() { return this.renderTargetsHorizontal[0].texture; }
+  render(renderer, writeBuffer, readBuffer) {
+    renderer.getClearColor(this._oldClearColor); this._oldClearAlpha = renderer.getClearAlpha();
+    const oldAutoClear = renderer.autoClear; renderer.autoClear = false; renderer.setClearColor(this.clearColor, 0);
+    this.highPassUniforms.tDiffuse.value = readBuffer.texture; this.highPassUniforms.luminosityThreshold.value = this.threshold;
+    this._fsQuad.material = this.materialHighPassFilter; renderer.setRenderTarget(this.renderTargetBright); renderer.clear(); this._fsQuad.render(renderer);
+    let input = this.renderTargetBright;
+    for (let i = 0; i < this.nMips; i++) {
+      const m = this.separableBlurMaterials[i]; this._fsQuad.material = m;
+      m.uniforms.colorTexture.value = input.texture; m.uniforms.direction.value = UnrealBloomPass.BlurDirectionX;
+      renderer.setRenderTarget(this.renderTargetsHorizontal[i]); renderer.clear(); this._fsQuad.render(renderer);
+      m.uniforms.colorTexture.value = this.renderTargetsHorizontal[i].texture; m.uniforms.direction.value = UnrealBloomPass.BlurDirectionY;
+      renderer.setRenderTarget(this.renderTargetsVertical[i]); renderer.clear(); this._fsQuad.render(renderer);
+      input = this.renderTargetsVertical[i];
+    }
+    const c = this.compositeMaterial; this._fsQuad.material = c;
+    c.uniforms.bloomStrength.value = this.strength; c.uniforms.bloomRadius.value = this.radius; c.uniforms.bloomTintColors.value = this.bloomTintColors;
+    renderer.setRenderTarget(this.renderTargetsHorizontal[0]); renderer.clear(); this._fsQuad.render(renderer);
+    renderer.setClearColor(this._oldClearColor, this._oldClearAlpha); renderer.autoClear = oldAutoClear;
+  }
+}
+
+// ---------------------------------------------------------------- post: finish (tone map + broadcast grade)
+// The grade is display-referred, after tone mapping: a gentle S-curve, a touch more colour, cool shadows and
 // warm highlights (the classic floodlit-night split), lens fringing and falloff toward the frame's
 // edges, and a fine, moving grain so gradients never band.
-const GradeShader = {
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) },
-    uContrast: { value: 0.16 }, uSat: { value: 1.1 }, uVig: { value: 0.3 }, uGrain: { value: 0.022 }, uCA: { value: 0.0007 } },
-  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float uTime, uContrast, uSat, uVig, uGrain, uCA; uniform vec2 uRes; varying vec2 vUv;
-    float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    void main(){
-      vec2 d = vUv - 0.5; float r2 = dot(d, d);
-      vec2 o = d * uCA * (1.0 + 6.0 * r2);
-      vec3 c = vec3(texture2D(tDiffuse, vUv + o).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - o).b);
-      c = mix(c, c * c * (3.0 - 2.0 * c), uContrast);
-      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-      c = mix(vec3(l), c, uSat);
-      c += vec3(-0.012, 0.004, 0.022) * (1.0 - smoothstep(0.0, 0.45, l));   // cool shadows
-      c += vec3(0.018, 0.008, -0.014) * smoothstep(0.55, 1.0, l);            // warm highlights
-      c *= 1.0 - uVig * smoothstep(0.12, 0.62, r2 * (uRes.x / uRes.y) * 0.9);
-      c += (h(vUv * uRes + fract(uTime * 7.31) * 91.7) - 0.5) * uGrain;
-      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
-    }`,
-};
+// The finish pass: everything after the scene's own passes, in one full-screen pass straight to the
+// canvas: HDR frame + bloom + lamp streaks -> ACES tone mapping -> sRGB -> the grade described above. This used
+// to be four full-resolution passes (bloom blend, streak composite, tone map, grade); the maths is
+// the same, so the picture is the same, and a phone's GPU has three fewer screens of pixels to move
+// through memory every frame. (The fringing samples the frame three times, as the grade did.)
+class FinishPass extends Pass {
+  constructor(bloom, streak) {
+    super();
+    this.bloom = bloom; this.streak = streak;
+    this.uniforms = {
+      tDiffuse: { value: null }, tBloom: { value: null }, tStreak: { value: null }, uBloom: { value: 1 }, uStreak: { value: 0.22 },
+      uTint: { value: new THREE.Color(0.55, 0.72, 1.0) }, toneMappingExposure: { value: 1 },
+      uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) }, uContrast: { value: 0.16 }, uSat: { value: 1.1 }, uVig: { value: 0.3 }, uGrain: { value: 0.022 }, uCA: { value: 0.0007 },
+    };
+    this.material = new THREE.RawShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: `precision highp float; attribute vec3 position; attribute vec2 uv; varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+      fragmentShader: `
+        precision highp float;
+        uniform sampler2D tDiffuse, tBloom, tStreak; uniform float uBloom, uStreak; uniform vec3 uTint;
+        uniform float uTime, uContrast, uSat, uVig, uGrain, uCA; uniform vec2 uRes; varying vec2 vUv;
+        #include <tonemapping_pars_fragment>
+        #include <colorspace_pars_fragment>
+        float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+        vec3 display(vec2 uv){
+          vec3 c = texture2D(tDiffuse, uv).rgb + texture2D(tBloom, uv).rgb * uBloom + texture2D(tStreak, uv).rgb * uTint * uStreak;
+          return sRGBTransferOETF(vec4(ACESFilmicToneMapping(c), 1.0)).rgb;
+        }
+        void main(){
+          vec2 d = vUv - 0.5; float r2 = dot(d, d);
+          vec2 o = d * uCA * (1.0 + 6.0 * r2);
+          vec3 c = uCA > 0.0 ? vec3(display(vUv + o).r, display(vUv).g, display(vUv - o).b) : display(vUv);
+          c = clamp(c, 0.0, 1.0);
+          c = mix(c, c * c * (3.0 - 2.0 * c), uContrast);
+          float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          c = mix(vec3(l), c, uSat);
+          c += vec3(-0.012, 0.004, 0.022) * (1.0 - smoothstep(0.0, 0.45, l));   // cool shadows
+          c += vec3(0.018, 0.008, -0.014) * smoothstep(0.55, 1.0, l);            // warm highlights
+          c *= 1.0 - uVig * smoothstep(0.12, 0.62, r2 * (uRes.x / uRes.y) * 0.9);
+          c += (h(vUv * uRes + fract(uTime * 7.31) * 91.7) - 0.5) * uGrain;
+          gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+        }`,
+      depthTest: false, depthWrite: false,
+    });
+    this.q = new FullScreenQuad(this.material);
+    this.black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); this.black.needsUpdate = true;
+  }
+  render(renderer, writeBuffer, readBuffer) {
+    const u = this.uniforms;
+    u.tDiffuse.value = readBuffer.texture; u.toneMappingExposure.value = renderer.toneMappingExposure;
+    const b = this.bloom && this.bloom.enabled ? this.bloom.texture : null, s = this.streak && this.streak.enabled ? this.streak.texture : null;
+    u.tBloom.value = b || this.black; u.uBloom.value = b ? 1 : 0;
+    u.tStreak.value = s || this.black; u.uStreak.value = s ? this.streak.strength : 0;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer); this.q.render(renderer);
+  }
+}
+
 
 // ---------------------------------------------------------------- the rig
 // dims: { HW, HH, PW, PH }; tier: 'high' | 'medium' | 'lite' (see graphics.js). Every tier is the same
@@ -148,7 +207,7 @@ const GradeShader = {
 //   medium  shadows from 2 of the 4 (opposite corners, so the X of shadows survives), no AO
 //   lite    software rendering: no shadow maps (the renderer draws baked shadows), a small IBL,
 //           no post chain at all; tone mapping happens in the materials
-export function createLighting(renderer, scene, camera, dims, tier = 'high') {
+export function createLighting(renderer, scene, camera, dims, tier = 'high', shadowRes = 0) {
   const { HW, HH } = dims, hi = tier === 'high', lite = tier === 'lite';
   // ACES: a filmic shoulder for the lamps and bright kits, with the saturated, contrasty look of a
   // floodlit broadcast (AgX reads flatter and greyer on a night pitch)
@@ -178,12 +237,13 @@ export function createLighting(renderer, scene, camera, dims, tier = 'high') {
     const s = new THREE.SpotLight(FLOOD_COLOR, L.I * (tier === 'medium' ? 2 : 1), 0, 0.8, 0.7, 2); // candela, physically decaying
     s.position.set(...L.p); s.target.position.set(...L.a);
     s.castShadow = !lite && (L.shadow === 'all' || (hi && L.shadow === 'hi'));
-    const res = hi ? 2048 : 1024;
+    const res = shadowRes || (hi ? 2048 : 1024);
     s.shadow.mapSize.set(res, res);
     s.shadow.camera.near = 4; s.shadow.camera.far = 50; s.shadow.bias = -0.00015; s.shadow.normalBias = 0.03; s.shadow.radius = 5;
     // full-strength per lamp: with four banks lighting each spot, a shadow from one of them is a
     // soft grey (the other three fill it in), never black and never washed away
     s.shadow.intensity = 1;
+    s.shadow.camera.layers.enable(1); // the players' kit shadow casters live there (human.js SHADOW_LAYER)
     if (!lite) scene.add(s, s.target);
     return s;
   });
@@ -224,11 +284,10 @@ export function createLighting(renderer, scene, camera, dims, tier = 'high') {
       };
       composer.addPass(gtao);
     }
-    bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.42, 0.55, 2.2);
+    bloom = new BloomPass(new THREE.Vector2(256, 256), 0.42, 0.55, 2.2);
     composer.addPass(bloom);
     streak = new StreakPass(); composer.addPass(streak);
-    composer.addPass(new OutputPass());
-    grade = new ShaderPass(GradeShader); composer.addPass(grade);
+    grade = new FinishPass(bloom, streak); composer.addPass(grade);
   }
 
   // level: how much of the post chain runs (dropped live if a machine can't hold its frame rate)

@@ -8,11 +8,22 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const { WebSocketServer } = require('ws');
 const OB = require('./shared/game.js');
+const assets = require('./assets.js');
 
 const PORT = +process.env.PORT || 3000;
 const PUB = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const STATS_FILE = path.join(DATA_DIR, 'stats.json');
+const LOG_FILE = path.join(DATA_DIR, 'server.log');
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { }
+const fmt = x => { try { if (x && x.stack) return x.stack; if (typeof x === 'object') return JSON.stringify(x); return String(x); } catch { return String(x); } };
+for (const k of ['log', 'warn', 'error']) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => { orig(...a); try { fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} [${k}] ${a.map(fmt).join(' ')}\n`); } catch { } };
+}
+function fatal(what, e) { console.error(`${what}:`, e); process.exit(1); }
+process.on('uncaughtException', e => fatal('Uncaught exception', e));
+process.on('unhandledRejection', e => fatal('Unhandled rejection', e));
 const TICK_MS = 1000 / 60;
 const OVER_T = 60 * 8, OVER_BOT_T = 60 * 5, PAUSE_T = 60 * 12;
 
@@ -341,13 +352,62 @@ class Room {
 }
 
 // ---------------- HTTP ----------------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary' };
-const NODE_MODULES = path.join(__dirname, 'node_modules');
-function send(res, code, body, type = 'application/json', cache = false) {
-  // Content-Length lets the loading screen report true download progress
-  res.writeHead(code, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), 'Cache-Control': cache ? 'public, max-age=86400' : 'no-store' }); res.end(body);
+// Game files are content-addressed (see assets.js): each URL names exactly one version of a file,
+// so it is sent once and kept by the browser for good. The page itself is always revalidated
+// (a cheap 304 when nothing changed), because it carries the manifest that points at the files.
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.webmanifest': 'application/manifest+json' };
+const IMMUTABLE = 'public, max-age=31536000, immutable', REVALIDATE = 'no-cache';
+function send(res, code, body, type = 'application/json') {
+  res.writeHead(code, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' }); res.end(body);
 }
-function serveFile(res, f, cache = false) { fs.readFile(f, (e, d) => e ? send(res, 404, 'Not found', 'text/plain') : send(res, 200, d, MIME[path.extname(f)] || 'application/octet-stream', cache)); }
+// one file version: ETag = its hash; compressed when the browser accepts it and it pays
+async function sendFile(req, res, f, cacheControl) {
+  const type = MIME[path.extname(f.abs)] || 'application/octet-stream';
+  const accept = String(req.headers['accept-encoding'] || '');
+  const enc = !assets.COMPRESSIBLE.has(path.extname(f.abs)) ? null : /\bbr\b/.test(accept) ? 'br' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+  const body = enc ? await assets.encoded(f, enc) : null;
+  const etag = `"${f.hash}${body ? '-' + enc : ''}"`;
+  const head = { 'Content-Type': type, 'Cache-Control': cacheControl, ETag: etag, Vary: 'Accept-Encoding' };
+  if (req.headers['if-none-match'] === etag) { res.writeHead(304, head); return res.end(); }
+  if (body) head['Content-Encoding'] = enc;
+  const out = body || f.buf;
+  head['Content-Length'] = out.length;
+  res.writeHead(200, head);
+  res.end(req.method === 'HEAD' ? undefined : out);
+}
+// index.html with this build's manifest, import map, stylesheet and loader written into it
+const esc = s => JSON.stringify(s).replace(/</g, '\\u003c');
+function page(req, res) {
+  const m = assets.manifest(), tpl = assets.file(path.join(PUB, 'index.html'));
+  const { importmap, ...client } = m;
+  const head = [
+    `<link rel="stylesheet" href="${m.style}">`,
+    `<script type="importmap">${esc(importmap)}</script>`,
+    `<script>window.__MANIFEST = ${esc(client)};</script>`,
+    // the whole module graph starts downloading as the page is parsed, in parallel
+    ...m.modules.map(x => `<link rel="modulepreload" href="${x.url}">`),
+    `<script defer src="${m.script.url}"></script>`,
+    `<script type="module" src="${m.loader}"></script>`,
+  ].join('\n');
+  const html = Buffer.from(tpl.buf.toString('utf8').replace('<!--BOOT-->', head));
+  const f = { abs: tpl.abs, buf: html, size: html.length, hash: crypto.createHash('sha256').update(html).digest('hex').slice(0, 16), enc: {} };
+  return sendFile(req, res, f, REVALIDATE);
+}
+
+// a device's graphics report (client.js report()): shown in this window and kept in data/diag.log
+function diag(req, res) {
+  let body = '';
+  req.on('data', c => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+  req.on('end', () => {
+    send(res, 204, '');
+    let d; try { d = JSON.parse(body); } catch { return; }
+    const who = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    const t = d.data || {};
+    if (d.kind === 'perf') console.log(`  [perf] ${who} ${d.tier} "${d.gpu}": ${t.fps} fps (target ${t.target} ms), p95 ${t.p95} ms, missed ${t.missed}%, js ${t.js} ms (players ${t.players}, ball ${t.ball}, world ${t.world}, gl ${t.submit}), gpu ${t.gpu} ms, ${t.size} @ ${t.pr}x, scale ${t.scale}, level ${t.level}, ${t.calls} calls`);
+    else console.log(`  [diag] ${who} ${d.kind}: tier ${d.tier}, gpu "${d.gpu}", pitch green ${t.base ? t.base.green : '?'}${t.noShadow ? `, without shadows ${t.noShadow.green}` : ''} , textures ${t.srgb ? t.srgb.mode + " (" + t.srgb.native + "/" + t.srgb.nomip + "/" + t.srgb.shader + ")" : "?"} -> ${t.fix || 'ok'}`);
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.appendFileSync(path.join(DATA_DIR, 'diag.log'), JSON.stringify({ at: new Date().toISOString(), from: who, ...d }) + '\n'); } catch { }
+  });
+}
 
 const server = http.createServer((req, res) => {
   let p;
@@ -356,18 +416,17 @@ const server = http.createServer((req, res) => {
   if (p === '/api/rooms') return send(res, 200, JSON.stringify(roomList()));
   if (p === '/api/leaderboard') return send(res, 200, JSON.stringify(leaderboard()));
   if (p === '/api/new') return send(res, 200, JSON.stringify({ code: newCode() }));
-  if (p === '/shared/game.js') return serveFile(res, path.join(__dirname, 'shared', 'game.js'));
-  if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return serveFile(res, path.join(PUB, 'index.html'));
-  if (p.startsWith('/vendor/')) { // three.js + fonts, served locally so the game works without internet
-    const rel = p.slice(8);
-    if (!/^(three\/(build|examples\/jsm)\/|@fontsource\/(teko|inter|barlow|barlow-condensed)\/)/.test(rel)) return send(res, 404, 'Not found', 'text/plain');
-    const f = path.normalize(path.join(NODE_MODULES, rel));
-    if (!f.startsWith(NODE_MODULES + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');
-    return serveFile(res, f, true);
-  }
+  if (p === '/api/build') return send(res, 200, JSON.stringify({ build: assets.manifest().build }));
+  if (p === '/api/diag' && req.method === 'POST') return diag(req, res);
+  if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res).catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
+  const abs = assets.resolveUrl(p);
+  if (abs) return sendFile(req, res, assets.file(abs), IMMUTABLE).catch(() => send(res, 404, 'Not found', 'text/plain'));
+  if (/^\/(app|asset|vendor)\//.test(p)) return send(res, 404, 'Not found (the game has been updated: reload)', 'text/plain');
+  // anything else under public/ (demo.html, the raw model files): plain, revalidated each time
   const f = path.normalize(path.join(PUB, p));
   if (!f.startsWith(PUB + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');
-  serveFile(res, f);
+  let file; try { file = assets.file(f); } catch { return send(res, 404, 'Not found', 'text/plain'); }
+  sendFile(req, res, file, REVALIDATE).catch(() => send(res, 404, 'Not found', 'text/plain'));
 });
 
 // ---------------- WebSocket ----------------
@@ -422,6 +481,7 @@ server.on('error', e => {
   process.exit(1);
 });
 server.listen(PORT, '0.0.0.0', () => {
+  assets.manifest(); // hash and compress the game's files now, not on the first visitor's time
   const ips = lanIps();
   const main = ips[0] ? `http://${ips[0].address}:${PORT}` : `http://localhost:${PORT}`;
   console.log('\n  ⚽  OFFICE BALL server is running\n');

@@ -9,7 +9,7 @@
   --ease:cubic-bezier(.2,.8,.2,1);
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--ink);color:var(--text);font-family:var(--body);font-size:15px;overflow:hidden;-webkit-font-smoothing:antialiased}
+html,body{margin:0;height:100%;background:var(--ink);color:var(--text);font-family:var(--body);font-size:15px;overflow:hidden;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;text-size-adjust:100%;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
 .hidden{display:none!important}
 button,input{font:inherit;color:inherit}
 button{cursor:pointer}
@@ -173,8 +173,11 @@ input:focus{border-color:var(--volt)}
 .main-nav{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .mi{position:relative;display:grid;grid-template-columns:auto 1fr;align-items:baseline;gap:18px;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line);padding:16px 8px 14px;transition:background .18s,padding-left .18s var(--ease)}
 .mi:before{content:"";position:absolute;left:0;top:0;bottom:0;width:0;background:var(--volt);transition:width .18s var(--ease)}
-.mi:hover,.mi:focus-within{background:rgba(255,255,255,.035);padding-left:22px}
-.mi:hover:before,.mi:focus-within:before{width:5px}
+.mi:focus-within{background:rgba(255,255,255,.035);padding-left:22px}
+.mi:focus-within:before{width:5px}
+/* hover only where there is a real pointer: on a touchscreen it would stick after a tap */
+@media (hover:hover){.mi:hover{background:rgba(255,255,255,.035);padding-left:22px}.mi:hover:before{width:5px}}
+.mi:active{background:rgba(255,255,255,.07)}
 .mi-t{font-family:var(--display);font-weight:900;font-style:italic;font-size:44px;line-height:.9;letter-spacing:.01em;text-transform:uppercase;min-width:170px}
 .mi-s{font-size:14px;color:var(--mute)}
 .mi-join{grid-template-columns:auto 1fr auto;align-items:center}
@@ -269,7 +272,132 @@ input:focus{border-color:var(--volt)}
   .home-board{grid-column:1}
   .logo span:last-child{font-size:96px}
   .sb-name{min-width:70px;max-width:130px;font-size:17px}
-  .hud-l{display:none}
-  #hud{grid-template-columns:0 auto 1fr}
+  .hud-l{visibility:hidden} /* keeps its grid column, so the scorebug stays centred */
   .menu-shell{grid-template-columns:220px 1fr}
 }
+
+/* ============ touch controls (touch.js) ============ */
+/* Sized from the screen's height (a phone held sideways is short), clear of notches and the home bar. */
+#touch{position:absolute;inset:0;z-index:5;display:none;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;
+  --R:clamp(50px,15vh,68px);--S:clamp(76px,24vh,108px);--s:clamp(56px,16.5vh,78px);
+  --pr:calc(env(safe-area-inset-right) + 18px);--pb:calc(env(safe-area-inset-bottom) + 14px);--pl:calc(env(safe-area-inset-left) + 30px)}
+#touch.on{display:block}
+.stick{position:absolute;left:calc(var(--pl) + var(--R));top:calc(100% - var(--R) - 26px - env(safe-area-inset-bottom));width:0;height:0;pointer-events:none}
+.stick-base{position:absolute;width:calc(var(--R) * 2);height:calc(var(--R) * 2);left:calc(var(--R) * -1);top:calc(var(--R) * -1);border-radius:50%;border:2px solid rgba(255,255,255,.24);background:radial-gradient(circle,rgba(255,255,255,.02) 45%,rgba(255,255,255,.09))}
+.stick-base .sprint{position:absolute;inset:5%;border-radius:50%;border:1px dashed rgba(228,255,60,.32)}
+.stick-knob{position:absolute;width:calc(var(--R) * .9);height:calc(var(--R) * .9);left:calc(var(--R) * -.45);top:calc(var(--R) * -.45);border-radius:50%;background:rgba(242,244,247,.26);border:2px solid rgba(255,255,255,.6);box-shadow:0 4px 14px rgba(0,0,0,.35);transition:background .12s,border-color .12s}
+.stick.idle{opacity:.42}
+.stick.idle .stick-knob{transition:transform .15s var(--ease),background .12s}
+.stick.full .stick-knob{background:rgba(228,255,60,.5);border-color:var(--volt)}
+.stick-cap{position:absolute;top:calc(var(--R) + 6px);left:0;transform:translateX(-50%);font-family:var(--display);font-weight:700;font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,.6);white-space:nowrap}
+.stick.on .stick-cap{display:none}
+.tbtn{position:absolute;display:flex;align-items:center;justify-content:center;padding:0;border-radius:50%;border:2px solid rgba(255,255,255,.32);background:rgba(8,11,17,.34);color:#fff;font-family:var(--display);font-weight:800;letter-spacing:.12em;text-transform:uppercase;touch-action:none;transition:transform .08s,background .12s,border-color .12s,box-shadow .12s}
+.tbtn span{position:relative;font-size:clamp(11px,3.2vh,14px);pointer-events:none}
+.tbtn.down{transform:scale(.92);background:rgba(255,255,255,.2);border-color:#fff}
+.tbtn.shoot{width:var(--S);height:var(--S);right:var(--pr);bottom:var(--pb);border-color:rgba(228,255,60,.75);background:rgba(228,255,60,.14)}
+.tbtn.shoot span{font-size:clamp(13px,4vh,17px)}
+.tbtn.shoot.down{background:rgba(228,255,60,.32)}
+.tbtn.tackle{width:var(--s);height:var(--s);right:calc(var(--pr) + var(--S) + 12px);bottom:calc(var(--pb) + (var(--S) - var(--s)) / 2 - 6px)}
+.tbtn.chip{width:var(--s);height:var(--s);right:calc(var(--pr) + var(--S) / 2 + ((var(--S) + var(--s)) / 2 + 10px) * .62 - var(--s) / 2);bottom:calc(var(--pb) + var(--S) / 2 + ((var(--S) + var(--s)) / 2 + 10px) * .78 - var(--s) / 2);border-color:rgba(127,220,255,.6)}
+.tbtn.ball{width:calc(var(--s) * .8);height:calc(var(--s) * .8);right:calc(var(--pr) + var(--S) + var(--s) + 26px);bottom:calc(var(--pb) + var(--S) / 2 + 10px)}
+.tbtn.perfect{background:rgba(255,211,77,.55)!important;border-color:#ffd34d!important;box-shadow:0 0 26px rgba(255,211,77,.7)}
+.tbtn.over{background:rgba(80,86,100,.45)!important;border-color:#8a90a0!important}
+.tbtn .ring{position:absolute;left:-10px;top:-10px;width:calc(100% + 20px);height:calc(100% + 20px);transform:rotate(-90deg);overflow:visible;pointer-events:none;opacity:0;transition:opacity .1s}
+.tbtn.charging .ring{opacity:1}
+.ring circle{fill:none;stroke-width:5}
+.ring .trk{stroke:rgba(255,255,255,.14)}
+.ring .win{stroke:rgba(255,211,77,.75)}
+.ring .fill{stroke:#fff}
+.tbtn.perfect .ring .fill{stroke:#ffd34d}
+.tbtn.over .ring .fill{stroke:#8a90a0}
+.tbtn .cd{position:absolute;inset:0;border-radius:50%;background:conic-gradient(rgba(0,0,0,.6) calc(var(--cd, 0) * 360deg),transparent 0);pointer-events:none}
+.tbtn.tackle.cooling span{opacity:.55}
+
+/* touch-only HUD buttons, the emote tray, and moving what the thumbs would cover */
+.touch-only{display:none!important}
+body.touch-ui .touch-only{display:inline-flex!important}
+body.touch-ui .hbtn .key{display:none}
+body.touch-ui #toasts{left:50%;bottom:auto;top:calc(var(--hud-h, 62px) + 10px);transform:translateX(-50%);align-items:center}
+body.touch-ui .toast{max-width:min(520px,80vw)}
+#emotes{position:fixed;top:calc(var(--hud-h, 62px) + 8px);right:calc(env(safe-area-inset-right) + 12px);z-index:25;display:grid;grid-template-columns:repeat(3,auto);gap:6px;padding:8px;background:rgba(7,9,14,.94);border:1px solid var(--line-2);animation:rise .2s var(--ease)}
+#emotes button{min-width:96px;min-height:44px;padding:8px 12px;background:var(--panel-2);border:1px solid var(--line);font-family:var(--display);font-weight:800;font-size:16px;letter-spacing:.04em;text-transform:uppercase}
+#emotes button:active{background:var(--volt);color:var(--ink)}
+
+/* portrait on a phone: the game is played sideways */
+#rotate{display:none}
+#rotate.on{display:flex}
+@media (orientation:portrait) and (hover:none) and (pointer:coarse){
+  #rotate{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center;background:var(--ink)}
+  #rotate svg{width:84px;height:84px;animation:turn 1.8s var(--ease) infinite}
+  #rotate b{font-family:var(--display);font-weight:900;font-style:italic;font-size:34px;text-transform:uppercase;line-height:.95}
+  #rotate span{color:var(--mute);font-size:15px;line-height:1.5;max-width:300px}
+}
+@keyframes turn{0%,20%{transform:rotate(0)}55%,100%{transform:rotate(-90deg)}}
+
+/* ============ short screens: a phone held sideways ============ */
+@media (max-height:540px){
+  :root{--hud-h:46px}
+  #hud{height:46px;gap:8px;padding:0 calc(env(safe-area-inset-right) + 8px) 0 calc(env(safe-area-inset-left) + 8px)}
+  #scorebug{height:34px}
+  .sb-name{font-size:15px;min-width:54px;max-width:110px;padding:0 8px}
+  .sb-score{width:34px;font-size:22px}
+  .sb-clock{min-width:62px;font-size:18px;padding:0 8px}
+  .sb-clock.free{font-size:14px}.sb-clock.sd{font-size:11px}
+  .hbtn{height:38px;min-width:40px;padding:0 10px;font-size:13px}
+  #conn{top:54px}
+  /* menu: logo and actions on the left, the table on the right, all on one screen */
+  #home{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);grid-template-rows:1fr;gap:0 20px;padding:14px calc(env(safe-area-inset-right) + 18px) 12px calc(env(safe-area-inset-left) + 22px);background:linear-gradient(90deg,rgba(4,6,10,.94),rgba(4,6,10,.72) 60%,rgba(4,6,10,.55))}
+  .home-col{gap:12px;justify-content:flex-start;overflow:auto;padding-bottom:6px}
+  .home-board{grid-column:2;align-self:start;max-height:100%;overflow:auto}
+  .home-foot{display:none}
+  .logo{flex-direction:row;align-items:baseline;gap:10px}
+  .logo span:first-child{font-size:20px;margin:0}
+  .logo span:last-child{font-size:50px}
+  .logo span:last-child:after{display:none}
+  .as input{font-size:22px}
+  .mi{padding:9px 6px 8px;gap:12px}
+  .mi-t{font-size:30px;min-width:118px}
+  .mi-s{font-size:12px}
+  .mi-join input{font-size:19px}
+  .go{width:40px;height:40px}
+  .board-h{font-size:17px;padding:8px 12px}
+  .lb td{padding:6px 10px}
+  .lb .nm{font-size:15px}.lb .rt{font-size:18px}.lb .rk{font-size:15px}
+  /* pause menu */
+  .menu-shell{grid-template-columns:minmax(170px,26vw) minmax(0,1fr);width:100%}
+  .menu-nav{padding:10px 0 calc(env(safe-area-inset-bottom) + 10px) env(safe-area-inset-left);overflow:auto}
+  .menu-title{font-size:26px;padding:0 18px 8px}
+  .menu-nav button{padding:9px 18px;font-size:17px;min-height:40px}
+  .menu-body{padding:16px calc(env(safe-area-inset-right) + 20px) 16px 20px}
+  .pane h3{font-size:28px}
+  .seg button{padding:10px 4px;font-size:13px}
+  /* in-game text */
+  #bigText{font-size:min(130px,26vh)}
+  .gb-text{font-size:min(160px,24vh)}
+  .gb-sub{font-size:min(34px,6.5vh)}
+  #replayBadge{font-size:20px;left:calc(env(safe-area-inset-left) + 16px)}
+  .card{min-width:0;width:min(460px,88vw);padding:16px 20px}
+  .card h2{font-size:34px}
+  .vs-vs{font-size:56px}.vs-count{font-size:40px}.vs-info{font-size:16px;bottom:16%}.vs-you{bottom:calc(16% - 26px)}
+  .ft{max-height:calc(100% - 12px);overflow:auto}
+  .ft-head{padding:6px 14px;font-size:12px}
+  .ft-title{font-size:40px;padding:8px 14px 2px}
+  .ft-score{margin:6px 14px 8px}.ft-score .nm{font-size:17px}.ft-score .num{width:40px;height:40px;font-size:28px}
+  .ft-stats{padding:0 14px 4px}.stat{margin:2px 0;grid-template-columns:32px 1fr 96px 1fr 32px}.stat .v{font-size:16px}.stat .l{font-size:10px}
+  .ft-foot{padding:6px 14px 8px}.ft-next{margin-top:6px;padding:7px 12px;font-size:15px}
+  #footer{bottom:10px;font-size:13px}
+  .modal-card h3{font-size:32px}
+}
+/* touch: the header's buttons are icons only (bigger targets, room for the scorebug) */
+body.touch-ui .hbtn{font-size:0;gap:0;min-width:42px;justify-content:center}
+body.touch-ui .hbtn svg{width:18px;height:18px}
+body.touch-ui .no-touch{display:none}
+.touch-text{display:none}
+body.touch-ui .touch-text{display:inline}
+/* ?perf=1: the performance monitor, on screen */
+#perf{position:fixed;left:calc(env(safe-area-inset-left) + 6px);top:calc(var(--hud-h, 62px) + 6px);z-index:70;white-space:pre;font:11px/1.35 ui-monospace,Consolas,monospace;color:#e4ff3c;background:rgba(0,0,0,.72);padding:5px 8px;pointer-events:none}
+/* dropdowns: the platform's own picker (a native list on phones), dressed like the buttons */
+.sel{appearance:none;-webkit-appearance:none;min-width:190px;min-height:40px;padding:8px 38px 8px 14px;background:var(--panel-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23e4ff3c' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 12px center/12px 8px;border:1px solid var(--line-2);border-radius:2px;color:var(--text);font-family:var(--display);font-weight:700;font-size:15px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+.sel:focus{outline:none;border-color:var(--volt)}
+.sel option{background:var(--panel);color:var(--text);text-transform:none}
+.set-desc{margin:8px 0 4px;line-height:1.5}

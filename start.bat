@@ -14,4 +14,4 @@ if not exist "node_modules\ws" (
   call npm install --no-fund --no-audit
 )
 node server.js --open
-pause
+call run.bat

@@ -1,0 +1,10 @@
+{
+  "name": "Office Ball",
+  "short_name": "Office Ball",
+  "description": "1v1 LAN football",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#06080c",
+  "theme_color": "#06080c"
+}

@@ -60,6 +60,30 @@ setting between matches (never mid-match) and remembers it. Pick a setting yours
 - If someone disconnects mid-match, the game pauses for 12 s. If they don't return, it's a forfeit.
 - Ranked results (ELO, W–L, head-to-head, streaks) are saved in `data/stats.json`.
 
+## Playing on a phone
+
+Open the same link on the phone (same Wi-Fi) and hold it sideways.
+
+- **Left thumb:** put it down anywhere on the left half and steer. The stick appears where your thumb lands
+  and follows it. It's analog: ease off to keep the ball close; at full tilt (the knob lights up) it runs away.
+- **Right thumb:** **Shoot** (hold, release while it's gold for a perfect strike), **Tackle**, **Chip**. To fake
+  a shot, slide your thumb from Shoot onto Tackle. The dark sweep on Tackle is its cooldown.
+- The speech bubble at the top sends emotes. On Android, Play goes full screen and phones vibrate on
+  kicks. On iPhone, use **Share > Add to Home Screen** for a full-screen game without Safari's bars.
+
+## Loading and caching
+
+- Everything loads **once**, behind the loading screen: code, fonts, player models, the stadium, both
+  players, every shader and a first frame. After that, Play, Join, Practice and Leave switch views in the
+  same page, so nothing is ever downloaded or built again during a visit.
+- The loading screen counts real work: bytes against the exact total the server lists, build steps,
+  and GPU programs compiled. The ring weights each stage by how long it took on that PC last time.
+- Every game file has a URL that names its exact content, so browsers keep it for good and only re-fetch
+  files that actually changed. Models, fonts and the fitted player kits are also kept in the browser's
+  IndexedDB, so even a hard refresh (Ctrl+Shift+R) takes them from the PC instead of the network.
+- Changed a file? Just reload: the page picks up the new version. An open tab left on an older build
+  reloads itself into the new one.
+
 ## Troubleshooting
 
 - **Teammates can't open the link:** they must be on the same network. On the host, make sure the
@@ -68,8 +92,9 @@ setting between matches (never mid-match) and remembers it. Pick a setting yours
 - **Port 3000 busy:** run `set PORT=3001 && node server.js`.
 - **The game is slow or won't draw on someone's PC:** add `?gfx=2d` (or `lite`, `medium`, `high`) to the end of
   the link to force a graphics setting for that visit, e.g. `http://192.168.1.23:3000/r/ABCD?gfx=2d`.
-- **After updating the game files, restart the server** (close the window and run `start.bat` again). The
-  server runs the match rules, so rule changes only take effect after a restart.
+- **After updating `server.js`, `assets.js` or `shared/game.js`, restart the server** (close the window and
+  run `start.bat` again). The server runs the match rules, so rule changes only take effect after a restart.
+  Changes to files in `public/` need only a reload.
 
 ## Credits
 

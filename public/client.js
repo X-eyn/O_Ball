@@ -1,6 +1,11 @@
-import { createRenderer, KITS } from '/render3d.js';
-import { createRenderer2D } from '/render2d.js';
-import { probeGraphics, chooseTier, TIERS } from '/graphics.js';
+import { createRenderer, KITS } from './render3d.js';
+import { createRenderer2D } from './render2d.js';
+import { createTouchControls } from './touch.js';
+import { createPacer, createMonitor } from './pacer.js';
+// The game is one page for the whole visit. The boot loader (loader.js) calls start() once
+// everything is downloaded; start() builds the renderer (the slow part, done exactly once) and from
+// then on the menu, every room and every match are views over that same page and renderer: moving
+// between them is history.pushState, never a page load, so nothing is ever loaded twice.
 
 const C = OB.C, TPMS = 60 / 1000;
 const $ = id => document.getElementById(id);
@@ -25,7 +30,23 @@ const COLORS = ['#ff4d5e', '#3fa7ff'];
 const ICON = {
   link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6.5 9.5 9.5 6.5M7 4.5l1.2-1.2a2.8 2.8 0 0 1 4 4L11 8.5M9 11.5l-1.2 1.2a2.8 2.8 0 0 1-4-4L5 7.5"/></svg>',
   menu: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 4h12M2 8h12M2 12h8"/></svg>',
+  chat: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>',
+  full: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>',
 };
+// Phones: full screen and held sideways, where the browser allows it (Android; an iPhone can't make
+// a page full screen, but the game added to its home screen opens without Safari's bars). Called
+// from a tap, which is what browsers require.
+const canFullscreen = !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+function immersive(on = true) {
+  try {
+    const el = document.documentElement, fs = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!on) { if (fs) (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+    if (fs || !canFullscreen) return;
+    const p = (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: 'hide' });
+    const lock = () => { try { const q = screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape'); if (q) q.catch(() => { }); } catch { } };
+    if (p && p.then) p.then(lock, () => { }); else lock();
+  } catch { }
+}
 function toast(text, ms = 3200) {
   const el = document.createElement('div'); el.className = 'toast'; el.textContent = text;
   $('toasts').appendChild(el);
@@ -222,64 +243,130 @@ const Sound = (() => {
   };
 })();
 addEventListener('pointerdown', () => Sound.init());
+addEventListener('touchend', () => Sound.init()); // iOS unlocks audio on a touch's end
 addEventListener('keydown', () => Sound.init());
 
 // =====================================================================
-// 3D renderer
+// Renderer
 // =====================================================================
 // Every machine gets a renderer that runs well on it (see graphics.js): the full floodlit stadium
 // on a real GPU, lighter builds of it on integrated graphics or software rendering, and a 2D
-// renderer where there is no WebGL at all. If the graphics context is ever lost (a driver reset,
-// a GPU too weak for the tier), the tier steps down and the page reloads into it.
-let R = null;
-if (window.__boot) window.__boot.codeReady(); // the game code has arrived and is running
-const GFX = probeGraphics();
-// ?gfx=2d|lite|medium|high forces a renderer for this visit (for support: "open it with ?gfx=2d")
-const urlGfx = new URLSearchParams(location.search).get('gfx');
-let graphicsPref = TIERS.includes(urlGfx) ? urlGfx : store.get('ob_graphics') || 'auto';
-let tier = chooseTier(GFX, graphicsPref, store.get('ob_gfx_fail'));
+// renderer where there is no WebGL at all. The boot loader has already decided which. If the
+// graphics context is ever lost (a driver reset, a GPU too weak for the tier), the tier steps down
+// and the page reloads into it (quick: every file and the fitted kits are kept on this PC).
+let R = null, tier = '2d', graphicsPref = 'auto';
+// what a device's graphics did, sent to the host (logged in its window and data/diag.log), so a
+// problem on someone's phone can be seen rather than guessed at
+function report(kind, data) {
+  try {
+    const body = JSON.stringify({ kind, data, tier, gpu: (probeInfo || {}).renderer, ua: navigator.userAgent, dpr: devicePixelRatio, screen: [screen.width, screen.height], view: [innerWidth, innerHeight], log: (window.__obLog || []).slice(-30) });
+    if (!(navigator.sendBeacon && navigator.sendBeacon('/api/diag', body))) fetch('/api/diag', { method: 'POST', body, keepalive: true }).catch(() => { });
+  } catch { }
+}
+let probeInfo = null;
 function start2D() {
   const old = $('c'), c = old.cloneNode(false); old.replaceWith(c); // a canvas that tried WebGL can't draw 2D
   R = createRenderer2D(c); tier = '2d';
-  if (window.__boot) window.__boot.done();
 }
-if (tier === '2d') start2D();
-else {
-  try {
-    R = createRenderer($('c'), { tier });
-    $('c').addEventListener('webglcontextlost', e => { e.preventDefault(); store.set('ob_gfx_fail', tier); location.reload(); });
-  } catch (e) {
-    console.error(e);
-    store.set('ob_gfx_fail', 'lite');
-    start2D();
+async function createView(boot) {
+  if (tier !== '2d') {
+    try {
+      $('c').addEventListener('webglcontextlost', e => { e.preventDefault(); store.set('ob_gfx_fail', tier); location.reload(); });
+      R = await createRenderer($('c'), { tier, boot, noShadow: store.get('ob_gfx_noshadow') === tier });
+      // the renderer's self-test measured the pitch from real pixels (render3d.js)
+      const t = R.selfTest;
+      if (t.fix || t.srgb.mode !== 'native' || new URLSearchParams(location.search).has('diag')) report('selftest', t);
+      if (t.fix === 'noshadow') store.set('ob_gfx_noshadow', tier);
+      if (t.fix === 'tier') { store.set('ob_gfx_fail', tier); await new Promise(r => setTimeout(r, 300)); location.reload(); return new Promise(() => { }); }
+      return;
+    } catch (e) {
+      console.error(e);
+      store.set('ob_gfx_fail', 'lite');
+      for (const s of ['stadium', 'players', 'shaders', 'warm']) boot.stage(s).skip(); // not needed any more
+    }
   }
+  start2D();
 }
 const qualityNames = { auto: 'Auto', high: 'High', medium: 'Medium', lite: 'Low', '2d': '2D' };
 // On Auto, a tier this machine can't hold even at its lightest settings steps down a tier and the
 // choice is remembered, so the next visit starts there. Only ever between matches, never mid-play.
 let lastLive = false;
 setInterval(() => {
-  if (graphicsPref !== 'auto' || tier === '2d' || !R || !R.struggling || lastLive) return;
+  if (tier === '2d' || !R || !R.struggling || lastLive) return;
+  if (!pacer.half) { pacer.setHalf(true); if (touchDevice || ctrl === 'touch') store.set('ob_half', '1'); return; }
+  if (tier === 'lite') return; // the last 3D tier: 2d is not a substitute
   store.set('ob_gfx_fail', tier); location.reload();
 }, 2000);
-const qualityLabel = () => graphicsPref === 'auto' ? `Auto (${qualityNames[tier]})` : qualityNames[graphicsPref];
 function fitStage() { const r = $('view').getBoundingClientRect(); if (R && r.width > 0 && r.height > 0) R.resize(r.width, r.height); }
-new ResizeObserver(fitStage).observe($('view'));
+
+// =====================================================================
+// Views and navigation
+// =====================================================================
+// Two views share the page: the menu ('home') and a room. A URL is the view (/ or /r/CODE), so links,
+// reloads and the back button all work, but moving between views never leaves the page.
+let current = null; // 'home' | 'room:CODE'
+function navigate(path) { if (location.pathname !== path) history.pushState(null, '', path); route(); }
+function route() {
+  const m = location.pathname.match(/^\/r\/([A-Za-z0-9]{1,8})\/?$/);
+  const next = m ? 'room:' + m[1].toUpperCase() : 'home';
+  if (next === current) return;
+  if (current === 'home') home.leave(); else if (current) leaveRoom();
+  current = next;
+  if (m) enterRoom(m[1].toUpperCase());
+  else { if (location.pathname !== '/') history.replaceState(null, '', '/'); home.enter(); }
+}
+// one animation loop for the whole visit, drawing whichever view is showing, on the pacer's steady
+// cadence (pacer.js); the renderer is told the cadence as its per-frame budget
+const pacer = createPacer(), monitor = createMonitor();
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (!pacer.tick(now)) return;
+  const t0 = performance.now();
+  if (R && R.setBudget) R.setBudget(pacer.target);
+  if (current === 'home') home.frame(now); else if (current) frame(now);
+  monitor.record(now, performance.now() - t0, R && R.stats ? R.stats() : null);
+  perfTick(now);
+}
+// Performance reports: during live play the host gets a summary (20 s in, then each minute, a few
+// per visit), so how the game runs on each device is known, not guessed. ?perf=1 also shows it on
+// screen and reports every 10 s.
+const perfOverlay = new URLSearchParams(location.search).has('perf');
+let showFps = store.get('ob_fps') !== '0';
+let perfLive = 0, perfSent = 0, perfNext = 20000, perfShownAt = 0;
+function perfTick(now) {
+  if ((perfOverlay || showFps) && now - perfShownAt > 500) {
+    perfShownAt = now;
+    const s = monitor.summary(pacer.target);
+    let el = $('perf'); if (!el) { el = document.createElement('div'); el.id = 'perf'; document.body.appendChild(el); }
+    el.style.display = menuOpen() ? 'none' : '';
+    if (s) el.textContent = perfOverlay
+      ? `${s.fps} fps  p95 ${s.p95}ms  missed ${s.missed}%\njs ${s.js}ms (pl ${s.players} ball ${s.ball} wld ${s.world} gl ${s.submit})  gpu ${s.gpu ?? '-'}\n${s.size} pr ${s.pr} scale ${s.scale} lvl ${s.level} ${s.tier}${pacer.half ? ' 30fps' : ''}  calls ${s.calls}  target ${s.target}ms`
+      : `${s.fps} FPS · ${s.p50} ms · p95 ${s.p95} · missed ${s.missed}% · ${s.tier}${pacer.half ? ' · 30fps' : ''}`;
+  } else if (!perfOverlay && !showFps) { const el = $('perf'); if (el) el.style.display = 'none'; }
+  if (!lastLive) { perfLive = 0; return; }
+  perfLive += pacer.target;
+  if (perfLive >= perfNext && perfSent < (perfOverlay ? 100 : 6)) {
+    const s = monitor.summary(pacer.target);
+    if (s) { report('perf', Object.assign(s, { vsync: +pacer.vsync.toFixed(2), half: pacer.half, ctrl })); perfSent++; }
+    perfNext = perfLive + (perfOverlay ? 10000 : 60000);
+  }
+}
 
 // =====================================================================
 // Home (with a live AI match playing in the background)
 // =====================================================================
-function showHome() {
-  $('home').classList.remove('hidden');
-  const nameIn = $('nameInput'); nameIn.value = myName();
+const home = (() => {
+  const nameIn = $('nameInput');
   const needName = () => {
     const n = nameIn.value.trim();
     if (!n) { nameIn.focus(); nameIn.classList.remove('shake'); void nameIn.offsetWidth; nameIn.classList.add('shake'); return null; }
     store.set('ob_name', n.slice(0, 16)); return n;
   };
-  const go = code => { if (needName()) location.href = '/r/' + encodeURIComponent(code.toUpperCase()); };
+  // on a phone, going into a room also goes full screen (this runs inside the tap)
+  const go = code => { if (needName()) { if (touchDevice) immersive(); navigate('/r/' + encodeURIComponent(code.toUpperCase())); } };
   const create = async practice => {
     if (!needName()) return;
+    if (touchDevice) immersive(); // now, while still inside the tap: the room code is fetched below
     if (practice) store.set('ob_practice', 'solo');
     try { const r = await (await fetch('/api/new')).json(); go(r.code); } catch { toast('Server unreachable. Is it running?'); }
   };
@@ -288,23 +375,34 @@ function showHome() {
   $('joinBtn').onclick = () => { const c = $('codeInput').value.trim().replace(/[^A-Za-z0-9]/g, ''); if (c) go(c); else $('codeInput').focus(); };
   $('codeInput').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
   nameIn.onkeydown = e => { if (e.key === 'Enter') $('createBtn').click(); };
-  if (!nameIn.value) nameIn.focus();
+  let timer = null;
   async function refresh() {
     try {
       const [rooms, lb] = await Promise.all([fetch('/api/rooms').then(r => r.json()), fetch('/api/leaderboard').then(r => r.json())]);
+      if (current !== 'home') return;
       $('roomsList').innerHTML = rooms.length ? '<div class="cap">Rooms on the network</div>' + rooms.map(r =>
         `<button class="live-room" data-code="${esc(r.code)}"><b>${esc(r.code)}</b><span class="who">${esc(r.names.join(', '))}</span><span class="tag${r.live ? '' : ' open'}">${r.live ? 'Live' : 'Join'}</span></button>`).join('') : '';
       $('roomsList').querySelectorAll('.live-room').forEach(b => b.onclick = () => go(b.dataset.code));
       $('homeLb').innerHTML = lbHtml(lb, myName(), 8);
     } catch { }
   }
-  refresh(); setInterval(refresh, 3000);
 
   // attract mode: two bots play a real match locally
-  let sim = OB.createSim(0), acc = 0, last = performance.now(), prevWorld = null, curWorld = null;
+  let sim = null, acc = 0, last = 0, prevWorld = null, curWorld = null;
   const toWorld = s => ({ ball: [s.ball.x, s.ball.y, s.ball.hot > 0 ? 1 : 0, s.ball.z || 0], players: s.players.map(p => [p.x, p.y, p.fx, p.fy, p.ch ? p.ct : -1, p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, 0, 0]) });
-  function loop(now) {
-    requestAnimationFrame(loop);
+  function enter() {
+    document.title = 'Office Ball';
+    $('home').classList.remove('hidden');
+    nameIn.value = myName(); $('codeInput').value = '';
+    if (!nameIn.value && !touchDevice) nameIn.focus(); // a phone's keyboard would cover the menu
+    refresh(); timer = setInterval(refresh, 3000);
+    sim = OB.createSim(0); acc = 0; last = performance.now(); prevWorld = curWorld = null;
+  }
+  function leave() {
+    $('home').classList.add('hidden');
+    clearInterval(timer); timer = null; sim = null;
+  }
+  function frame(now) {
     acc += Math.min(100, now - last); last = now;
     while (acc >= 1000 / 60) {
       acc -= 1000 / 60;
@@ -328,8 +426,8 @@ function showHome() {
     } : curWorld;
     R.frame({ mode: 'showcase', world: W, live: false, names: ['Home', 'Away'], mySlot: -1, noTrail: false, scoreboard: { names: ['RED', 'BLUE'], score: sim.score, mid: 'LIVE' } });
   }
-  requestAnimationFrame(loop);
-}
+  return { enter, leave, frame };
+})();
 
 // =====================================================================
 // Room / game
@@ -345,16 +443,45 @@ function slotName(i) {
   return room ? memberName(room.slots[i]) : (i ? 'BLUE' : 'RED');
 }
 
+// the room view's controls are wired once per visit; entering a room only resets its state
+let roomWired = false;
 function enterRoom(c) {
   code = c;
+  resetRoomState();
   $('hud').classList.remove('hidden');
   $('roomCode').textContent = code; $('roomCode2').textContent = code;
   document.title = `Office Ball · ${code}`;
-  history.replaceState(null, '', '/r/' + code);
-  setupShare(); setupMenu(); setupInput();
+  if (location.pathname !== '/r/' + code) history.replaceState(null, '', '/r/' + code);
+  if (!roomWired) {
+    roomWired = true;
+    setupShare(); setupMenu(); setupInput();
+    setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'ping', c: performance.now() })); }, 2000);
+  }
+  updateShareLink();
   if (!myName()) askName(connect); else connect();
-  requestAnimationFrame(frame);
-  setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'ping', c: performance.now() })); }, 2000);
+}
+// back to the menu: the socket is closed for good (the server sees the player leave), and
+// everything the room drew over the view is cleared; the renderer stays as it is
+function leaveRoom() {
+  const sock = ws; ws = null; code = '';
+  clearTimeout(reconnectTimer);
+  if (sock) { sock.onclose = null; try { sock.close(1000, 'left'); } catch { } }
+  closeMenu(); releaseAllInputs();
+  if (touch) touch.show(false);
+  for (const id of ['hud', 'conn', 'nameModal', 'emotes']) $(id).classList.add('hidden');
+  resetRoomState();
+}
+function resetRoomState() {
+  myId = null; room = null; matchInfo = null; result = null; lastGoal = null; retry = 0; everConnected = false;
+  hist.length = 0; pendingEvents.length = 0; clock.reset();
+  lastRenderTick = 0; lastFrameAt = null; pingMs = null;
+  screenKey = ''; lastCountdown = -1; introPlayed = false; resultAt = 0; resultFx = false; lastBig = ''; frame.wasReplay = false;
+  for (const b of bubbles.values()) b.el.remove(); bubbles.clear();
+  labels.querySelectorAll('.float').forEach(e => e.remove());
+  tags.forEach(t => { t.style.display = 'none'; });
+  $('screen').innerHTML = ''; $('footer').textContent = ''; $('memberList').innerHTML = ''; $('hudRight').innerHTML = ''; $('hudRight')._html = '';
+  $('bigText').className = ''; $('goalBanner').classList.remove('on');
+  $('letterbox').classList.remove('on'); $('replayBadge').classList.remove('on');
 }
 
 function askName(then) {
@@ -374,22 +501,25 @@ function copyText(v, btn) {
   if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).catch(fallback); else fallback();
   if (btn) { const old = btn.textContent; btn.textContent = 'Copied'; btn.blur(); setTimeout(() => btn.textContent = old, 1400); }
 }
+// the host a teammate should use: this PC's LAN address when the page is open on localhost (asked
+// once per visit), else the address this page was opened with
+let shareHost = location.host;
+function updateShareLink() { shareUrl = `${location.protocol}//${shareHost}/r/${code}`; $('shareLink').value = shareUrl; screenKey = ''; }
 async function setupShare() {
-  const setLink = host => { shareUrl = `${location.protocol}//${host}/r/${code}`; $('shareLink').value = shareUrl; screenKey = ''; };
-  setLink(location.host);
+  $('shareLink').onclick = () => $('shareLink').select();
+  $('copyBtn').onclick = e => copyText(shareUrl, e.currentTarget);
+  $('screen').addEventListener('click', e => { const b = e.target.closest('[data-act="copy"]'); if (b) copyText(shareUrl, b); });
   const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
   try {
     const info = await (await fetch('/api/info')).json();
     if (local && info.ips.length) {
-      setLink(`${info.ips[0]}:${location.port || info.port}`);
+      shareHost = `${info.ips[0]}:${location.port || info.port}`;
       $('shareHint').innerHTML = 'Teammates must be on the same office network or Wi-Fi.' +
         (info.ips.length > 1 ? `<br>Link not working? Try ${info.ips.slice(1).map(ip => `<code>${esc(ip)}</code>`).join(', ')}` : '');
     } else if (local) $('shareHint').textContent = 'This PC is not on a network. Connect to Wi-Fi or LAN so others can join.';
     else $('shareHint').textContent = 'Anyone on this network can open it.';
   } catch { }
-  $('shareLink').onclick = () => $('shareLink').select();
-  $('copyBtn').onclick = e => copyText(shareUrl, e.currentTarget);
-  $('screen').addEventListener('click', e => { const b = e.target.closest('[data-act="copy"]'); if (b) copyText(shareUrl, b); });
+  if (code) updateShareLink();
 }
 
 const practicePref = () => (store.get('ob_practice') === 'solo' ? 'solo' : 'bot');
@@ -405,7 +535,7 @@ function openMenu(pane = 'room') {
 function closeMenu() { $('menu').classList.add('hidden'); }
 function showPane(pane) {
   if (pane === 'resume') return closeMenu();
-  if (pane === 'leave') { location.href = '/'; return; }
+  if (pane === 'leave') { navigate('/'); return; }
   document.querySelectorAll('.menu-nav button').forEach(b => b.classList.toggle('on', b.dataset.pane === pane));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.dataset.pane === pane));
   if (pane === 'table') $('lbTable').innerHTML = lbHtml(lbList, myName());
@@ -414,6 +544,14 @@ function setupMenu() {
   document.querySelectorAll('.hbtn[data-icon]').forEach(b => b.insertAdjacentHTML('afterbegin', ICON[b.dataset.icon]));
   $('menuBtn').onclick = e => { e.currentTarget.blur(); menuOpen() ? closeMenu() : openMenu('room'); };
   $('inviteBtn').onclick = e => { e.currentTarget.blur(); openMenu('invite'); };
+  // touch: the emotes (keys 1-6 elsewhere) are a tray under the header; a tap sends one and closes it
+  const tray = $('emotes');
+  tray.innerHTML = EMOTES.map((t, i) => `<button type="button" data-n="${i}">${esc(t)}</button>`).join('');
+  tray.onclick = e => { const b = e.target.closest('button'); if (b) { send({ t: 'emote', n: +b.dataset.n }); tray.classList.add('hidden'); } };
+  $('emoteBtn').onclick = e => { e.stopPropagation(); tray.classList.toggle('hidden'); };
+  addEventListener('pointerdown', e => { if (!tray.classList.contains('hidden') && !e.target.closest('#emotes, #emoteBtn')) tray.classList.add('hidden'); });
+  if (!canFullscreen) $('fsBtn').remove();
+  else $('fsBtn').onclick = () => immersive(!(document.fullscreenElement || document.webkitFullscreenElement));
   document.querySelectorAll('.menu-nav button').forEach(b => b.onclick = () => showPane(b.dataset.pane));
   $('menu').onclick = e => { if (e.target === $('menu')) closeMenu(); };
   document.querySelectorAll('#practiceSeg button').forEach(b => b.onclick = () => {
@@ -423,18 +561,37 @@ function setupMenu() {
   const muteLabel = () => { $('muteBtn').textContent = Sound.muted ? 'Off' : 'On'; };
   muteLabel(); $('muteBtn').onclick = () => { Sound.toggle(); muteLabel(); };
   setupMenu.muteLabel = muteLabel;
+  const fpsLabel = () => { $('fpsBtn').textContent = showFps ? 'On' : 'Off'; };
+  fpsLabel();
+  $('fpsBtn').onclick = () => { showFps = !showFps; store.set('ob_fps', showFps ? '1' : '0'); fpsLabel(); perfShownAt = 0; };
   $('sitBtn').onclick = () => { const me = room && room.members.find(m => m.id === myId); if (me) send({ t: 'sit', v: !me.sitting }); };
   $('renameBtn').onclick = () => askName(() => send({ t: 'name', name: myName() }));
-  const qb = $('qualityBtn');
-  qb.textContent = qualityLabel();
-  qb.onclick = () => {
+  // graphics preset: a list to pick from, with what each one draws
+  const qs = $('qualitySel'), qd = $('qualityDesc');
+  const describe = () => {
+    const p = graphicsPref === 'auto' ? tier : graphicsPref;
+    qd.textContent = (graphicsPref === 'auto' ? `Auto picked ${qualityNames[tier]} for this device. ` : '') + QUALITY_DESC[p];
+  };
+  qs.innerHTML = ['auto', 'high', 'medium', 'lite', '2d'].map(k => `<option value="${k}">${k === 'auto' ? `Auto (${qualityNames[tier]})` : qualityNames[k]}</option>`).join('');
+  qs.value = graphicsPref; describe();
+  qs.onchange = () => {
     // a different renderer is built from scratch: remember the choice and reload into it (a
-    // reconnect puts you straight back in the room); choosing clears any remembered failure
-    graphicsPref = { auto: 'high', high: 'medium', medium: 'lite', lite: '2d', '2d': 'auto' }[graphicsPref] || 'auto';
+    // reconnect puts you straight back in the room; every file is already on this device)
+    graphicsPref = qs.value;
     store.set('ob_graphics', graphicsPref); store.set('ob_gfx_fail', '');
-    qb.textContent = qualityLabel(); setTimeout(() => location.reload(), 150);
+    describe(); qd.textContent += ' Switching now…';
+    // a ?gfx= in the link would override the choice: reload without it
+    const u = new URL(location.href); u.searchParams.delete('gfx');
+    setTimeout(() => location.replace(u.href), 250);
   };
 }
+const QUALITY_DESC = {
+  auto: '',
+  high: 'The full floodlit stadium: four floodlights casting shadows, ambient occlusion, bloom and lens streaks. For PCs with a real graphics card.',
+  medium: 'The same stadium with two shadow-casting floodlights, bloom and lens streaks. Best for laptops and phones.',
+  lite: 'Baked shadows and no post-processing. For slow or remote PCs.',
+  '2d': 'A flat top-down view. Runs anywhere.',
+};
 
 function renderMembers() {
   if (!room) return;
@@ -457,22 +614,26 @@ function renderMembers() {
 // ---------------- networking ----------------
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
+let reconnectTimer = null;
 function connect() {
+  if (!code) return; // left the room meanwhile
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(code)}`);
   const sock = ws;
   sock.onopen = () => {
+    if (ws !== sock) return;
     retry = 0; everConnected = true;
     sock.send(JSON.stringify({ t: 'hello', name: myName(), token, practice: practicePref() }));
     $('conn').classList.add('hidden');
     lastSent = ''; sendInput();
   };
-  sock.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } handle(m); };
+  // a socket that is no longer this view's (the room was left) says nothing more
+  sock.onmessage = e => { if (ws !== sock) return; let m; try { m = JSON.parse(e.data); } catch { return; } handle(m); };
   sock.onclose = () => {
     if (ws !== sock) return;
     if (everConnected) $('conn').classList.remove('hidden');
     clock.reset();
-    setTimeout(connect, Math.min(3000, 250 * ++retry));
+    reconnectTimer = setTimeout(connect, Math.min(3000, 250 * ++retry));
   };
 }
 
@@ -580,7 +741,16 @@ const held = new Set();
 const kickSources = new Set();
 const inp = { kp: 0, dc: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, rb: 0 };
 const mouse = { x: 0, y: 0, has: false };
-let ctrl = ['keyboard', 'mouse', 'gamepad'].includes(store.get('ob_ctrl')) ? store.get('ob_ctrl') : 'keyboard';
+// A phone or tablet (a touchscreen and nothing that hovers) starts on touch controls, unless a
+// controller was chosen on it; anything else starts on what it used last.
+const touchDevice = matchMedia('(hover: none) and (pointer: coarse)').matches;
+// the portrait block is CSS-only, and some browsers' media queries miss it: enforce it in JS too
+const rotateEl = $('rotate');
+const checkPortrait = () => rotateEl.classList.toggle('on', touchDevice && innerHeight > innerWidth);
+addEventListener('resize', checkPortrait); addEventListener('orientationchange', checkPortrait); checkPortrait();
+const savedCtrl = ['keyboard', 'mouse', 'gamepad', 'touch'].includes(store.get('ob_ctrl')) ? store.get('ob_ctrl') : null;
+let ctrl = touchDevice && savedCtrl !== 'gamepad' ? 'touch' : savedCtrl || 'keyboard';
+let touch = null; // the on-screen controls (touch.js), made with the room view
 let lastSent = '', padPrev = { kick: false, dash: false }, padSeen = false;
 const K = s => s.split(' ').map(k => `<span class="key">${k}</span>`).join('');
 const CTRL_HELP = {
@@ -597,13 +767,20 @@ const CTRL_HELP = {
     <span class="do">Shoot / pass</span><span class="how">Hold A or RT, release</span>
     <span class="do">Chip</span><span class="how">Y</span>
     <span class="do">Tackle</span><span class="how">X, B or LB. While charging it fakes the shot</span>`,
+  touch: `<span class="do">Move</span><span class="how">Put your left thumb down anywhere on the left half and steer. Ease off to keep the ball close; at full tilt (the knob lights up) it runs away from you</span>
+    <span class="do">Shoot / pass</span><span class="how">Hold <b>Shoot</b>, release. Let go while the button is gold for a perfect strike</span>
+    <span class="do">Chip</span><span class="how">Hold <b>Chip</b>, release. Lifts it over the keeper</span>
+    <span class="do">Tackle</span><span class="how"><b>Tackle</b>. To fake a shot, slide your thumb from Shoot onto Tackle</span>
+    <span class="do">Practice</span><span class="how"><b>Ball</b> brings the ball to your feet</span>`,
 };
 const CTRL_TOAST = {
   keyboard: 'Keyboard controls',
   mouse: 'Mouse controls: run to the pointer, hold click and release to shoot, right-click to tackle',
   gamepad: 'Controller: left stick moves, A shoots, Y chips, X tackles',
+  touch: 'Touch controls: left thumb moves, right thumb shoots, chips and tackles',
 };
-function releaseAllInputs() { held.clear(); for (const s of [...kickSources]) kickUp(s); inp.ax = inp.ay = 0; sendInput(); }
+const CTRL_NAME = { keyboard: 'Keyboard', mouse: 'Mouse', gamepad: 'Controller', touch: 'Touch' };
+function releaseAllInputs() { held.clear(); for (const s of [...kickSources]) kickUp(s); if (touch) touch.reset(); inp.ax = inp.ay = 0; sendInput(); }
 function typing(e) { const t = e.target; return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
 function sendInput(force) {
   const msg = {
@@ -637,6 +814,9 @@ function dashPress() {
   inp.dc++; sendInput();
 }
 function rumble(strong, weak, ms) {
+  // a phone buzzes (where the browser allows it: Android, not iOS): short for a touch of the ball,
+  // a double pulse for the big moments
+  if (ctrl === 'touch') { try { if (navigator.vibrate && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) navigator.vibrate(strong >= 0.9 ? [28, 40, 44] : Math.round(10 + 30 * strong)); } catch { } return; }
   if (ctrl !== 'gamepad' || !navigator.getGamepads) return;
   for (const gp of navigator.getGamepads()) if (gp && gp.connected && gp.vibrationActuator) { try { gp.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak }); } catch { } break; }
 }
@@ -644,6 +824,10 @@ function updateCtrlUI() {
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.classList.toggle('on', b.dataset.c === ctrl));
   const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl];
   $('view').classList.toggle('mouse-mode', ctrl === 'mouse');
+  document.body.classList.toggle('touch-ui', ctrl === 'touch');
+  $('replaySkip').textContent = { keyboard: 'Space to skip', mouse: 'Click to skip', gamepad: 'A to skip', touch: 'Shoot to skip' }[ctrl];
+  // keep the near touchline clear of the thumbs' lowest band while the on-screen controls are up
+  if (R && R.setSafeBottom) R.setSafeBottom(ctrl === 'touch' ? 0.07 : 0);
 }
 function setCtrl(mode, announce = true) {
   if (mode === ctrl) return;
@@ -654,8 +838,9 @@ function setCtrl(mode, announce = true) {
   sendInput();
 }
 function setupInput() {
+  // the game's controls exist only in a room (the menu is an ordinary page)
   addEventListener('keydown', e => {
-    if (typing(e) || !$('nameModal').classList.contains('hidden')) return;
+    if (!code || typing(e) || !$('nameModal').classList.contains('hidden')) return;
     if (e.code === 'Escape') { e.preventDefault(); menuOpen() ? closeMenu() : openMenu('room'); return; }
     if (menuOpen()) return;
     const act = KEYMAP[e.code];
@@ -684,8 +869,17 @@ function setupInput() {
   stage.addEventListener('pointermove', e => {
     const r = stage.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true;
   });
+  // on-screen controls: they feed the same input state as a controller's stick and buttons
+  touch = createTouchControls(stage, C, {
+    activate: () => { if (ctrl !== 'touch') setCtrl('touch'); },
+    stick: (x, y) => { inp.ax = x; inp.ay = y; sendInput(); },
+    kickDown, kickUp, dash: dashPress,
+    ball: () => { inp.rb++; sendInput(); },
+  });
   stage.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'touch' || e.target.closest('button, input, a, .interactive')) return;
+    // a finger on the game while another control scheme is active: switch to the touch controls
+    if (code && e.pointerType === 'touch' && ctrl !== 'touch') { setCtrl('touch'); return; }
+    if (!code || e.pointerType === 'touch' || e.target.closest('button, input, a, .interactive')) return;
     const r = stage.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true;
     if (e.button === 0 && e.shiftKey) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('lob:mouse'); e.preventDefault(); }
     else if (e.button === 0) { if (ctrl !== 'mouse') setCtrl('mouse'); kickDown('mouse'); e.preventDefault(); }
@@ -694,9 +888,12 @@ function setupInput() {
   });
   addEventListener('pointerup', e => { if (e.button === 0) { kickUp('mouse'); kickUp('lob:mouse'); } if (e.button === 1) kickUp('lob:mouse'); });
   stage.addEventListener('contextmenu', e => e.preventDefault());
-  addEventListener('gamepadconnected', () => { padSeen = true; toast('Controller detected. Move the stick to use it', 3500); });
+  addEventListener('gamepadconnected', () => { if (!code) return; padSeen = true; toast('Controller detected. Move the stick to use it', 3500); });
   addEventListener('blur', releaseAllInputs);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllInputs(); });
+  // turning the phone moves every control under the thumbs: let go of everything
+  if (screen.orientation) screen.orientation.addEventListener('change', releaseAllInputs);
+  else addEventListener('orientationchange', releaseAllInputs);
   setInterval(() => sendInput(true), 250);
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.onclick = e => { setCtrl(b.dataset.c); e.currentTarget.blur(); });
   updateCtrlUI();
@@ -849,7 +1046,7 @@ function renderScreens(s) {
         <div class="vs-mid"><div class="vs-vs">VS</div><div class="vs-count" id="cnt"></div></div>
         <div class="vs-side blue"><div class="vs-kicker">${ms === 1 ? 'You · ' : ''}Blue</div><div class="vs-name">${esc(mi.names[1])}</div><div class="vs-rating">${mi.ratings[1]}</div>${streak(1)}</div>
         <div class="vs-info">${h2h}</div>
-        ${ms >= 0 ? `<div class="vs-you">You attack ${ms ? '←' : '→'} · ${{ keyboard: 'Keyboard', mouse: 'Mouse', gamepad: 'Controller' }[ctrl]} controls</div>` : ''}
+        ${ms >= 0 ? `<div class="vs-you">You attack ${ms ? '←' : '→'} · ${CTRL_NAME[ctrl]} controls</div>` : ''}
       </div>`);
     }
     const cn = $('cnt'); if (cn) cn.textContent = secs;
@@ -911,7 +1108,6 @@ const setText = (el, v) => { v = String(v); if (el.textContent !== v) el.textCon
 const setHTML = (el, v) => { if (el._html !== v) { el._html = v; el.innerHTML = v; } };
 const setClass = (el, v) => { if (el.className !== v) el.className = v; };
 function frame(now) {
-  requestAnimationFrame(frame);
   const dtMs = lastFrameAt === null ? 16.7 : Math.min(100, now - lastFrameAt); lastFrameAt = now;
   let s = null, view = null;
   const pt = clock.advance(now, dtMs);
@@ -1006,6 +1202,13 @@ function frame(now) {
     const m = Math.hypot(ax, ay);
     aim = m > 0.12 ? [ax / m, ay / m] : [me[2], me[3]];
   }
+  // on-screen controls: up whenever this player can act (the countdown, play, replays to skip, full
+  // time to ready up); down for spectators, while waiting for a player, and under the menu
+  if (touch) {
+    const act = ctrl === 'touch' && ms >= 0 && s && (s.rp === 'prematch' || s.rp === 'match' || s.rp === 'over') && !menuOpen();
+    touch.show(!!act);
+    if (act) touch.update({ ct: inp.kickDownAt !== null ? (performance.now() - inp.kickDownAt) * TPMS : -1, dashCd: s.p && s.p[ms] ? s.p[ms][7] : 0, solo: !!s.so });
+  }
   const names = [slotName(0), slotName(1)];
   const rv = {
     mode, introT, celebrate, world, live, mySlot: ms, localCt, names, aim, cursor, hide: s && s.so ? [false, true] : null, timeScale: clock.rate, localLob: !!inp.lobArm,
@@ -1038,7 +1241,7 @@ function frame(now) {
   // spectator footer
   let foot = '';
   if (s && s.rp === 'match' && ms >= 0 && s.ph === 'kickoff' && !s.so) foot = `YOU ATTACK ${attackArrow(ms, s.sw)}`;
-  if (s && s.so && s.rp === 'match' && ms >= 0 && s.ph === 'kickoff') foot = 'R brings the ball to your feet';
+  if (s && s.so && s.rp === 'match' && ms >= 0 && s.ph === 'kickoff') foot = ctrl === 'touch' ? 'Ball button brings it to your feet' : 'R brings the ball to your feet';
   if (s && s.rp === 'match' && ms < 0 && room && !replaying) {
     const me = room.members.find(m => m.id === myId), qi = room.queue.indexOf(myId);
     foot = me && me.sitting ? 'Watching · sitting out' : qi === 0 ? "Watching · you're next" : qi > 0 ? `Watching · #${qi + 1} in line` : 'Watching';
@@ -1047,9 +1250,28 @@ function frame(now) {
 }
 
 // read-only hook for debugging/automated tests
-window.__ob = { cam: () => R && R.debugCam(), project: (x, y, h) => R && R.project(x, y, h), state: () => hist[hist.length - 1], slot: mySlot, renderTick: () => lastRenderTick, delay: () => clock.delay, ctrl: () => ctrl };
+window.__ob = { perf: () => monitor.summary(pacer.target), stats: () => R && R.stats && R.stats(), cam: () => R && R.debugCam(), scene: () => R && R.debugScene && R.debugScene(), project: (x, y, h) => R && R.project(x, y, h), state: () => hist[hist.length - 1], slot: mySlot, renderTick: () => lastRenderTick, delay: () => clock.delay, ctrl: () => ctrl };
 
 // ---------------- start ----------------
-const route = location.pathname.match(/^\/r\/([A-Za-z0-9]{1,8})/);
-if (route) enterRoom(route[1].toUpperCase()); else showHome();
-fitStage();
+// Called by the boot loader once every file is here. Resolves when the game is completely ready
+// (renderer built, shaders compiled, first frame drawn) and the loading screen can go.
+export async function start(boot) {
+  tier = boot.tier; graphicsPref = boot.pref; probeInfo = boot.probe;
+  const fps = new URLSearchParams(location.search).get('fps');
+  const isTouch = touchDevice || ctrl === 'touch';
+  if (isTouch) pacer.setMaxFps(60);
+  if (tier === 'high' && probeInfo && probeInfo.integrated) { try { localStorage.removeItem('ob_adapt_high'); } catch { } }
+  if (fps === '60') store.set('ob_half', '');
+  else if (fps === '30' || (isTouch && store.get('ob_half') === '1') || (isTouch && tier === 'lite')) {
+    pacer.setHalf(true);
+    if (fps !== '30' && isTouch) store.set('ob_half', '1');
+    if (isTouch && tier === 'lite') { try { localStorage.removeItem('ob_adapt_' + tier); } catch { } }
+  }
+  await createView(boot);
+  new ResizeObserver(fitStage).observe($('view'));
+  fitStage();
+  addEventListener('popstate', route);
+  route();
+  requestAnimationFrame(loop);
+  await boot.ready();
+}

@@ -9,7 +9,9 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createLighting } from './lighting.js';
 import { KITS } from './kits.js';
 import { buildStadium } from './stadium.js';
-import { Human, Pose, HAIR_KEYS, MODEL_HEIGHT, loadPlayerAssets, resetPlayerAssets, boneIndex } from './human.js';
+import { Human, Pose, HAIR_KEYS, MODEL_HEIGHT, loadPlayerAssets, boneIndex } from './human.js';
+import { probeSRGB, applySRGBMode } from './texcompat.js';
+import { mergeStatic, bakeUV } from './merge.js';
 
 const C = window.OB.C;
 export const S = 0.02; // sim px -> world units
@@ -786,10 +788,10 @@ const NET_DRAG = 2.2, NET_GRAV = 9.81, NET_GRIP = 5; // 1/s: energy the net take
 const MU_S = 0.9, MU_K = 0.6;                // cord-on-leather friction, static / kinetic
 class Net {
   // panels: [{ a, b, c, d, slack }], corners a (u0 v0), b (u1 v0), c (u0 v1), d (u1 v1)
-  constructor(parent, panels, mat) {
+  constructor(parent, panels, mat, mesh = MESH) {
     const pos = [], w = [], links = [], lines = [];
     for (const pn of panels) {
-      const nu = Math.max(2, Math.round(pn.a.distanceTo(pn.b) / MESH)), nv = Math.max(2, Math.round(pn.a.distanceTo(pn.c) / MESH));
+      const nu = Math.max(2, Math.round(pn.a.distanceTo(pn.b) / mesh)), nv = Math.max(2, Math.round(pn.a.distanceTo(pn.c) / mesh));
       const base = pos.length / 3, id = (i, j) => base + j * (nu + 1) + i, P = new THREE.Vector3();
       for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) {
         const u = i / nu, v = j / nv;
@@ -1023,11 +1025,12 @@ function tubeFrame(paths, r) {
 }
 
 class Goal {
-  constructor(scene, side, netMat) {
+  constructor(scene, side, netMat, mesh = MESH, lite = false) {
     this.side = side; const gx = side * HW; this.gx = gx;
     const g = new THREE.Group(); scene.add(g); this.g = g; this.shakeT = 0;
-    // gloss white enamel over aluminium: a clear coat that carries the floodlights' reflections
-    const white = new THREE.MeshPhysicalMaterial({ color: 0xd9dce2, roughness: 0.34, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.1 });
+    const white = lite
+      ? new THREE.MeshStandardMaterial({ color: 0xd9dce2, roughness: 0.34, metalness: 0.0 })
+      : new THREE.MeshPhysicalMaterial({ color: 0xd9dce2, roughness: 0.34, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.1 });
     const hw = GW / 2, backH = GOAL_H * 0.72, bx = gx + side * GDP, V = (x, y, z) => new THREE.Vector3(x, y, z);
     // posts and bar: centre line from post foot (just below the grass) over the bar to the other foot
     const PA = 0.068, PB = 0.056; // half-depth, half-width of the elliptical section
@@ -1053,7 +1056,7 @@ class Goal {
       { a: V(nx, ny, -hw), b: V(nx, ny, hw), c: V(bx, backH, -hw), d: V(bx, backH, hw), slack: 0.05 },  // roof
       { a: V(nx, ny, -hw), b: V(bx, backH, -hw), c: V(nx, 0, -hw), d: V(bx, 0, -hw), slack: 0.035 },   // sides
       { a: V(nx, ny, hw), b: V(bx, backH, hw), c: V(nx, 0, hw), d: V(bx, 0, hw), slack: 0.035 },
-    ], netMat);
+    ], netMat, mesh);
     this.hw = hw; this.bx = bx; this.nx = nx; this.handoff = 0; this._out = { x: 0, y: 0, z: 0 };
     this.net.mouth = { x: gx, s: side };
   }
@@ -1100,42 +1103,83 @@ class Goal {
   }
 }
 
+// ---------------------------------------------------------------- shader programs
+// Wait until every program behind `list` (materials from renderer.compile(), or programs) is
+// finished, counting them off on the loading screen's stage `S`. With KHR_parallel_shader_compile
+// the driver compiles them all at once and each is polled without blocking; without it, finishing
+// a program blocks, so they are finished one ~12 ms slice at a time and the screen still moves.
+// getUniforms() runs three's first-use checks now, rather than in the first frame that uses it.
+async function compilePrograms(renderer, list, S) {
+  const progs = new Set();
+  for (const x of list) {
+    const p = x.isMaterial ? renderer.properties.get(x).currentProgram : x;
+    if (p && p.isReady) progs.add(p);
+  }
+  const total = progs.size;
+  if (S) S.begin(total, 'programs', `0 of ${total} programs`);
+  let done = 0;
+  while (progs.size) {
+    const t0 = performance.now();
+    for (const p of progs) {
+      if (!p.isReady()) continue;
+      p.getUniforms(); progs.delete(p); done++;
+      if (performance.now() - t0 > 12) break;
+    }
+    if (S) { S.done = done; S.note(`${done} of ${total} programs`); }
+    if (progs.size) await new Promise(r => setTimeout(r, 4));
+  }
+  if (S) S.end(`${total} programs`);
+}
+
 // ---------------------------------------------------------------- renderer
 // opts.tier: 'high' | 'medium' | 'lite' (graphics.js picks it for the machine)
-export function createRenderer(canvas, { tier = 'high' } = {}) {
+// opts.boot: the boot loader's API (loader.js). Resolves once the renderer is completely ready:
+// the stadium and both players built, every GPU program compiled and a first full frame drawn, so
+// nothing about the renderer is ever built, compiled or uploaded later, mid-menu or mid-match.
+// opts.noShadow: this device draws floodlit surfaces black with shadow maps (found by the self-test
+// below on an earlier visit), so it runs without them
+export async function createRenderer(canvas, { tier = 'high', boot, noShadow = false } = {}) {
   const lite = tier === 'lite';
+  // the stadium build, reported step by step (each step yields so the loading screen can paint)
+  const SS = boot.stage('stadium').begin(11, 'steps', 'Floodlights and sky');
+  const built = async (next) => { SS.step(1, next); await boot.yield(); };
   // high/medium antialias in their own HDR target; lite renders straight to the canvas unsmoothed
   // (on a software rasteriser multisampling costs a whole extra pass of every pixel)
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  // start downloading the players first, so the network works while the stadium is built below
-  // (loadPlayers further down picks up this same request)
-  loadPlayerAssets(renderer, e => {
-    const b = window.__boot; if (!b) return;
-    if (e.phase === 'download') b.download(e.loaded, e.total, e.files, e.filesDone, e.known); else b.build();
-  }).catch(() => {});
+  renderer.info.autoReset = false; // counted per frame (all passes), reset in frame()
+  // how this GPU samples colour textures correctly (texcompat.js); applied once everything is built
+  const srgb = probeSRGB(renderer);
+  // ?tex=native|nomip|shader forces a path for this visit (support and testing)
+  const texParam = new URLSearchParams(location.search).get('tex');
+  if (['native', 'nomip', 'shader'].includes(texParam)) Object.assign(srgb, { mode: texParam, forced: true });
   const aniso = renderer.capabilities.getMaxAnisotropy();
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(32, 16 / 9, 0.1, 300);
   // floodlights, sky, image-based lighting and the post chain (lighting.js)
   TIER = tier;
-  const light = createLighting(renderer, scene, camera, { HW, HH, PW, PH, GDP }, tier);
+  const integrated = !!(boot && boot.probe && boot.probe.integrated);
+  const light = createLighting(renderer, scene, camera, { HW, HH, PW, PH, GDP }, tier, integrated ? 1024 : 0);
+  if (noShadow) renderer.shadowMap.enabled = false;
   if (lite) { // the grade's vignette, for free
     const v = document.createElement('div'); v.style.cssText = 'position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,8,0.45) 100%)';
     if (canvas.parentElement) canvas.parentElement.appendChild(v);
   }
+  await built('Pitch');
 
   // ground + pitch
   const outer = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x10161f, roughness: 1 }));
   outer.rotation.x = -Math.PI / 2; outer.position.y = -0.02; outer.receiveShadow = true; scene.add(outer);
   const track = new THREE.Mesh(new THREE.PlaneGeometry(PW + 13, PH + 7.5), new THREE.MeshStandardMaterial({ color: 0x1a4a2a, roughness: 1 }));
   track.rotation.x = -Math.PI / 2; track.position.y = -0.01; track.receiveShadow = true; scene.add(track);
-  const pt = pitchTexture(); pt.tex.anisotropy = aniso;
+  const pt = pitchTexture(); pt.tex.anisotropy = lite ? 1 : aniso;
+  await built('Grass');
   // Grass under floodlights: blades laid by the mower scatter light toward or away from the camera
   // depending on which way they lie, so the bands brighten and darken with the view (pan the camera
   // and they shift, as on TV). Plus a fine blade relief that catches the lamps as a soft sheen.
-  const gn = grassNormalTexture(); gn.repeat.set(pt.W / 0.9, pt.H / 0.9); gn.anisotropy = aniso;
+  const gn = lite ? null : grassNormalTexture();
+  if (gn) { gn.repeat.set(pt.W / 0.9, pt.H / 0.9); gn.anisotropy = aniso; }
   const pitchMat = new THREE.MeshStandardMaterial({ map: pt.tex, roughness: 0.9, normalMap: gn, normalScale: new THREE.Vector2(0.45, 0.45), envMapIntensity: 0.2 });
   pitchMat.onBeforeCompile = sh => {
     sh.uniforms.uBand = { value: PW / 12 }; sh.uniforms.uHW = { value: HW };
@@ -1150,14 +1194,15 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
   };
   const pitch = new THREE.Mesh(new THREE.PlaneGeometry(pt.W, pt.H), pitchMat);
   pitch.rotation.x = -Math.PI / 2; pitch.receiveShadow = true; scene.add(pitch);
+  await built('Advertising boards');
 
   // ad boards = the walls the ball bounces off
   const bTex = boardTexture(); bTex.anisotropy = aniso;
-  const boardTexs = [];
-  const boardMatFor = len => {
-    const t = bTex.clone(); t.needsUpdate = true; t.repeat.set(len / 5.5, 1); t.offset.x = Math.random(); boardTexs.push(t);
-    return new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: t, emissiveIntensity: 1.25, roughness: 0.4 });
-  };
+  // one LED material for every board: each board's repeat and start offset are baked into its own
+  // coordinates, so all of them merge into a single draw (and scroll together, as before)
+  const boardLed = bTex.clone(); boardLed.needsUpdate = true;
+  const boardTexs = [boardLed], boardStatics = [];
+  const face = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: boardLed, emissiveIntensity: 1.25, roughness: 0.4 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x0b0f18, roughness: 0.6 });
   const BH = 0.26, BT = 0.07;
   // the LED boards light the turf in front of them: a soft wash that falls off over a metre
@@ -1169,27 +1214,32 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
   const spillMat = new THREE.MeshBasicMaterial({ map: spillTex, color: new THREE.Color(0.62, 0.7, 1.0), transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending, depthWrite: false });
   const SPILL = 1.3;
   const board = (len, x, z, alongX) => {
-    const face = boardMatFor(len);
     const mats = alongX ? [dark, dark, dark, dark, face, face] : [face, face, dark, dark, dark, dark];
-    const m = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len : BT, BH, alongX ? BT : len), mats);
-    m.position.set(x, BH / 2, z); m.castShadow = true; scene.add(m);
+    const m = new THREE.Mesh(bakeUV(new THREE.BoxGeometry(alongX ? len : BT, BH, alongX ? BT : len), len / 5.5, Math.random()), mats);
+    m.position.set(x, BH / 2, z); m.castShadow = true; scene.add(m); boardStatics.push(m);
     // bright edge (the plane's local -z) against the board, fading out onto the pitch
     const ix = alongX ? 0 : -Math.sign(x), iz = alongX ? -Math.sign(z) : 0;
     const sp = new THREE.Mesh(new THREE.PlaneGeometry(len, SPILL).rotateX(-Math.PI / 2), spillMat);
     sp.position.set(x + ix * (BT / 2 + SPILL / 2), 0.011, z + iz * (BT / 2 + SPILL / 2));
-    sp.rotation.y = Math.atan2(ix, iz); sp.renderOrder = 1; scene.add(sp);
+    sp.rotation.y = Math.atan2(ix, iz); sp.renderOrder = 1; scene.add(sp); boardStatics.push(sp);
   };
   board(PW + 0.2, 0, -HH - BT / 2 - 0.02, true);
   board(PW + 0.2, 0, HH + BT / 2 + 0.02, true);
   const endLen = HH - GW / 2;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) board(endLen, sx * (HW + BT / 2 + 0.02), sz * (GW / 2 + endLen / 2), false);
+  mergeStatic(scene, boardStatics); // six boards and their glow: three draws instead of forty-two
+  await built('Goal and net (1 of 2)');
 
   // net cord: braided polyethylene, matte white
   const netMat = new THREE.MeshStandardMaterial({ color: 0xeef0f3, roughness: 0.78, metalness: 0 });
-  const goals = [new Goal(scene, -1, netMat), new Goal(scene, 1, netMat)];
+  const goals = [new Goal(scene, -1, netMat, lite ? 0.17 : MESH, lite)];
+  await built('Goal and net (2 of 2)');
+  goals.push(new Goal(scene, 1, netMat, lite ? 0.17 : MESH, lite));
+  await built('Stands and crowd');
 
   // the bowl: stands, roofs and their ring of floodlights, the crowd, the light show (stadium.js)
   const stadium = buildStadium(scene, { HW, HH, GDP }, tier, bTex);
+  await built('Big screen');
 
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x2c3342, roughness: 0.55, metalness: 0.7 });
   // stars in the sky
@@ -1235,33 +1285,13 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
     jTex.needsUpdate = true;
   }
   drawJumbo(null);
+  await built('Player 1: kit and markers');
 
-  // players, ball, trail, particles
-  const players = [new Player(scene, 0), new Player(scene, 1)];
-  // Player models: downloaded (with real progress on the loading screen), built, and every shader
-  // compiled before the loading screen goes, so the first seconds of play never stutter.
-  // A failed download is retried a few times before the loading screen reports it.
-  const boot = window.__boot || null, MAX_TRIES = 4;
-  const loadPlayers = (tries = 0) => loadPlayerAssets(renderer, e => {
-    if (!boot) return;
-    if (e.phase === 'download') boot.download(e.loaded, e.total, e.files, e.filesDone, e.known); else boot.build();
-  }).then(async A => {
-    players.forEach(P => { P.h.init(A); P.h.setEnvironment(light.env); });
-    if (boot) boot.shaders();
-    await new Promise(r => setTimeout(r, 0));
-    try { if (renderer.compileAsync) await renderer.compileAsync(scene, camera); else renderer.compile(scene, camera); } catch (e) { console.warn('shader precompile', e); }
-    // one full frame behind the loading screen compiles what compile() can't reach (shadow depth,
-    // AO and post-pass programs), so the first frame of play doesn't stall on it
-    try { light.render(); } catch (e) { console.warn('warm-up frame', e); }
-    warm = true;
-    if (boot) boot.done();
-  }).catch(e => {
-    console.error('player models failed to load', e);
-    resetPlayerAssets();
-    if (tries + 1 < MAX_TRIES) { if (boot) boot.retry(tries + 1, MAX_TRIES - 1); setTimeout(() => loadPlayers(tries + 1), 1200 * (tries + 1)); }
-    else if (boot) boot.fail('The player models could not be downloaded from the host PC.<br>Check the host is still running, then reload.');
-  });
-  loadPlayers();
+  // players (rigged once their models are in, below), ball, trail, particles
+  const players = [new Player(scene, 0)];
+  await built('Player 2: kit and markers');
+  players.push(new Player(scene, 1));
+  await built('Ball and effects');
   const ballMat = new THREE.MeshPhysicalMaterial({ map: ballTexture(), roughness: 0.5, clearcoat: 0.8, clearcoatRoughness: 0.18, emissive: 0xffc02e, emissiveIntensity: 0 });
   const ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 32, 20), ballMat);
   ball.castShadow = true; ball.visible = false; scene.add(ball);
@@ -1291,36 +1321,62 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
   const parts = new Particles(scene);
   const bankOn = [1, 1, 1, 1];
 
-  // Holding the frame rate. The tier sets what is drawn; within it, render resolution follows the
-  // measured frame time live (a lower scale is a smaller buffer, never a shader recompile), and if
-  // even the smallest scale can't keep up, the heaviest post passes switch off.
-  // level: 2 = full post chain, 1 = no AO, 0 = grade only
+  // Holding the frame rate. The client paces frames to a steady rate (the display's own, or half of
+  // it on 120 Hz+ screens: an even 60 beats a ragged 80) and gives the renderer its time budget per
+  // frame (setBudget). Within the tier, the renderer spends to fit that budget, giving up first what
+  // is least visible for what it saves:
+  //   1. ambient occlusion (high only: subtle, and it draws the whole scene a second time)
+  //   2. render resolution, in small steps down to a floor (a smaller buffer, never a recompile; on
+  //      a dense phone screen the first steps can't be seen)
+  //   3. bloom and lamp streaks, only when even the floor resolution can't keep up
+  // and wins it back in reverse order when there is headroom. Headroom is measured where the
+  // browser exposes GPU timing; elsewhere it is probed: step up after a stretch of on-time frames,
+  // and if that costs the budget, step straight back and leave it for longer each time.
+  // The setting it settles on is remembered for the device and tier, so the next visit starts there.
+  // level: 2 = full post chain, 1 = no AO, 0 = tone map + grade only
   const PR_CAP = { high: 1.75, medium: 1.25, lite: 1 }[tier] || 1.5, MIN_SCALE = { high: 0.6, medium: 0.55, lite: 0.4 }[tier] || 0.6;
+  const hasAO = tier === 'high', SETTLED = 'ob_adapt_' + tier;
   let quality = 'auto', level = 2, scale = lite ? 0.75 : 1;
-  let ftAvg = 16, cssW = 1, cssH = 1, lastScaleT = 0, upBlockUntil = 0, lastCheck = 0, lastUp = -1;
+  try { const k = JSON.parse(localStorage.getItem(SETTLED)); if (k && k.scale >= MIN_SCALE && k.scale <= 1 && [0, 1, 2].includes(k.level)) { scale = k.scale; level = k.level; } } catch { }
+  let budget = 1000 / 60, ftAvg = budget, ftVar = 0, cssW = 1, cssH = 1, lastChange = 0, upBlockUntil = 0, upBlockFor = 20, lastCheck = 0, lastUp = -1, settledAt = 0;
   function setQuality(q) { quality = q; }
-  // struggling: already at the smallest scale and the lightest post, and still slow for seconds
-  // on end. The client then steps down a tier (see client.js); it never happens mid-match.
-  // A display or remote session that caps the browser at 30 fps looks slow too, but ticks with
-  // metronome regularity; a machine that can't keep up is ragged. Only the ragged kind counts.
-  let struggleT = 0, ftVar = 0;
+  function setBudget(ms) { if (Math.abs(ms - budget) > 0.5) { budget = ms; ftAvg = ms; ftVar = 0; } }
+  // struggling: at the bottom of the ladder and still well over budget for seconds on end. The
+  // client then steps down a tier (see client.js), only ever between matches.
+  let struggleT = 0;
+  const down = () => {
+    if (level === 2 && hasAO) { level = 1; light.setLevel(level); return true; }
+    if (scale > MIN_SCALE + 1e-3) { scale = Math.max(MIN_SCALE, scale * 0.85); resize(cssW, cssH); return true; }
+    if (level > 0) { level = 0; light.setLevel(level); return true; }
+    return false;
+  };
+  const up = () => {
+    if (level === 0) { level = hasAO ? 1 : 2; light.setLevel(level); return true; }
+    if (scale < 1 - 1e-3) { scale = Math.min(1, scale * 1.12); resize(cssW, cssH); return true; }
+    if (level === 1 && hasAO) { level = 2; light.setLevel(level); return true; }
+    return false;
+  };
   function adapt(now, rawDt) {
     const ms = rawDt * 1000;
-    ftAvg += (ms - ftAvg) * 0.06; ftVar += ((ms - ftAvg) ** 2 - ftVar) * 0.06;
-    const capped = Math.abs(ftAvg - 33.33) < 1.5 && Math.sqrt(ftVar) < 1.5;
-    struggleT = scale <= MIN_SCALE + 1e-3 && level === 0 && ftAvg > 26 && !capped ? struggleT + rawDt : 0;
-    if (now - lastCheck < 1.2) return; lastCheck = now;
-    const slow = ftAvg > 21, fast = ftAvg < 15.5;
+    ftAvg += (ms - ftAvg) * 0.08; ftVar += ((ms - ftAvg) ** 2 - ftVar) * 0.08;
+    const bottom = scale <= MIN_SCALE + 1e-3 && level === 0;
+    struggleT = bottom && ftAvg > budget * 1.5 ? struggleT + rawDt : 0;
+    if (now - lastCheck < 1) return; lastCheck = now;
+    const g = gpu.ms;
+    const slow = ftAvg > budget * 1.2 || (g !== null && g > budget * 0.92);
+    const headroom = g !== null ? g < budget * 0.62 && ftAvg < budget * 1.1 : ftAvg < budget * 0.95;
     if (slow) {
-      if (lastUp > 0 && now - lastUp < 4) upBlockUntil = now + 30; // the last step up was one too many
-      let acted = true;
-      if (scale > MIN_SCALE + 1e-3) { scale = Math.max(MIN_SCALE, scale * 0.82); lastScaleT = now; resize(cssW, cssH); }
-      else if (level > 0) { level--; light.setLevel(level); }
-      else acted = false;
-      if (acted) { ftAvg = 16.5; ftVar = 0; } // measure the new setting afresh
-      lastUp = -1;
-    } else if (fast && scale < 1 && now - lastScaleT > 6 && now > upBlockUntil) {
-      scale = Math.min(1, scale * 1.12); lastScaleT = lastUp = now; resize(cssW, cssH);
+      // the last step up was one too many: back down, and wait longer before trying again
+      if (lastUp > 0 && now - lastUp < 4) { upBlockUntil = now + upBlockFor; upBlockFor = Math.min(240, upBlockFor * 2); }
+      if (down()) { lastChange = now; ftAvg = budget; ftVar = 0; }
+      lastUp = -1; settledAt = now;
+    } else if (headroom && now - lastChange > 4 && now > upBlockUntil) {
+      if (up()) { lastChange = lastUp = now; ftAvg = budget; ftVar = 0; }
+    }
+    // remember a setting that has held for a while
+    if (!slow && now - lastChange > 10 && now - settledAt > 10) {
+      settledAt = now;
+      try { localStorage.setItem(SETTLED, JSON.stringify({ scale: +scale.toFixed(3), level })); } catch { }
     }
   }
 
@@ -1357,7 +1413,7 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
     // play always happens in a stadium rather than on a diagram of a pitch
     // (that point sits above and behind a far player's name tag, so it bounds both)
     const far = new THREE.Vector3(0, 3.3, -(HH + 3.2)), near = new THREE.Vector3(0, 0, HH + 0.35);
-    const topLimit = 0.97, botLimit = -0.97;
+    const topLimit = 0.97, botLimit = -0.97 + safeBottom * 2;
     let d = 22, tz = 0.5;
     for (let it = 0; it < 14; it++) {
       camera.position.set(0, 0, tz).addScaledVector(camDir, d); camera.lookAt(0, 0, tz); camera.updateMatrixWorld(); camera.updateProjectionMatrix();
@@ -1381,6 +1437,10 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
     camDist = fitD;
     camera.position.copy(camPos); camera.lookAt(camTgt);
   }
+  // a band along the bottom the near touchline is framed above (fraction of the view's height): the
+  // on-screen thumb controls sit there on a phone
+  let safeBottom = 0;
+  function setSafeBottom(f) { if (f !== safeBottom) { safeBottom = f; resize(cssW, cssH); } }
   function resize(w, h) {
     cssW = w; cssH = h;
     const pr = Math.min(window.devicePixelRatio || 1, PR_CAP) * scale;
@@ -1405,6 +1465,7 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
     m.position.y = 0.03; m.renderOrder = 4; m.visible = false; scene.add(m); return { m, t: 0, dur: 0.3, max: 2 };
   });
   let waveIdx = 0;
+  SS.end('Done');
   function wave(x, z, y, color, max, dur) { const w = waves[waveIdx++ % waves.length]; w.m.position.set(x, y, z); w.m.material.color.setHex(color); w.t = 0; w.dur = dur; w.max = max; w.m.visible = true; }
   const camKick = new THREE.Vector3();
   let ballSquash = 0, fovPunch = 0;
@@ -1473,12 +1534,7 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
 
 
   let lastT = null;
-  // Nothing is drawn until the players are built and every shader compiled: browsers without
-  // parallel shader compilation (Firefox) would otherwise stall the page compiling the menu's scene
-  // mid-download. The loading screen covers the view until then.
-  let warm = false;
   function frame(view, nowMs) {
-    if (!warm) return;
     const now = (nowMs !== undefined ? nowMs : performance.now()) / 1000;
     const rawDt = lastT === null ? 1 / 60 : Math.min(0.05, Math.max(0, now - lastT)); lastT = now;
     const dt = rawDt * (view.timeScale !== undefined ? view.timeScale : 1); // slow motion slows the world, not the UI
@@ -1486,6 +1542,9 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
     const live = !!view.live;
 
     if (rawDt > 0) adapt(now, rawDt);
+    const m0 = performance.now();
+    renderer.info.reset();
+    gpu.poll();
 
     // entities
     const W = view.world;
@@ -1503,6 +1562,7 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
         });
       });
     } else players.forEach(P => P.hide());
+    const m1 = performance.now();
 
     // aim arrow for my player while charging
     const me = W && W.players && view.mySlot >= 0 ? W.players[view.mySlot] : null;
@@ -1573,6 +1633,7 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
       hype = Math.max(hype * Math.exp(-dt * 0.8), near * 0.45);
     } else { ball.visible = false; ballBlob.visible = false; trail.visible = false; ballLight.intensity = 0; ballLive = false; simBall = null; for (const g of goals) g.step(dt, null); }
 
+    const m2 = performance.now();
     hypeR *= Math.exp(-dt * 0.45); hypeB *= Math.exp(-dt * 0.45);
     // kick-off: in the pre-match intro the floodlights come on bank by bank, then the roof ring
     const power = view.mode === 'intro' ? clamp(view.introT ?? 1, 0, 1) : 1;
@@ -1665,14 +1726,121 @@ export function createRenderer(canvas, { tier = 'high' } = {}) {
     v3.copy(camTgt).addScaledVector(camKick, 0.6);
     camera.lookAt(v3);
 
+    const m3 = performance.now();
+    const q = gpu.begin();
     light.render();
+    gpu.end(q);
+    const m4 = performance.now();
+    // where this frame's main-thread time went (ms), for the performance monitor
+    Object.assign(cost, { players: m1 - m0, ball: m2 - m1, world: m3 - m2, submit: m4 - m3, total: m4 - m0, calls: renderer.info.render.calls, tris: renderer.info.render.triangles });
   }
+  const cost = { players: 0, ball: 0, world: 0, submit: 0, total: 0, calls: 0, tris: 0 };
+  // GPU time per frame, where the browser exposes a GPU timer (EXT_disjoint_timer_query_webgl2):
+  // queries are read back frames later, never waited on
+  const gpu = (() => {
+    const gl = renderer.getContext(), ext = gl.getExtension('EXT_disjoint_timer_query_webgl2'), pending = [];
+    let ms = null;
+    if (!ext) return { begin: () => null, end() { }, poll() { }, get ms() { return null; } };
+    return {
+      begin() { if (pending.length > 5) return null; const q = gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, q); return q; },
+      end(q) { if (q) { gl.endQuery(ext.TIME_ELAPSED_EXT); pending.push(q); } },
+      poll() {
+        while (pending.length && gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+          const q = pending.shift(), bad = gl.getParameter(ext.GPU_DISJOINT_EXT), ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
+          gl.deleteQuery(q); if (!bad) ms = ns / 1e6;
+        }
+      },
+      get ms() { return ms; },
+    };
+  })();
 
   function snapCamera() { camPos.set(0, 0, fitZ).addScaledVector(camDir, fitD); camTgt.set(0, 0, fitZ); }
 
+  // ---- players: their models were downloading while the stadium was built above
+  const A = await loadPlayerAssets(renderer, boot, { extraSteps: players.length, lite });
+  const PS = boot.stage('players');
+  for (const [i, P] of players.entries()) {
+    PS.note(`Rigging player ${i + 1} of ${players.length}`);
+    await boot.yield();
+    P.h.init(A); P.h.setEnvironment(light.env); PS.step(1);
+  }
+  PS.end('Done');
+
+  applySRGBMode(scene, srgb.mode);
+
+  // the view at its real size, so the targets compiled and drawn into below are the ones play uses
+  const box = canvas.getBoundingClientRect();
+  resize(Math.max(1, box.width || innerWidth), Math.max(1, box.height || innerHeight));
+  snapCamera(); camera.position.copy(camPos); camera.lookAt(camTgt);
+
+  // ---- every GPU program the game can ever use, compiled now. Everything that can be drawn is made
+  // visible for this (the ball before kick-off, the hair styles nobody is wearing, both players, the
+  // effects), so no program and no texture is left for the moment something first appears mid-game.
+  // Lights keep their state: the number of lights is part of every program, and it never changes.
+  const shown = [];
+  scene.traverse(o => { if (!o.isLight) { shown.push([o, o.visible, o.frustumCulled]); o.visible = true; o.frustumCulled = false; } });
+  const SH = boot.stage('shaders');
+  await compilePrograms(renderer, renderer.compile(scene, camera), SH);
+
+  // ---- one full frame of the whole scene through the whole chain: shadow maps (their depth
+  // programs), ambient occlusion and bloom (their passes), and every texture uploaded to the GPU.
+  // gl.finish() waits until the GPU has really done it, so it is behind us, not in the first frame.
+  const WS = boot.stage('warm').begin(1, 'frame', 'Shadows, occlusion, bloom, every texture');
+  await boot.yield();
+  // the whole post chain, whatever level this device settled on last time: stepping back up to it
+  // later must never compile anything mid-game
+  light.setLevel(2);
+  light.render();
+  renderer.getContext().finish();
+  light.setLevel(level);
+  // programs created by that frame (shadow depth, post passes) are finished too
+  await compilePrograms(renderer, renderer.info.programs, null);
+  for (const [o, v, f] of shown) { o.visible = v; o.frustumCulled = f; }
+
+  // ---- self-test: the pitch must come out lit. Some phone GPUs draw every floodlit surface black
+  // (the pitch, the players) while self-lit things (crowd, stands) look fine: the shadow maps read
+  // as "everything in shadow", or the lighting itself fails. It is measured here from real pixels
+  // on the pitch, not assumed from the GPU's name, and repaired: without shadow maps if that
+  // brings the light back, else the caller steps down a tier. Either way it's remembered per device.
+  const gl = renderer.getContext(), DARK = 24, px = new Uint8Array(4);
+  const pitchLight = () => {
+    light.render(); renderer.setRenderTarget(null);
+    const c = renderer.domElement, out = [];
+    for (const [x, z] of [[-4, -1.5], [4, -1.5], [-4, 1.5], [4, 1.5], [0, 2.5]]) {
+      v3.set(x, 0, z).project(camera);
+      const sx = Math.round((v3.x + 1) / 2 * c.width), sy = Math.round((v3.y + 1) / 2 * c.height);
+      if (sx < 0 || sy < 0 || sx >= c.width || sy >= c.height) continue;
+      gl.readPixels(sx, sy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      out.push([px[0], px[1], px[2]]);
+    }
+    return { green: Math.max(0, ...out.map(p => p[1])), samples: out };
+  };
+  const selfTest = {
+    tier, shadows: renderer.shadowMap.enabled, srgb, base: pitchLight(), fix: null,
+    gl: {
+      precision: renderer.capabilities.precision, maxTexture: renderer.capabilities.maxTextureSize, maxSamples: renderer.capabilities.maxSamples,
+      parallelCompile: !!renderer.extensions.get('KHR_parallel_shader_compile'), floatRT: !!renderer.extensions.get('EXT_color_buffer_float'),
+      programs: renderer.info.programs.length, size: [renderer.domElement.width, renderer.domElement.height],
+    },
+  };
+  if (selfTest.base.green < DARK) {
+    if (renderer.shadowMap.enabled) {
+      WS.note('Checking the lighting on this device');
+      renderer.shadowMap.enabled = false;
+      scene.traverse(o => { const m = o.material; if (m) for (const x of Array.isArray(m) ? m : [m]) x.needsUpdate = true; });
+      await compilePrograms(renderer, renderer.compile(scene, camera), null);
+      selfTest.noShadow = pitchLight();
+      selfTest.fix = selfTest.noShadow.green >= DARK ? 'noshadow' : 'tier';
+    } else selfTest.fix = 'tier';
+  }
+  WS.end('Done');
+
   return {
-    frame, resize, project, pickGround, fx, setQuality, snapCamera,
+    frame, resize, project, pickGround, fx, setQuality, snapCamera, setSafeBottom, setBudget, selfTest,
     get quality() { return quality; }, get level() { return level; }, get struggling() { return struggleT > 6; },
+    // this frame's costs and the settings producing them (see the performance monitor in client.js)
+    stats: () => ({ ...cost, gpu: gpu.ms, w: renderer.domElement.width, h: renderer.domElement.height, scale, level, tier, pr: renderer.getPixelRatio() }),
+    debugScene: () => scene,
     debugCam: () => ({ perf: { tier, scale: +scale.toFixed(2), level, ft: +ftAvg.toFixed(1) }, fitD, fitDFull, camDist, visHalf, fitZ, cssW, cssH, aspect: camera.aspect, cam: camera.position.toArray().map(v => +v.toFixed(2)), tgt: camTgt.toArray().map(v => +v.toFixed(2)) }),
   };
 }

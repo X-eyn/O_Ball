@@ -5,6 +5,7 @@
 // on a goal the ring and ribbons run the scorer's colour.
 // Everything here is cheap per frame (a few instanced draws and uniforms), so every tier gets it.
 import * as THREE from 'three';
+import { mergeStatic, bakeUV } from './merge.js';
 
 const rnd = (() => { let s = 1234567; return () => ((s = Math.imul(s ^ (s >>> 15), 2246822507) ^ Math.imul(s ^ (s >>> 13), 3266489909)) >>> 0) / 4294967296; })();
 const pick = a => a[(rnd() * a.length) | 0];
@@ -157,41 +158,45 @@ export function buildStadium(scene, dims, tier, boardTex) {
   const steel = new THREE.MeshStandardMaterial({ color: 0x1e2533, roughness: 0.5, metalness: 0.7 });
   const underside = new THREE.MeshStandardMaterial({ color: 0x0e121c, roughness: 0.8, metalness: 0.2 });
   const ribbons = [], rings = [], hazes = [], people = [];
+  // everything that never moves, merged into one mesh per material once the bowl is built
+  const statics = [];
+  // the LED ribbons: one texture and one material for all of them (each stand's repeat and start
+  // offset is baked into its own geometry), so they merge into a single draw
+  const ribbonTex = boardTex.clone(); ribbonTex.needsUpdate = true;
+  const ribbonMat = new THREE.MeshBasicMaterial({ map: ribbonTex, color: new THREE.Color(1.4, 1.4, 1.4) });
+  ribbons.push({ mat: ribbonMat, tex: ribbonTex });
   const RISE = 0.44, DEPTH = 0.78, WALL = 1.2;
 
   // A stand: origin at the middle of its front wall, facing +z locally, rotated into place.
   // spec: { len, rows, roof: { y, overhang } | null, team: 0 neutral | 1 home | 2 away }
   const stand = (spec, x, z, rotY) => {
     const grp = new THREE.Group(); grp.position.set(x, 0, z); grp.rotation.y = rotY; scene.add(grp);
-    const deck = new THREE.Mesh(stepped(spec.rows, DEPTH, RISE, spec.len, WALL, !!spec.roof), deckMat); grp.add(deck);
+    const deck = new THREE.Mesh(stepped(spec.rows, DEPTH, RISE, spec.len, WALL, !!spec.roof), deckMat); grp.add(deck); statics.push(deck);
     const backZ = -spec.rows * DEPTH, topY = WALL + spec.rows * RISE;
-    const front = new THREE.Mesh(new THREE.BoxGeometry(spec.len, WALL, 0.3), concrete); front.position.set(0, WALL / 2, 0.15); front.receiveShadow = true; grp.add(front);
-    const back = new THREE.Mesh(new THREE.BoxGeometry(spec.len, topY + 2, 0.4), concrete); back.position.set(0, (topY + 2) / 2, backZ - 0.2); grp.add(back);
+    const front = new THREE.Mesh(new THREE.BoxGeometry(spec.len, WALL, 0.3), concrete); front.position.set(0, WALL / 2, 0.15); front.receiveShadow = true; grp.add(front); statics.push(front);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(spec.len, topY + 2, 0.4), concrete); back.position.set(0, (topY + 2) / 2, backZ - 0.2); grp.add(back); statics.push(back);
     for (const s of [-1, 1]) { // end walls (vomitory-grey), stepping with the rake
       const shp = new THREE.Shape(); shp.moveTo(0, 0); shp.lineTo(0, WALL + 0.3); shp.lineTo(-backZ, topY + 0.6); shp.lineTo(-backZ, 0); shp.closePath();
       const w = new THREE.Mesh(new THREE.ExtrudeGeometry(shp, { depth: 0.3, bevelEnabled: false }), concrete);
-      w.rotation.y = Math.PI / 2; w.position.set(s * spec.len / 2 + (s < 0 ? -0.3 : 0), 0, 0.3); grp.add(w);
+      w.rotation.y = Math.PI / 2; w.position.set(s * spec.len / 2 + (s < 0 ? -0.3 : 0), 0, 0.3); grp.add(w); statics.push(w);
     }
     // LED ribbon along the top of the front wall
-    const rt = boardTex.clone(); rt.needsUpdate = true; rt.repeat.set(spec.len / 6, 1); rt.offset.x = rnd();
-    const ribbonMat = new THREE.MeshBasicMaterial({ map: rt, color: new THREE.Color(1.4, 1.4, 1.4) });
-    const ribbon = new THREE.Mesh(new THREE.PlaneGeometry(spec.len, 0.34), ribbonMat); ribbon.position.set(0, WALL - 0.2, 0.31); grp.add(ribbon);
-    ribbons.push({ mat: ribbonMat, tex: rt });
+    const ribbon = new THREE.Mesh(bakeUV(new THREE.PlaneGeometry(spec.len, 0.34), spec.len / 6, rnd()), ribbonMat); ribbon.position.set(0, WALL - 0.2, 0.31); grp.add(ribbon); statics.push(ribbon);
     if (spec.roof) {
       const R = spec.roof, depth = -backZ + 1.2 - R.overhang, thick = 0.5;
       const roof = new THREE.Mesh(new THREE.BoxGeometry(spec.len + 1.6, thick, -backZ + 1.2 + R.overhang), steel);
-      roof.position.set(0, R.y, (backZ - 1.2 + R.overhang) / 2); roof.rotation.x = -0.035; roof.castShadow = false; grp.add(roof);
+      roof.position.set(0, R.y, (backZ - 1.2 + R.overhang) / 2); roof.rotation.x = -0.035; roof.castShadow = false; grp.add(roof); statics.push(roof);
       const under = new THREE.Mesh(new THREE.PlaneGeometry(spec.len + 1.6, -backZ + 1.2 + R.overhang), underside);
-      under.rotation.x = Math.PI / 2 - 0.035; under.position.set(0, R.y - thick / 2 - 0.01, roof.position.z); grp.add(under);
+      under.rotation.x = Math.PI / 2 - 0.035; under.position.set(0, R.y - thick / 2 - 0.01, roof.position.z); grp.add(under); statics.push(under);
       // roof trusses along the top: structure you can read from the broadcast camera above
       for (let k = -spec.len / 2; k <= spec.len / 2 + 0.01; k += 4.2) {
-        const tr = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.7, -backZ + 1.2 + R.overhang), steel); tr.position.set(k, R.y + 0.55, roof.position.z); tr.rotation.x = -0.035; grp.add(tr);
+        const tr = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.7, -backZ + 1.2 + R.overhang), steel); tr.position.set(k, R.y + 0.55, roof.position.z); tr.rotation.x = -0.035; grp.add(tr); statics.push(tr);
       }
       // rear columns carrying the cantilever
-      for (let k = -spec.len / 2 + 1; k <= spec.len / 2 - 0.99; k += 6) { const c = new THREE.Mesh(new THREE.BoxGeometry(0.35, R.y, 0.35), steel); c.position.set(k, R.y / 2, backZ - 0.8); grp.add(c); }
+      for (let k = -spec.len / 2 + 1; k <= spec.len / 2 - 0.99; k += 6) { const c = new THREE.Mesh(new THREE.BoxGeometry(0.35, R.y, 0.35), steel); c.position.set(k, R.y / 2, backZ - 0.8); grp.add(c); statics.push(c); }
       // the fascia, and the ring of floodlights along its lower edge
       const fz = R.overhang;
-      const fascia = new THREE.Mesh(new THREE.BoxGeometry(spec.len + 1.6, 1.1, 0.25), steel); fascia.position.set(0, R.y - 0.1, fz); grp.add(fascia);
+      const fascia = new THREE.Mesh(new THREE.BoxGeometry(spec.len + 1.6, 1.1, 0.25), steel); fascia.position.set(0, R.y - 0.1, fz); grp.add(fascia); statics.push(fascia);
       const n = Math.floor((spec.len + 1.2) / 0.55), lamp = new THREE.PlaneGeometry(0.34, 0.2);
       const ring = new THREE.InstancedMesh(lamp, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true, fog: false }), n);
       const m4 = new THREE.Matrix4(), q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.55, 0, 0)), sc = new THREE.Vector3(1, 1, 1), p3 = new THREE.Vector3();
@@ -207,7 +212,7 @@ export function buildStadium(scene, dims, tier, boardTex) {
     }
     // the crowd for this stand: one card per seat, most seats taken
     for (let r = 0; r < spec.rows; r++) for (let k = -spec.len / 2 + 0.3; k < spec.len / 2 - 0.2; k += 0.46) {
-      if (rnd() < 0.1) continue;
+      if (rnd() < (lite ? 0.5 : 0.1)) continue;
       const lp = new THREE.Vector3(k + (rnd() - 0.5) * 0.08, WALL + r * RISE + RISE, -r * DEPTH - DEPTH * 0.55);
       const wp = lp.applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY).add(grp.position);
       people.push({ p: wp, team: spec.team === 0 ? (rnd() < 0.5 ? 1 : 2) * (rnd() < 0.75 ? 1 : 0) : spec.team, lit: standLight(r, spec.rows, !!spec.roof) * (0.9 + rnd() * 0.2) });
@@ -219,6 +224,8 @@ export function buildStadium(scene, dims, tier, boardTex) {
   stand({ len: 2 * (HW + 5.8), rows: 7, roof: null, team: 0 }, 0, nearZ, Math.PI);                              // near side (under the cameras)
   stand({ len: 2 * (HH + 5.2), rows: 13, roof: { y: 10.2, overhang: -1.4 }, team: 1 }, -endX, 0, Math.PI / 2);   // home end
   stand({ len: 2 * (HH + 5.2), rows: 13, roof: { y: 10.2, overhang: -1.4 }, team: 2 }, endX, 0, -Math.PI / 2);   // away end
+
+  mergeStatic(scene, statics);
 
   // crowd, all of it one instanced draw
   const N = people.length, geo = new THREE.InstancedBufferGeometry();

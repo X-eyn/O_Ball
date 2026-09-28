@@ -2,111 +2,67 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#06080c">
+<!-- added to a phone's home screen it opens full screen, sideways, like an app -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Office Ball">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Office Ball</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%2306080c'/><path d='M7 24 13 8h12l-6 16z' fill='%23e4ff3c'/></svg>">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow-condensed/500.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow-condensed/600.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow-condensed/700.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow-condensed/800.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow-condensed/800-italic.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow-condensed/900.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow/400.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow/500.css">
-<link rel="stylesheet" href="/vendor/@fontsource/barlow/600.css">
-<link rel="stylesheet" href="/style.css">
-<script type="importmap">
-{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
-</script>
+<!--BOOT-->
 </head>
 <body>
-<!-- boot: shown from the first paint until the players are built and every shader is compiled.
-     Progress is real: bytes actually downloaded, then the build and shader steps. -->
-<div id="boot" role="progressbar" aria-label="Loading Office Ball" aria-valuemin="0" aria-valuemax="100">
+<!-- boot: covers everything from the first paint until the game is completely ready (see loader.js).
+     Every row counts real work against a real total; the ring weights the rows by how long each
+     took on this machine last time. -->
+<div id="boot" role="progressbar" aria-label="Loading Office Ball" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
 <style>
 #boot{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#06080c;color:#f2f4f7;font-family:'Barlow Condensed','Arial Narrow',sans-serif;transition:opacity .45s cubic-bezier(.2,.8,.2,1)}
 #boot.out{opacity:0;pointer-events:none}
-#boot .bx{display:flex;flex-direction:column;align-items:center;gap:22px;width:min(360px,calc(100vw - 32px));text-align:center}
+#boot .bx{display:flex;flex-direction:column;align-items:center;gap:22px;width:min(380px,calc(100vw - 32px));text-align:center}
 #boot .brand{font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1}
 #boot .brand i{color:#e4ff3c;font-style:italic}
 #boot .ring{position:relative;width:132px;height:132px}
 #boot svg{width:100%;height:100%;transform:rotate(-90deg)}
 #boot .trk{fill:none;stroke:rgba(255,255,255,.09);stroke-width:5}
-#boot .bar{fill:none;stroke:#e4ff3c;stroke-width:5;stroke-linecap:butt;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset .35s cubic-bezier(.2,.8,.2,1)}
-#boot.spin svg{animation:bootspin 1s linear infinite}
-#boot.spin .bar{stroke-dashoffset:245;transition:none}
-@keyframes bootspin{to{transform:rotate(270deg)}}
-#boot .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:34px;letter-spacing:.01em}
+#boot .bar{fill:none;stroke:#e4ff3c;stroke-width:5;stroke-linecap:butt;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset .25s linear}
+#boot .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:34px;letter-spacing:.01em;font-variant-numeric:tabular-nums}
 #boot .pct small{font-size:16px;color:#8b93a4;margin-left:2px}
-#boot.spin .pct{font-size:14px;color:#8b93a4;letter-spacing:.14em;font-weight:600}
-#boot .lbl{font-weight:700;font-size:15px;letter-spacing:.16em;text-transform:uppercase}
-#boot .det{font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:13px;color:#8b93a4;min-height:18px;margin-top:-14px}
-#boot .steps{display:flex;gap:6px;width:100%}
-#boot .steps span{flex:1;height:3px;background:rgba(255,255,255,.09)}
-#boot .steps span.on{background:#e4ff3c}
-#boot .steps span.now{background:linear-gradient(90deg,#e4ff3c,rgba(228,255,60,.25));background-size:200% 100%;animation:bootstep 1.1s linear infinite}
-@keyframes bootstep{from{background-position:100% 0}to{background-position:-100% 0}}
+#boot .lbl{font-weight:700;font-size:15px;letter-spacing:.16em;text-transform:uppercase;min-height:18px}
+#boot .stages{list-style:none;margin:0;padding:0;width:100%;display:flex;flex-direction:column;gap:9px;font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:13px;text-align:left}
+#boot .stages li{display:grid;grid-template-columns:78px 1fr;column-gap:12px;row-gap:4px;align-items:baseline;color:#5c6475}
+#boot .stages li.skip{display:none}
+#boot .stages .nm{font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-weight:700;font-size:13px;letter-spacing:.14em;text-transform:uppercase}
+#boot .stages .dt{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#boot .stages .ln{grid-column:1/-1;height:2px;background:rgba(255,255,255,.07);overflow:hidden}
+#boot .stages .fill{display:block;height:100%;background:#e4ff3c;transform:scaleX(0);transform-origin:left;transition:transform .2s linear}
+#boot .stages li.run{color:#c9ced8}
+#boot .stages li.run .nm{color:#f2f4f7}
+#boot .stages li.done{color:#8b93a4}
+#boot .stages li.done .fill{background:rgba(228,255,60,.45)}
 #boot .err{display:none;font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.5;color:#ff6b6b}
 #boot.failed .err{display:block}
 #boot.failed .bar{stroke:#ff6b6b}
 #boot button{margin-top:10px;background:#e4ff3c;color:#06080c;border:0;padding:9px 18px;font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-weight:800;font-size:14px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
+@media (prefers-reduced-motion:reduce){#boot .bar,#boot .stages .fill{transition:none}}
+@media (max-height:480px){#boot .bx{gap:10px;width:min(420px,calc(100vw - 32px))}#boot .brand{font-size:22px}#boot .ring{width:88px;height:88px}#boot .pct{font-size:24px}#boot .stages{gap:5px}}
 </style>
 <div class="bx">
   <div class="brand">OFFICE <i>BALL</i></div>
-  <div class="ring"><svg viewBox="0 0 120 120"><circle class="trk" cx="60" cy="60" r="52"/><circle class="bar" cx="60" cy="60" r="52"/></svg><div class="pct"></div></div>
-  <div class="lbl">Loading game code</div>
-  <div class="det"></div>
-  <div class="steps"><span></span><span></span><span></span><span></span></div>
+  <div class="ring"><svg viewBox="0 0 120 120"><circle class="trk" cx="60" cy="60" r="52"/><circle class="bar" cx="60" cy="60" r="52"/></svg><div class="pct">0<small>%</small></div></div>
+  <div class="lbl">Starting</div>
+  <ol class="stages">
+    <li data-s="net"><span class="nm">Download</span><span class="dt"></span><span class="ln"><i class="fill"></i></span></li>
+    <li data-s="stadium"><span class="nm">Stadium</span><span class="dt"></span><span class="ln"><i class="fill"></i></span></li>
+    <li data-s="players"><span class="nm">Players</span><span class="dt"></span><span class="ln"><i class="fill"></i></span></li>
+    <li data-s="shaders"><span class="nm">Shaders</span><span class="dt"></span><span class="ln"><i class="fill"></i></span></li>
+    <li data-s="warm"><span class="nm">First frame</span><span class="dt"></span><span class="ln"><i class="fill"></i></span></li>
+  </ol>
   <div class="err"></div>
 </div>
-<script>
-(function () {
-  var el = document.getElementById('boot'), bar = el.querySelector('.bar'), pct = el.querySelector('.pct'), lbl = el.querySelector('.lbl'),
-      det = el.querySelector('.det'), err = el.querySelector('.err'), steps = el.querySelectorAll('.steps span'), C = 326.7;
-  var frac = 0, step = 0, codeBytes = 0, finished = false, lastChange = Date.now(), note = '';
-  var mb = function (b) { return (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + ' MB'; };
-  function stepTo(n) { step = n; for (var i = 0; i < steps.length; i++) steps[i].className = i < n ? 'on' : i === n ? 'now' : ''; }
-  function set(f, label, detail) {
-    if (finished) return;
-    if (f !== null) { frac = Math.max(frac, Math.min(1, f)); el.classList.remove('spin'); bar.style.strokeDashoffset = (C * (1 - frac)).toFixed(1); pct.innerHTML = Math.floor(frac * 100) + '<small>%</small>'; el.setAttribute('aria-valuenow', Math.floor(frac * 100)); }
-    if (label) lbl.textContent = label;
-    if (detail !== undefined) det.textContent = detail;
-    lastChange = Date.now(); note = '';
-  }
-  // step 1: the game's code, styles and fonts. Their total isn't known in advance, so the ring spins
-  // and the detail line counts the bytes that have really arrived.
-  el.classList.add('spin'); pct.textContent = 'LOADING'; stepTo(0);
-  try {
-    new PerformanceObserver(function (list) {
-      list.getEntries().forEach(function (e) { codeBytes += e.encodedBodySize || e.transferSize || 0; });
-      if (step === 0) { det.textContent = mb(codeBytes) + ' downloaded'; lastChange = Date.now(); }
-    }).observe({ type: 'resource', buffered: true });
-  } catch (e) {}
-  var CODE = 0.12, DL = 0.72, BUILD = 0.06; // shares of the ring: code, player download, build; shaders take the rest
-  window.__boot = {
-    codeReady: function () { if (step === 0) { stepTo(1); set(CODE, 'Downloading players', 'Starting'); } },
-    download: function (loaded, total, files, filesDone, known) {
-      this.codeReady();
-      var f = known && total ? loaded / total : 0;
-      set(CODE + DL * f, 'Downloading players', (known ? mb(loaded) + ' of ' + mb(total) : mb(loaded)) + '  ·  ' + filesDone + ' of ' + files + ' files');
-    },
-    build: function () { this.codeReady(); stepTo(2); set(CODE + DL, 'Building players', 'Fitting kits and rigging both players'); },
-    shaders: function () { stepTo(3); set(CODE + DL + BUILD, 'Preparing graphics', 'Compiling shaders now, so play never stutters'); },
-    retry: function (n, max) { set(null, null, 'A download failed. Retrying (' + n + ' of ' + max + ')'); },
-    fail: function (msg) {
-      finished = true; el.classList.remove('spin'); el.classList.add('failed'); lbl.textContent = 'Could not load';
-      err.innerHTML = msg + '<br><button onclick="location.reload()">Reload</button>';
-    },
-    done: function () {
-      if (finished) return; stepTo(4); set(1, 'Ready', ''); finished = true;
-      setTimeout(function () { el.classList.add('out'); setTimeout(function () { el.remove(); }, 500); }, 250);
-    },
-    hide: function () { finished = true; el.remove(); },
-  };
-  // honest about a slow network: say so if nothing has changed for a while
-  setInterval(function () { if (!finished && Date.now() - lastChange > 12000 && !note) { note = ' (still working, the network is slow)'; det.textContent += note; } }, 2000);
-})();
-</script>
 </div>
 <div id="stage">
   <!-- broadcast header: its own strip above the 3D view, so it never covers the pitch -->
@@ -122,6 +78,8 @@
     </div>
     <div class="hud-r">
       <span id="hudRight"></span>
+      <button class="hbtn touch-only" id="emoteBtn" data-icon="chat" aria-label="Emotes"></button>
+      <button class="hbtn touch-only" id="fsBtn" data-icon="full" aria-label="Full screen"></button>
       <button class="hbtn" id="inviteBtn" data-icon="link">Invite</button>
       <button class="hbtn" id="menuBtn" data-icon="menu">Menu <span class="key">Esc</span></button>
     </div>
@@ -161,7 +119,7 @@
         <div class="board-h"><span>Office table</span><span class="cap">Rating</span></div>
         <div id="homeLb" class="lb"></div>
       </aside>
-      <div class="home-foot">Keyboard · Mouse / trackpad · Controller</div>
+      <div class="home-foot">Keyboard · Mouse / trackpad · Controller · Touch</div>
     </div>
   </div>
 </div>
@@ -202,9 +160,9 @@
       </div>
       <div class="pane" data-pane="controls">
         <h3>Controls</h3>
-        <div class="seg" id="ctrlSeg"><button data-c="keyboard">Keyboard</button><button data-c="mouse">Mouse / trackpad</button><button data-c="gamepad">Controller</button></div>
+        <div class="seg" id="ctrlSeg"><button data-c="keyboard">Keyboard</button><button data-c="mouse">Mouse / trackpad</button><button data-c="gamepad">Controller</button><button data-c="touch">Touch</button></div>
         <div id="ctrlHelp" class="ctrl-help"></div>
-        <p class="muted small">The game switches automatically to whatever you touch. Emotes: <span class="key">1</span>–<span class="key">6</span></p>
+        <p class="muted small">The game switches automatically to whatever you touch. <span class="no-touch">Emotes: <span class="key">1</span>–<span class="key">6</span></span><span class="touch-text">Emotes: the speech bubble at the top.</span></p>
       </div>
       <div class="pane" data-pane="table">
         <h3>Office table</h3>
@@ -214,7 +172,9 @@
         <h3>Settings</h3>
         <div class="set-row"><span>Name</span><button id="renameBtn" class="btn">Change name</button></div>
         <div class="set-row"><span>Sound</span><button id="muteBtn" class="btn">On</button></div>
-        <div class="set-row"><span>Graphics</span><button id="qualityBtn" class="btn">Auto</button></div>
+        <div class="set-row"><span>FPS counter</span><button id="fpsBtn" class="btn">On</button></div>
+        <div class="set-row"><label for="qualitySel">Graphics</label><select id="qualitySel" class="sel"></select></div>
+        <p id="qualityDesc" class="muted small set-desc"></p>
         <p id="netInfo" class="muted small"></p>
       </div>
     </section>
@@ -228,11 +188,11 @@
   <button id="modalGo" class="btn primary big">Continue</button>
 </div></div>
 
+<div id="emotes" class="hidden"></div>
+<div id="rotate" role="alert"><svg viewBox="0 0 64 64" fill="none" stroke="#e4ff3c" stroke-width="3"><rect x="20" y="6" width="24" height="52" rx="4"/><path d="M29 51h6"/></svg><b>Turn your phone sideways</b><span>Office Ball is played in landscape: stick on the left, shoot on the right.</span></div>
 <div id="toasts"></div>
 <div id="conn" class="hidden">Connection lost. Reconnecting</div>
 <div id="fatal" class="hidden"></div>
 
-<script src="/shared/game.js"></script>
-<script type="module" src="/client.js"></script>
 </body>
 </html>
