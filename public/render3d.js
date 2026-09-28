@@ -357,7 +357,7 @@ const SIDES = [[1, 'L'], [-1, 'R']];
 const LEG_BONES = new Set(['thigh', 'shin', 'foot', 'toe'].flatMap(n => [boneIndex(n + 'L'), boneIndex(n + 'R')]));
 const KICK_LEG = Object.fromEntries(['L', 'R'].map(k => [k, new Set(['thigh', 'shin', 'foot', 'toe'].map(n => boneIndex(n + k)))]));
 // every number that carries animation state from frame to frame; reset if one ever goes non-finite
-const STATE_KEYS = ['hipTurn', 'lead', 'speed', 'vx', 'vz', 'svx', 'svz', 'ax', 'az', 'roll', 'pitch', 'yaw', 'yawVel', 'phase', 'windup', 'kickT', 'swingT', 'dashW', 'celW', 'sadW', 'stunW', 'lookY', 'lookX', 'brace', 'cut', 'celebrate', 'cock', 'commit', 'commitYaw', 'shufW', 'shufPh', 'shufDir'];
+const STATE_KEYS = ['hipTurn', 'lead', 'speed', 'vx', 'vz', 'svx', 'svz', 'ax', 'az', 'roll', 'pitch', 'yaw', 'yawVel', 'phase', 'windup', 'kickT', 'swingT', 'dashW', 'celW', 'sadW', 'stunW', 'lookY', 'lookX', 'brace', 'cut', 'celebrate', 'cock', 'commit', 'commitYaw', 'shufW', 'shufPh', 'shufDir', 'touchT', 'recvT', 'headerT', 'shieldW'];
 function runPose(P, ph, A, t, seed) {
   const idle = 1 - Math.min(1, A * 2.5), br = Math.sin(t * 1.9 + seed);
   P.zero();
@@ -498,6 +498,58 @@ function sadPose(Q, style, t) {
   }
 }
 
+// a touch: a quick stab of the striking foot at the ball; a knock-on or dash poke is a longer lunge
+function tapPose(Q, K, kind) {
+  const S = K === 'L' ? 'R' : 'L', sk = K === 'L' ? 1 : -1;
+  Q.zero();
+  if (kind === 'knock' || kind === 'poke') {
+    Q.set('thigh' + K, -0.95, 0, sk * 0.06); Q.set('shin' + K, 1.0); Q.set('foot' + K, 0.35); Q.set('toe' + K, -0.2);
+    Q.set('thigh' + S, 0.22, 0, -sk * 0.04); Q.set('shin' + S, 0.3);
+    Q.set('spine', 0.16); Q.set('chest', 0.08); Q.set('neck', -0.1);
+    Q.set('arm' + S, -0.3, 0, sk * 0.6); Q.set('fore' + S, -0.5);
+    Q.set('arm' + K, 0.2, 0, sk * 0.35);
+  } else {
+    Q.set('thigh' + K, -0.5, 0, sk * 0.05); Q.set('shin' + K, 0.85); Q.set('foot' + K, -0.05); Q.set('toe' + K, 0.15);
+    Q.set('spine', 0.06);
+  }
+}
+// receiving: a foot cushion, a chest that absorbs, or the head
+function receivePose(Q, part) {
+  Q.zero();
+  if (part === 'chest') {
+    for (const [s, k] of SIDES) { Q.set('arm' + k, -0.3, 0, s * 0.85); Q.set('fore' + k, -1.0); Q.set('thigh' + k, -0.06, 0, s * 0.05); Q.set('shin' + k, 0.2); }
+    Q.set('spine', -0.12); Q.set('chest', -0.05); Q.set('neck', 0.12); Q.set('head', 0.08);
+  } else if (part === 'head') {
+    for (const [s, k] of SIDES) { Q.set('arm' + k, -0.15, 0, s * 0.45); Q.set('fore' + k, -0.5); }
+    Q.set('spine', -0.06); Q.set('neck', 0.3); Q.set('head', 0.22);
+  } else {
+    for (const [s, k] of SIDES) { Q.set('thigh' + k, -0.16, 0, s * 0.04); Q.set('shin' + k, 0.3); Q.set('foot' + k, -0.08); }
+    Q.set('spine', 0.08); Q.set('chest', 0.04); Q.set('neck', 0.04);
+  }
+}
+// header: up off the ground, chest open, head through the ball
+function headerPose(Q, w) {
+  Q.zero();
+  for (const [s, k] of SIDES) {
+    Q.set('arm' + k, -0.5, 0, s * 0.85); Q.set('fore' + k, -0.55); Q.set('clav' + k, 0, 0, s * 0.12);
+    Q.set('thigh' + k, -0.24); Q.set('shin' + k, 0.5); Q.set('foot' + k, -0.2);
+  }
+  Q.set('spine', -0.2); Q.set('chest', -0.08); Q.set('neck', 0.5 * w); Q.set('head', 0.32 * w);
+  Q.lift = 0.26 * w;
+}
+// shield: low, turned so the ball side is away from the challenge, arm barring it off
+function shieldPose(Q, side) {
+  Q.zero();
+  const K = side > 0 ? 'R' : 'L', sk = side > 0 ? 1 : -1;
+  for (const [s, k] of SIDES) {
+    Q.set('thigh' + k, TUCK - 0.3, s * 0.06, s * 0.06); Q.set('shin' + k, 0.6); Q.set('foot' + k, -0.3);
+    Q.set('arm' + k, -0.4, 0, s * 0.8); Q.set('fore' + k, -0.95);
+  }
+  Q.set('arm' + K, -0.2, 0, sk * 1.25); Q.set('fore' + K, -1.15);
+  Q.set('hips', -TUCK + 0.1); Q.set('spine', 0.16, 0, sk * 0.05); Q.set('chest', 0.07, 0, sk * 0.04);
+  Q.set('neck', -0.12); Q.set('head', -0.08);
+}
+
 // Lite tier (software rendering, no shadow maps): each player stands in a baked picture of what
 // the floodlight banks would throw: a soft shadow away from each bank (two from the main-stand roof
 // toward the cameras, two from the TV gantry away from them), each as long as that bank's height
@@ -548,6 +600,7 @@ class Player {
       phase: 0, yaw: slot ? -Math.PI / 2 : Math.PI / 2, lastX: null, lastZ: null, speed: 0, kickT: 0, windup: 0, identity: null,
       celebrate: 0, swingT: 0, swingDur: 0.1, vx: 0, vz: 0, svx: 0, svz: 0, ax: 0, az: 0, roll: 0, pitch: 0,
       dashW: 0, celW: 0, sadW: 0, stunW: 0, lookY: 0, lookX: 0, yawVel: 0, brace: 0, cut: 0, cock: 0, commit: 0, commitYaw: 0, flipAxis: 0, flips: [], shufW: 0, shufPh: 0, shufDir: 1, feet: { l: 1, r: 1 }, celStyle: 'jump', sadStyle: 'head', wasCel: false, wasSad: false,
+      touchT: 0, touchDur: 0.2, touchFoot: 'R', touchKind: 'step', recvT: 0, recvPart: 'foot', headerT: 0, shieldW: 0, kickFoot: null,
     });
     this.setIdentity('');
     this.root.visible = false;
@@ -563,6 +616,9 @@ class Player {
     this.root.visible = true;
     if (!(dt >= 0 && dt < 1)) dt = 0;
     for (const k of STATE_KEYS) if (!Number.isFinite(this[k])) { this[k] = 0; this.lastX = null; }
+    this.touchT = Math.max(0, this.touchT - dt);
+    this.recvT = Math.max(0, this.recvT - dt);
+    this.headerT = Math.max(0, this.headerT - dt);
     if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) return;
     const x = wx(p[0]), z = wz(p[1]);
     if (this.lastX === null || Math.hypot(x - this.lastX, z - this.lastZ) > 1.5) { this.lastX = x; this.lastZ = z; this.vx = this.vz = this.svx = this.svz = 0; }
@@ -625,7 +681,8 @@ class Player {
 
     // ---- animation: mocap locomotion underneath (in Human), procedural layers over it.
     // Each layer is a target pose plus a per-bone weight; later layers composite over earlier ones.
-    const P = this.P, Q = this.Q, W = this.W, AD = this.AD, L = this.look, K = L.foot, S2 = K === 'L' ? 'R' : 'L';
+    if (this.swingT <= 0 && this.kickT <= 0) this.kickFoot = null;
+    const P = this.P, Q = this.Q, W = this.W, AD = this.AD, L = this.look, K = this.kickFoot || L.foot, S2 = K === 'L' ? 'R' : 'L';
     P.zero(); W.fill(0); AD.zero();
     const layer = wOf => {
       for (let i = 0; i < W.length; i++) {
@@ -677,6 +734,25 @@ class Player {
     this.sadW = damp(this.sadW, o.sad ? 1 : 0, 4, dt);
     const clips = {};
     let lift = 0;
+    // touches, receives, headers and the shield are read straight off the game events: the foot
+    // that struck the ball is the foot the animation moves
+    if (this.touchT > 0) {
+      const w = Math.sin(Math.PI * (1 - this.touchT / this.touchDur));
+      tapPose(Q, this.touchFoot, this.touchKind); layer(i => (KICK_LEG[this.touchFoot].has(i) ? w : 0));
+    }
+    if (this.recvT > 0) {
+      const w = Math.sin(Math.PI * (1 - this.recvT / 0.34));
+      receivePose(Q, this.recvPart); layer(() => w * 0.8);
+    }
+    if (this.headerT > 0) {
+      const w = Math.sin(Math.PI * (1 - this.headerT / 0.45));
+      headerPose(Q, w); layer(() => w); lift = Math.max(lift, Q.lift);
+    }
+    this.shieldW = damp(this.shieldW, p[11] ? 1 : 0, 10, dt);
+    if (this.shieldW > 0.001) {
+      const bs = o.ball ? Math.sign(p[2] * (o.ball[1] - z) - p[3] * (o.ball[0] - x)) : 0;
+      shieldPose(Q, bs); layer(() => this.shieldW);
+    }
     if (this.celW > 0.001) {
       if (this.celStyle === 'dance') clips.Dance_Loop = this.celW;
       else { celebratePose(Q, this.celStyle, this.celebrate, t, K); layer(() => this.celW); lift = Q.lift * this.celW; }
@@ -770,7 +846,13 @@ class Player {
     this.arrow.position.y = 2.02 + Math.sin(t * 3.2) * 0.035;
   }
   hide() { this.root.visible = false; this.lastX = null; if (this.fakeShadow) this.fakeShadow.visible = false; }
-  startSwing(sec) { this.swingT = this.swingDur = Math.max(0.03, sec); this.kickT = 0; }
+  startSwing(sec, foot) { this.swingT = this.swingDur = Math.max(0.03, sec); this.kickT = 0; if (foot) this.kickFoot = foot; }
+  startTouch(foot, kind) {
+    this.touchDur = kind === 'knock' || kind === 'poke' ? 0.26 : 0.2;
+    this.touchT = this.touchDur; this.touchFoot = foot === 'L' ? 'L' : 'R'; this.touchKind = kind || 'step';
+  }
+  startReceive(part) { this.recvT = 0.34; this.recvPart = part || 'foot'; }
+  startHeader() { this.headerT = 0.45; }
 }
 
 // ---------------------------------------------------------------- goals / nets
@@ -1473,9 +1555,9 @@ export async function createRenderer(canvas, { tier = 'high', boot, noShadow = f
   // effects state
   let shake = 0, hype = 0, hypeR = 0, hypeB = 0, zoom = 0, orbit = 0, jumboFlash = null, jumboFlashT = 0;
   const fx = {
-    swing(slot, ticks) { const P = players[slot]; if (P) P.startSwing(ticks / 60); },
-    kick(slot, x, y, perfect, power, dx = 0, dy = 0, lob = false) {
-      const P = players[slot]; if (P) { P.kickT = 1; P.swingT = 0; }
+    swing(slot, ticks, foot) { const P = players[slot]; if (P) P.startSwing(ticks / 60, foot); },
+    kick(slot, x, y, perfect, power, dx = 0, dy = 0, lob = false, foot = null) {
+      const P = players[slot]; if (P) { P.kickT = 1; P.swingT = 0; if (foot) P.kickFoot = foot; }
       const X = wx(x), Z = wz(y);
       ballSquash = Math.min(1, 0.35 + power * 0.6);
       parts.burst(X, 0.05, Z, 8 + power * 10, { colors: [0x3d8b3f, 0x5aa04f, 0x2d6e30, 0x7a5a36], speed: 2.4 + power, up: 2.5 + power * 1.5, size: 0.07, life: 0.7 });
@@ -1485,8 +1567,20 @@ export async function createRenderer(canvas, { tier = 'high', boot, noShadow = f
         wave(X, Z, 0.25, 0xffe28a, 2.6, 0.4); fovPunch = 1; shake = Math.max(shake, 0.12); ballHot = 1;
       }
     },
-    touch(x, y, f) { if (f > 4) parts.burst(wx(x), 0.03, wz(y), 3, { colors: [0x4f9a45, 0x3d8b3f], speed: 1, up: 1.2, size: 0.05, life: 0.35 }); },
-    trap(x, y) { parts.burst(wx(x), 0.05, wz(y), 6, { colors: [0x4f9a45, 0xd7e6c8], speed: 1.4, up: 1.5, size: 0.06, life: 0.4 }); ballSquash = 0.4; },
+    touch(slot, x, y, f, foot, kind) {
+      const P = players[slot]; if (P) P.startTouch(foot, kind);
+      if (f > 4 || kind === 'knock') parts.burst(wx(x), 0.03, wz(y), kind === 'knock' ? 6 : 3, { colors: [0x4f9a45, 0x3d8b3f], speed: 1, up: 1.2, size: 0.05, life: 0.35 });
+    },
+    trap(slot, x, y, q, part) {
+      const P = players[slot]; if (P) P.startReceive(part);
+      parts.burst(wx(x), 0.05, wz(y), part === 'foot' ? 6 : 4, { colors: part === 'foot' ? [0x4f9a45, 0xd7e6c8] : [0xd7e6c8, 0x9bbf8a], speed: 1.4, up: 1.5, size: 0.06, life: 0.4 });
+      ballSquash = 0.4;
+    },
+    header(slot, x, y) {
+      const P = players[slot]; if (P) P.startHeader();
+      parts.burst(wx(x), 1.7, wz(y), 12, { colors: [0xffffff, 0xd7e6c8, 0x9bbf8a], speed: 2.2, up: 1.5, size: 0.07, life: 0.5 });
+      shake = Math.max(shake, 0.05);
+    },
     skid(x, y) { parts.burst(wx(x), 0.04, wz(y), 14, { colors: [0x6e5a3c, 0x8a7350, 0x4f9a45], speed: 1.8, up: 1.4, size: 0.09, life: 0.6, grav: 4, drag: 3 }); },
     bounce(x, y, f) { parts.burst(wx(x), 0.04, wz(y), 4 + f, { colors: [0x6e5a3c, 0x4f9a45], speed: 1.2, up: 1.2, size: 0.07, life: 0.45 }); ballSquash = Math.min(1, f * 0.12); },
     bump(x, y, f) { shake = Math.max(shake, Math.min(0.12, f * 0.02)); },

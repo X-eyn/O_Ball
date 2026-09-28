@@ -23,6 +23,18 @@ Keyboard, mouse/trackpad and game controllers all work. The game switches to whi
 | Kick | hold & release `Space` / `J` | hold & release click | hold & release **A** (or RT) |
 | Chip | hold & release `E` | shift+click or middle-click | **Y** |
 | Tackle (fake while charging) | `Shift` / `K` | right-click (two-finger tap) | **X** / **B** / LB |
+| Shield (hold) | `C` | `C` (or hold `C` while pointing) | hold **LT** |
+| Knock on | `V` | `V` | **RB** |
+
+- The ball is played by the **foot**: walking is close taps, a sprint is longer knocks you have to chase —
+  so running with the ball is a risk. It is deterministic: the same touch always plays the ball the same
+  way; a wrong-foot or pressured touch drifts exactly where you would expect it to.
+  **Knock on** (`V` / RB / **Push**) deliberately pushes it three or four strides into space to chase;
+  **Shield** (`C` / LT / **Shield**) slows you down, keeps the ball at your feet and holds a challenge off.
+- One foot is stronger than the other (it comes from your name, like your player's look): touches and shots
+  on the wrong side are looser and carry less. A ball dropping at chest height can be cushioned down;
+  above head height it is headed — high balls go up and away, lower ones are driven at goal.
+- An opponent pressing you spoils your first touch; winding up a shot leaves the ball open to a poke.
 
 - Release while the ring is **gold** for a PERFECT shot: full power, and it goes exactly where you aim. A rushed or
   overcharged shot, or one struck at a flat-out sprint, strays a little. An arrow on the grass shows the aim.
@@ -66,8 +78,9 @@ Open the same link on the phone (same Wi-Fi) and hold it sideways.
 
 - **Left thumb:** put it down anywhere on the left half and steer. The stick appears where your thumb lands
   and follows it. It's analog: ease off to keep the ball close; at full tilt (the knob lights up) it runs away.
-- **Right thumb:** **Shoot** (hold, release while it's gold for a perfect strike), **Tackle**, **Chip**. To fake
-  a shot, slide your thumb from Shoot onto Tackle. The dark sweep on Tackle is its cooldown.
+- **Right thumb:** **Shoot** (hold, release while it's gold for a perfect strike), **Tackle**, **Chip**,
+  **Push** (knock the ball ahead) and **Shield** (hold, keeps it close). To fake a shot, slide your thumb
+  from Shoot onto Tackle. The dark sweep on Tackle is its cooldown.
 - The speech bubble at the top sends emotes. On Android, Play goes full screen and phones vibrate on
   kicks. On iPhone, use **Share > Add to Home Screen** for a full-screen game without Safari's bars.
 

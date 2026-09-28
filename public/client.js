@@ -187,8 +187,17 @@ const Sound = (() => {
       tone(1760, 0.35, { type: 'triangle', vol: 0.07, at: 0.01 }); tone(2640, 0.4, { type: 'triangle', vol: 0.05, at: 0.03 });
     },
     swing(p) { noise(0.12 + p * 0.05, { freq: 420, to: 1600, q: 1.6, vol: 0.035 + p * 0.03, attack: 0.05 }); },
-    touch(f) { tone(170, 0.06, { to: 90, vol: Math.min(0.2, 0.05 + f * 0.02) }); noise(0.035, { type: 'lowpass', freq: 900, vol: 0.05 }); },
-    trap() { tone(140, 0.09, { to: 70, vol: 0.22 }); noise(0.06, { freq: 700, vol: 0.1 }); },
+    touch(f, foot, kind) {
+      const hard = kind === 'knock' || kind === 'poke' || f > 4;
+      tone(hard ? 150 : 175, 0.06, { to: 85, vol: Math.min(0.24, 0.05 + f * 0.02) });
+      noise(0.035, { type: 'lowpass', freq: hard ? 700 : 950, vol: hard ? 0.09 : 0.05 });
+    },
+    trap(q, part) {
+      if (part === 'chest') { tone(115, 0.12, { to: 65, vol: 0.26 }); noise(0.09, { freq: 480, q: 0.8, vol: 0.13 }); }
+      else if (part === 'head') { tone(210, 0.08, { to: 120, vol: 0.22 }); noise(0.05, { type: 'highpass', freq: 900, vol: 0.06 }); }
+      else { const loose = q !== undefined && q < 0.5; tone(loose ? 120 : 145, 0.09, { to: 68, vol: loose ? 0.16 : 0.24 }); noise(loose ? 0.09 : 0.06, { freq: loose ? 520 : 720, vol: loose ? 0.14 : 0.1 }); }
+    },
+    header() { tone(155, 0.1, { to: 82, vol: 0.3 }); noise(0.06, { freq: 620, vol: 0.13 }); },
     bounce(f) { tone(120, 0.1, { to: 60, vol: Math.min(0.35, f * 0.06) }); noise(0.05, { freq: 600, vol: Math.min(0.12, f * 0.02) }); },
     wall(sp) { tone(80, 0.12, { to: 50, vol: Math.min(0.3, sp / 40) }); noise(0.08, { freq: 350, q: 0.8, vol: Math.min(0.2, sp / 60) }); },
     metal(base) { // crossbar / post: inharmonic partials
@@ -726,7 +735,7 @@ function interpWorld(v) {
     const pb = b.p[k];
     if (jump(pa[0], pa[1], pb[0], pb[1])) return t < 0.5 ? pa : pb;
     const d = t < 1 ? pa : pb, tf = Math.min(t, 1);
-    return [lerp(pa[0], pb[0], t), lerp(pa[1], pb[1], t), lerp(pa[2], pb[2], tf), lerp(pa[3], pb[3], tf), d[4], d[5], d[6], d[7], d[8], d[9], d[10]];
+    return [lerp(pa[0], pb[0], t), lerp(pa[1], pb[1], t), lerp(pa[2], pb[2], tf), lerp(pa[3], pb[3], tf), d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13]];
   });
   return { ball, players };
 }
@@ -735,11 +744,12 @@ function interpWorld(v) {
 const KEYMAP = {
   KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r',
   Space: 'kick', KeyJ: 'kick', KeyE: 'lob', KeyL: 'lob', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash',
+  KeyC: 'shield', KeyV: 'knock',
 };
 const MOVE = new Set(['u', 'd', 'l', 'r']);
 const held = new Set();
 const kickSources = new Set();
-const inp = { kp: 0, dc: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, rb: 0 };
+const inp = { kp: 0, dc: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, rb: 0, sh: 0, kn: 0 };
 const mouse = { x: 0, y: 0, has: false };
 // A phone or tablet (a touchscreen and nothing that hovers) starts on touch controls, unless a
 // controller was chosen on it; anything else starts on what it used last.
@@ -751,26 +761,34 @@ addEventListener('resize', checkPortrait); addEventListener('orientationchange',
 const savedCtrl = ['keyboard', 'mouse', 'gamepad', 'touch'].includes(store.get('ob_ctrl')) ? store.get('ob_ctrl') : null;
 let ctrl = touchDevice && savedCtrl !== 'gamepad' ? 'touch' : savedCtrl || 'keyboard';
 let touch = null; // the on-screen controls (touch.js), made with the room view
-let lastSent = '', padPrev = { kick: false, dash: false }, padSeen = false;
+let lastSent = '', padPrev = { kick: false, dash: false, lob: false, sh: false, kn: false }, padSeen = false;
 const K = s => s.split(' ').map(k => `<span class="key">${k}</span>`).join('');
 const CTRL_HELP = {
   keyboard: `<span class="do">Move</span><span class="how">${K('W A S D')} or arrows. Ease off to keep the ball close; at full sprint it runs away from you</span>
     <span class="do">Shoot / pass</span><span class="how">Hold ${K('Space')}, release. Release on gold for a perfect strike</span>
     <span class="do">Chip</span><span class="how">Hold ${K('E')}, release. Lifts it over the keeper</span>
     <span class="do">Tackle</span><span class="how">${K('Shift')}. While charging a shot it cancels it: a fake</span>
+    <span class="do">Shield</span><span class="how">Hold ${K('C')} to slow down, keep the ball at your feet and hold a challenge off</span>
+    <span class="do">Knock on</span><span class="how">${K('V')} pushes the ball a few strides ahead to run onto</span>
     <span class="do">Practice</span><span class="how">${K('R')} brings the ball to your feet</span>`,
   mouse: `<span class="do">Move</span><span class="how">Your player runs to the pointer. Keep it just ahead of you for close control</span>
     <span class="do">Shoot / pass</span><span class="how">Hold click, release. The ball goes where you point</span>
     <span class="do">Chip</span><span class="how">Shift + click, or middle-click</span>
-    <span class="do">Tackle</span><span class="how">Right-click (two-finger tap). While charging it fakes the shot</span>`,
+    <span class="do">Tackle</span><span class="how">Right-click (two-finger tap). While charging it fakes the shot</span>
+    <span class="do">Shield</span><span class="how">Hold ${K('C')} to keep the ball at your feet and hold a challenge off</span>
+    <span class="do">Knock on</span><span class="how">${K('V')} pushes the ball a few strides ahead to run onto</span>`,
   gamepad: `<span class="do">Move</span><span class="how">Left stick or D-pad</span>
     <span class="do">Shoot / pass</span><span class="how">Hold A or RT, release</span>
     <span class="do">Chip</span><span class="how">Y</span>
-    <span class="do">Tackle</span><span class="how">X, B or LB. While charging it fakes the shot</span>`,
+    <span class="do">Tackle</span><span class="how">X, B or LB. While charging it fakes the shot</span>
+    <span class="do">Shield</span><span class="how">Hold LT to keep the ball at your feet and hold a challenge off</span>
+    <span class="do">Knock on</span><span class="how">RB pushes the ball a few strides ahead to run onto</span>`,
   touch: `<span class="do">Move</span><span class="how">Put your left thumb down anywhere on the left half and steer. Ease off to keep the ball close; at full tilt (the knob lights up) it runs away from you</span>
     <span class="do">Shoot / pass</span><span class="how">Hold <b>Shoot</b>, release. Let go while the button is gold for a perfect strike</span>
     <span class="do">Chip</span><span class="how">Hold <b>Chip</b>, release. Lifts it over the keeper</span>
     <span class="do">Tackle</span><span class="how"><b>Tackle</b>. To fake a shot, slide your thumb from Shoot onto Tackle</span>
+    <span class="do">Shield</span><span class="how">Hold <b>Shield</b> to keep the ball close and hold a challenge off</span>
+    <span class="do">Knock on</span><span class="how"><b>Push</b> knocks the ball a few strides ahead to run onto</span>
     <span class="do">Practice</span><span class="how"><b>Ball</b> brings the ball to your feet</span>`,
 };
 const CTRL_TOAST = {
@@ -780,14 +798,14 @@ const CTRL_TOAST = {
   touch: 'Touch controls: left thumb moves, right thumb shoots, chips and tackles',
 };
 const CTRL_NAME = { keyboard: 'Keyboard', mouse: 'Mouse', gamepad: 'Controller', touch: 'Touch' };
-function releaseAllInputs() { held.clear(); for (const s of [...kickSources]) kickUp(s); if (touch) touch.reset(); inp.ax = inp.ay = 0; sendInput(); }
+function releaseAllInputs() { held.clear(); for (const s of [...kickSources]) kickUp(s); if (touch) touch.reset(); inp.ax = inp.ay = 0; inp.sh = 0; sendInput(); }
 function typing(e) { const t = e.target; return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
 function sendInput(force) {
   const msg = {
     t: 'i',
     u: +(held.has('KeyW') || held.has('ArrowUp')), d: +(held.has('KeyS') || held.has('ArrowDown')),
     l: +(held.has('KeyA') || held.has('ArrowLeft')), r: +(held.has('KeyD') || held.has('ArrowRight')),
-    k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dc: inp.dc,
+    k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dc: inp.dc, sh: inp.sh, kn: inp.kn,
     ax: Math.round(inp.ax * 50) / 50, ay: Math.round(inp.ay * 50) / 50, rb: inp.rb, lob: !!inp.lob,
   };
   const s = JSON.stringify(msg);
@@ -849,6 +867,8 @@ function setupInput() {
     if (/^Digit[1-6]$/.test(e.code)) { send({ t: 'emote', n: +e.code.slice(5) - 1 }); return; }
     if (e.code === 'KeyM') { Sound.toggle(); if (setupMenu.muteLabel) setupMenu.muteLabel(); return; }
     if (e.code === 'KeyR') { inp.rb++; sendInput(); return; }
+    if (act === 'shield') { inp.sh = 1; sendInput(); return; }
+    if (act === 'knock') { inp.kn++; sendInput(); return; }
     if (!act) return;
     if (MOVE.has(act) && ctrl !== 'keyboard') setCtrl('keyboard');
     held.add(e.code);
@@ -858,6 +878,7 @@ function setupInput() {
     sendInput();
   });
   addEventListener('keyup', e => {
+    if (KEYMAP[e.code] === 'shield') { inp.sh = 0; sendInput(); return; }
     if (!held.has(e.code)) return;
     held.delete(e.code);
     if (KEYMAP[e.code] === 'kick') kickUp('key:' + e.code);
@@ -874,6 +895,8 @@ function setupInput() {
     activate: () => { if (ctrl !== 'touch') setCtrl('touch'); },
     stick: (x, y) => { inp.ax = x; inp.ay = y; sendInput(); },
     kickDown, kickUp, dash: dashPress,
+    shield: on => { inp.sh = on ? 1 : 0; sendInput(); },
+    knock: () => { inp.kn++; sendInput(); },
     ball: () => { inp.rb++; sendInput(); },
   });
   stage.addEventListener('pointerdown', e => {
@@ -906,15 +929,17 @@ function pollGamepad() {
   let x = gp.axes[0] || 0, y = gp.axes[1] || 0;
   if (b(14)) x = -1; if (b(15)) x = 1; if (b(12)) y = -1; if (b(13)) y = 1;
   const m = Math.hypot(x, y);
-  const kick = b(0) || b(7) || b(5) || b(9), lobB = b(3), dsh = b(2) || b(1) || b(4) || b(6);
-  if ((m > 0.4 || kick || dsh) && ctrl !== 'gamepad') setCtrl('gamepad');
+  const kick = b(0) || b(7), lobB = b(3), dsh = b(2) || b(1) || b(4), shB = b(6), knB = b(5);
+  if ((m > 0.4 || kick || dsh || shB || knB) && ctrl !== 'gamepad') setCtrl('gamepad');
   if (ctrl === 'gamepad') {
     if (m < 0.2) { inp.ax = inp.ay = 0; } else { const mm = Math.min(1, (m - 0.2) / 0.65); inp.ax = x / m * mm; inp.ay = y / m * mm; }
     if (kick && !padPrev.kick) kickDown('pad');
     if (!kick && padPrev.kick) kickUp('pad');
     if (lobB && !padPrev.lob) kickDown('lob:pad');
     if (!lobB && padPrev.lob) kickUp('lob:pad');
-    padPrev.lob = lobB;
+    if (shB !== padPrev.sh) inp.sh = shB ? 1 : 0;
+    if (knB && !padPrev.kn) inp.kn++;
+    padPrev.lob = lobB; padPrev.sh = shB; padPrev.kn = knB;
     if (dsh && !padPrev.dash) dashPress();
     sendInput();
   }
@@ -961,17 +986,26 @@ function attackArrow(slot, swapped) { return ((slot === 0) !== !!swapped) ? '→
 function fireEvent(e) {
   const mine = e.p === mySlot();
   switch (e.type) {
-    case 'swing': if (R) R.fx.swing(e.p, e.t); Sound.fx.swing(e.power); break;
+    case 'swing': if (R) R.fx.swing(e.p, e.t, e.foot); Sound.fx.swing(e.power); break;
     case 'kick':
-      if (R) R.fx.kick(e.p, e.x, e.y, e.perfect, e.power, e.dx, e.dy, e.lob);
+      if (R) R.fx.kick(e.p, e.x, e.y, e.perfect, e.power, e.dx, e.dy, e.lob, e.foot);
       if (e.perfect) { Sound.fx.perfect(); floatText(e.x, e.y, 1.6, e.volley ? 'PERFECT VOLLEY!' : 'PERFECT!', '#ffd34d', 46); }
-      else { Sound.fx.kick(e.power); if (e.volley && e.power > 0.6) floatText(e.x, e.y, 1.5, 'VOLLEY!', '#ffffff', 34); else if (e.curve && mine) floatText(e.x, e.y, 1.4, 'curve', '#b8f0ff', 26); }
+      else { Sound.fx.kick(e.power); if (e.volley && e.power > 0.6) floatText(e.x, e.y, 1.5, 'VOLLEY!', '#ffffff', 34); else if (e.weak && mine) floatText(e.x, e.y, 1.35, 'weak foot', '#ffd0a0', 24); else if (e.curve && mine) floatText(e.x, e.y, 1.4, 'curve', '#b8f0ff', 26); }
       if (e.lob && mine) floatText(e.x, e.y, 1.4, 'chip', '#b8f0ff', 26);
       if (e.onTarget) Sound.fx.anticipate();
       if (mine) rumble(e.perfect ? 1 : 0.35 + e.power * 0.4, 0.3, e.perfect ? 160 : 90);
       break;
-    case 'touch': Sound.fx.touch(e.f); if (R) R.fx.touch(e.x, e.y, e.f); break;
-    case 'trap': Sound.fx.trap(); if (R) R.fx.trap(e.x, e.y); break;
+    case 'touch':
+      Sound.fx.touch(e.f, e.foot, e.kind);
+      if (R) R.fx.touch(e.p, e.x, e.y, e.f, e.foot, e.kind);
+      if (e.p === mySlot() && (e.kind === 'knock' || e.f > 4)) rumble(0.3, 0.25, 50);
+      break;
+    case 'trap': Sound.fx.trap(e.q, e.part); if (R) R.fx.trap(e.p, e.x, e.y, e.q, e.part); break;
+    case 'header':
+      Sound.fx.header();
+      if (R) R.fx.header(e.p, e.x, e.y, e.dx, e.dy);
+      if (e.p === mySlot()) rumble(0.5, 0.4, 100);
+      break;
     case 'skid': Sound.fx.skid(); if (R) R.fx.skid(e.x, e.y); break;
     case 'bump': Sound.fx.bump(e.f); if (R) R.fx.bump(e.x, e.y, e.f); break;
     case 'bounce': Sound.fx.bounce(e.f); if (R) R.fx.bounce(e.x, e.y, e.f); break;

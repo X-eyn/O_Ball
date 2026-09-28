@@ -93,7 +93,7 @@ export function createRenderer2D(canvas) {
       parts.push({ x, h, z, vx: Math.cos(a) * s, vh: Math.random() * (o.up || 2), vz: Math.sin(a) * s, life: (o.life || 0.6) * (0.6 + Math.random() * 0.6), max: o.life || 0.6, col: o.colors[i % o.colors.length], size: (o.size || 0.08) * (0.6 + Math.random() * 0.7), grav: o.grav ?? 9 });
     }
   };
-  const players = [0, 1].map(i => ({ yaw: i ? -Math.PI / 2 : Math.PI / 2, phase: 0, speed: 0, lx: null, lz: null, kick: 0, swing: 0, look: null, name: null }));
+  const players = [0, 1].map(i => ({ yaw: i ? -Math.PI / 2 : Math.PI / 2, phase: 0, speed: 0, lx: null, lz: null, kick: 0, swing: 0, tap: 0, tapFoot: 'R', recv: 0, recvPart: 'foot', head: 0, look: null, name: null }));
   const lookFor = (name, slot) => { const h = hash(name || String(slot)); return { skin: SKIN[h % SKIN.length], hair: HAIR[(h >>> 4) % HAIR.length], number: name === 'BOT' ? 0 : 1 + (h >>> 8) % 99, bald: ((h >>> 12) % 5) === 0 }; };
   let ball = { x: 0, z: 0, h: 0, spin: 0, trail: [] }, hype = 0, flash = 0, netPush = [0, 0];
 
@@ -174,32 +174,37 @@ export function createRenderer2D(canvas) {
     const bx0 = toX(x), by0 = toY(z), side = fx, lean = clamp(P.speed * 0.02, 0, 0.12);
     const H = h => by0 - h * sc; // screen y of a height in model metres (1.8 m model)
     const kick = P.swing > 0 ? 1 : P.kick;
+    const tap = P.tap > 0 ? Math.sin(Math.PI * Math.min(1, P.tap)) : 0;
+    const recv = P.recv > 0 ? Math.sin(Math.PI * Math.min(1, P.recv)) : 0;
+    const headT = P.head > 0 ? Math.sin(Math.PI * Math.min(1, P.head)) : 0;
+    const shield = p[11] ? 1 : 0;
     // legs
     const legs = [[stride, -1], [-stride, 1]];
     for (const [s, k] of legs) {
-      const swing = s * amp * 0.5 + (k > 0 ? kick * 0.8 : 0), hipX = bx0 + k * 0.08 * sc * (1 - Math.abs(side) * 0.7);
+      const swing = s * amp * 0.5 + (k > 0 ? kick * 0.8 : 0) + (P.tapFoot === (k > 0 ? 'R' : 'L') ? tap * 0.7 : 0), hipX = bx0 + k * 0.08 * sc * (1 - Math.abs(side) * 0.7);
       const footX = hipX + side * swing * 0.45 * sc, footY = by0 - Math.max(0, -s) * amp * 0.12 * sc - (k > 0 ? kick * 0.25 * sc : 0);
       g.strokeStyle = kit.socks === undefined ? '#e0283c' : '#' + kit.socks.toString(16).padStart(6, '0'); g.lineWidth = 0.13 * sc; g.lineCap = 'round';
       g.beginPath(); g.moveTo(hipX, H(0.92)); g.lineTo((hipX + footX) / 2 + side * 0.04 * sc, H(0.48)); g.lineTo(footX, footY - 0.05 * sc); g.stroke();
       g.strokeStyle = '#111'; g.lineWidth = 0.1 * sc; g.beginPath(); g.moveTo(footX, footY - 0.03 * sc); g.lineTo(footX + side * 0.14 * sc + (1 - Math.abs(side)) * k * 0.03 * sc, footY - 0.02 * sc); g.stroke();
     }
-    // shorts, shirt
+    // shorts, shirt (a shielded player crouches a touch)
     const tx = bx0 + side * lean * sc;
     g.fillStyle = '#' + kit.shorts.toString(16).padStart(6, '0');
-    g.beginPath(); g.roundRect(tx - 0.2 * sc, H(1.06), 0.4 * sc, 0.2 * sc, 0.05 * sc); g.fill();
+    g.beginPath(); g.roundRect(tx - 0.2 * sc, H(1.06 - 0.04 * shield), 0.4 * sc, 0.2 * sc, 0.05 * sc); g.fill();
     g.fillStyle = '#' + kit.shirt.toString(16).padStart(6, '0');
-    g.beginPath(); g.roundRect(tx - 0.23 * sc, H(1.52), 0.46 * sc, 0.5 * sc, 0.09 * sc); g.fill();
-    // arms swing against the legs
+    g.beginPath(); g.roundRect(tx - 0.23 * sc, H(1.52 + 0.06 * shield), 0.46 * sc, 0.5 * sc - 0.06 * shield * sc, 0.09 * sc); g.fill();
+    // arms swing against the legs; shielding and chest control open them out
+    const out = (shield ? 0.34 : 0) + (recv > 0 && P.recvPart === 'chest' ? 0.3 * recv : 0) + 0.5 * headT;
     for (const k of [-1, 1]) {
       const a = -k * stride * amp * 0.5, shX = tx + k * 0.24 * sc * (1 - Math.abs(side) * 0.6);
       g.strokeStyle = L.skin; g.lineWidth = 0.09 * sc;
-      g.beginPath(); g.moveTo(shX, H(1.45)); g.lineTo(shX + side * a * 0.25 * sc + k * 0.04 * sc, H(1.18)); g.lineTo(shX + side * a * 0.4 * sc, H(0.98)); g.stroke();
+      g.beginPath(); g.moveTo(shX, H(1.45)); g.lineTo(shX + side * a * 0.25 * sc + k * (0.04 + out) * sc, H(1.18 + 0.06 * out)); g.lineTo(shX + side * a * 0.4 * sc + k * out * 0.5 * sc, H(0.98 + 0.1 * out)); g.stroke();
     }
     // number on the back (shown when facing away from the camera), crest dot on the front
     if (fz < -0.3) { g.fillStyle = 'rgba(255,255,255,0.92)'; g.font = `700 ${Math.round(0.26 * sc)}px "Barlow Condensed", Arial, sans-serif`; g.textAlign = 'center'; g.fillText(String(L.number), tx, H(1.16)); }
     // head
-    g.fillStyle = L.skin; g.beginPath(); g.arc(tx + side * 0.03 * sc, H(1.66), 0.13 * sc, 0, 7); g.fill();
-    if (!L.bald) { g.fillStyle = L.hair; g.beginPath(); g.arc(tx + side * 0.01 * sc, H(1.7), 0.13 * sc, Math.PI * 1.05, Math.PI * 1.95); g.fill(); }
+    g.fillStyle = L.skin; g.beginPath(); g.arc(tx + side * 0.03 * sc, H(1.66 - 0.05 * shield + 0.05 * headT), 0.13 * sc, 0, 7); g.fill();
+    if (!L.bald) { g.fillStyle = L.hair; g.beginPath(); g.arc(tx + side * 0.01 * sc, H(1.7 - 0.05 * shield + 0.05 * headT), 0.13 * sc, Math.PI * 1.05, Math.PI * 1.95); g.fill(); }
     // "you" chevron
     if (mine && view.live) { const cy = H(2.05) + Math.sin(t * 3.2) * 3; g.fillStyle = kit.css; g.beginPath(); g.moveTo(tx - 8, cy - 6); g.lineTo(tx, cy + 4); g.lineTo(tx + 8, cy - 6); g.lineTo(tx + 5, cy - 8); g.lineTo(tx, cy - 2); g.lineTo(tx - 5, cy - 8); g.fill(); }
   }
@@ -257,6 +262,7 @@ export function createRenderer2D(canvas) {
       let dy = Math.atan2(p[2], p[3]) - P.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); P.yaw += dy * (1 - Math.exp(-12 * dt));
       P.phase += dt * (6 + P.speed * 2.2) * (P.speed > 0.3 ? 1 : 0);
       P.kick = Math.max(0, P.kick - dt * 4.5); P.swing = Math.max(0, P.swing - dt);
+      P.tap = Math.max(0, P.tap - dt * 3.5); P.recv = Math.max(0, P.recv - dt * 3); P.head = Math.max(0, P.head - dt * 2.4);
       items.push({ z, draw: () => drawPlayer(P, i, p, view, t) });
     });
     if (W && W.ball) items.push({ z: ball.z + 0.01, draw: () => drawBall(t) });
@@ -297,8 +303,19 @@ export function createRenderer2D(canvas) {
       if (power > 0.6) { cam.kx += dx * power * 0.3; cam.kz += dy * power * 0.3; }
       if (perfect) { emit(wx(x), 0.25, wz(y), 30, { colors: ['#ffd34d', '#fff1b0', '#ffa31a'], speed: 6, up: 4, size: 0.1, life: 0.8, grav: 4 }); cam.shake = Math.max(cam.shake, 0.12); }
     },
-    touch(x, y, f) { if (f > 4) emit(wx(x), 0.03, wz(y), 3, { colors: ['#4f9a45'], speed: 1, up: 1.2, size: 0.05, life: 0.35 }); },
-    trap(x, y) { emit(wx(x), 0.05, wz(y), 5, { colors: ['#4f9a45', '#d7e6c8'], speed: 1.4, up: 1.5, size: 0.06, life: 0.4 }); },
+    touch(slot, x, y, f, foot, kind) {
+      const P = players[slot]; if (P) { P.tap = 1; P.tapFoot = foot === 'L' ? 'L' : 'R'; }
+      if (f > 4 || kind === 'knock') emit(wx(x), 0.03, wz(y), kind === 'knock' ? 6 : 3, { colors: ['#4f9a45'], speed: 1, up: 1.2, size: 0.05, life: 0.35 });
+    },
+    trap(slot, x, y, q, part) {
+      const P = players[slot]; if (P) { P.recv = 1; P.recvPart = part || 'foot'; }
+      emit(wx(x), 0.05, wz(y), 5, { colors: ['#4f9a45', '#d7e6c8'], speed: 1.4, up: 1.5, size: 0.06, life: 0.4 });
+    },
+    header(slot, x, y) {
+      const P = players[slot]; if (P) P.head = 1;
+      emit(wx(x), 1.7, wz(y), 10, { colors: ['#ffffff', '#d7e6c8'], speed: 2.2, up: 1.5, size: 0.07, life: 0.5 });
+      cam.shake = Math.max(cam.shake, 0.05);
+    },
     skid(x, y) { emit(wx(x), 0.04, wz(y), 10, { colors: ['#6e5a3c', '#8a7350', '#4f9a45'], speed: 1.8, up: 1.4, size: 0.09, life: 0.6, grav: 4 }); },
     bounce(x, y, f) { emit(wx(x), 0.04, wz(y), 3 + f, { colors: ['#6e5a3c', '#4f9a45'], speed: 1.2, up: 1.2, size: 0.07, life: 0.45 }); },
     bump(x, y, f) { cam.shake = Math.max(cam.shake, Math.min(0.12, f * 0.02)); },

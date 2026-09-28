@@ -26,6 +26,8 @@ export function createTouchControls(view, C, h) {
     <button type="button" class="tbtn shoot" data-b="shoot" aria-label="Shoot (hold and release)"><svg class="ring" viewBox="0 0 100 100"></svg><span>Shoot</span></button>
     <button type="button" class="tbtn chip" data-b="chip" aria-label="Chip (hold and release)"><svg class="ring" viewBox="0 0 100 100"></svg><span>Chip</span></button>
     <button type="button" class="tbtn tackle" data-b="tackle" aria-label="Tackle"><i class="cd"></i><span>Tackle</span></button>
+    <button type="button" class="tbtn knock" data-b="knock" aria-label="Knock the ball ahead"><span>Push</span></button>
+    <button type="button" class="tbtn shield" data-b="shield" aria-label="Shield (hold)"><span>Shield</span></button>
     <button type="button" class="tbtn ball hidden" data-b="ball" aria-label="Bring the ball to me"><span>Ball</span></button>`;
   view.appendChild(root);
   const stickEl = root.querySelector('.stick'), base = root.querySelector('.stick-base'), knob = root.querySelector('.stick-knob');
@@ -91,7 +93,10 @@ export function createTouchControls(view, C, h) {
         h.kickDown(role === 'chip' ? 'lob:touch' : 'touch');
       } else {
         owners.set(e.pointerId, { role });
-        if (role === 'tackle') h.dash(); else h.ball();
+        if (role === 'tackle') h.dash();
+        else if (role === 'shield') h.shield(true);
+        else if (role === 'knock') h.knock();
+        else h.ball();
       }
       buzz(8);
       return;
@@ -126,6 +131,7 @@ export function createTouchControls(view, C, h) {
     if (o.role === 'stick') { stick = null; stickEl.classList.remove('on', 'full'); stickEl.classList.add('idle'); stickEl.style.left = stickEl.style.top = ''; knob.style.transform = ''; h.stick(0, 0); }
     else {
       btn[o.role].classList.remove('down');
+      if (o.role === 'shield') h.shield(false);
       if (o.role === heldBtn) { heldBtn = null; h.kickUp(o.role === 'chip' ? 'lob:touch' : 'touch'); }
     }
   };

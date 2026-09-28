@@ -80,7 +80,7 @@ const clean = n => String(n || '').replace(/[\u0000-\u001f<>]/g, '').trim().slic
 // ---------------- rooms ----------------
 const rooms = new Map();
 let nextId = 0;
-const blankInput = () => ({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, rb: 0 });
+const blankInput = () => ({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, rb: 0, sh: false, kn: 0 });
 // non-human slots: 'bot' (practice opponent) and 'none' (solo practice, no opponent)
 const isAI = id => id === 'bot' || id === 'none';
 
@@ -159,7 +159,7 @@ class Room {
         const n = v => (Number.isFinite(v) ? v | 0 : 0);
         if (m.needSync) { m.needSync = false; const si = this.slots.indexOf(m.id); if (si >= 0 && this.sim) this.sim.players[si].init = false; }
         const f = v => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
-        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob };
+        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn) };
         break;
       }
       case 'emote': {
@@ -216,10 +216,10 @@ class Room {
   }
 
   startMatch(bot, solo) {
-    this.sim = OB.createSim(this.tick, { solo });
+    const names = this.slots.map(id => this.nameOf(id));
+    this.sim = OB.createSim(this.tick, { solo, feet: names.map(OB.strongFoot) });
     this.botMatch = bot; this.solo = solo; this.result = null;
     this.phase = 'prematch'; this.phaseT = solo ? 50 : bot ? 90 : 60 * 4;
-    const names = this.slots.map(id => this.nameOf(id));
     const sameName = nkey(names[0]) === nkey(names[1]);
     this.matchInfo = {
       t: 'match', bot, solo, slots: this.slots.slice(), names,

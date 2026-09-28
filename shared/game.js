@@ -21,6 +21,20 @@
     KICK_H: 30,      // a ball higher than this can't be kicked
     CHARGE_FULL: 40, PERF_END: 52,
     DASH_CD: 100, DASH_T: 11, DASH_SPEED: 12.5,
+    // ball control: the ball is touched off the foot, deliberately and deterministically - the
+    // same body-ball arrangement always plays the ball the same way. Touch frequency and length
+    // follow the pace: close taps at a walk, longer knocks at a sprint.
+    // height bands: foot < 8, chest/thigh 8..KICK_H, head KICK_H..BODY_H
+    CTRL_SLOW: 6.5,    // relative speed below which the ball is "at your feet"
+    TOUCH_CD: 2,       // ticks between foot touches
+    TOUCH_R: 10,       // how far past the body the foot strikes
+    TOUCH_PUSH: 0.55,  // pace the ball is played at above your own, walking
+    TOUCH_SPRINT: 1.9, // extra pace at a flat-out sprint
+    CARRY_R: 36,       // how far the foot shepherds a slow ball
+    CARRY_PULL: 0.05,  // how firmly a slow ball is drawn to the foot
+    PRESS_R: 130,      // an opponent closer than this unsettles control
+    SHIELD_SPEED: 0.45, KNOCK_SPEED: 8.4,
+    RECV_T: 16,        // receive recovery ticks
     MATCH_TICKS: 120 * 60, WIN_GOALS: 3,
     KICKOFF_T: 60, GOAL_T: 70, HALF_T: 240,
     REPLAY_BEFORE: 130, REPLAY_AFTER: 25, REPLAY_SPEED: 0.5,
@@ -42,10 +56,14 @@
     return {
       i, x: 0, y: 0, vx: 0, vy: 0, fx: i ? -1 : 1, fy: 0,
       ch: false, ct: 0, dashT: 0, dashCd: 0, dashHit: false, recover: 0, stun: 0,
-      init: false, lastKp: 0, lastDc: 0, pk: null, sw: null, touchCd: 0, skidCd: 0, evCd: 0,
+      init: false, lastKp: 0, lastDc: 0, lastKn: 0, pk: null, sw: null, touchCd: 0, skidCd: 0, evCd: 0,
+      sh: false, sf: 1, bs: 0, recvT: 0, recvPart: 'foot',
       st: { goals: 0, shots: 0, onTarget: 0, perfect: 0, tackles: 0, poss: 0 },
     };
   }
+  // the strong foot the renderer gives a player from their name (game.js hash = render3d.js hash)
+  const hashName = s => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+  const strongFoot = name => ((hashName(String(hashName(name || '')) + ':foot') % 1000) / 1000) < 0.8 ? 1 : -1;
 
   // opts.solo: free practice for one player. No opponent, no clock, goals in either net count.
   function createSim(tick, opts = {}) {
@@ -57,6 +75,7 @@
       hitstop: 0, freeze: 0, winner: -1, events: [], ready: [false, false],
       bot: [{ hold: 0, dc: 0, aim: 0, aimT: 0 }, { hold: 0, dc: 0, aim: 0, aimT: 0 }],
     };
+    if (opts.feet) s.players.forEach((p, i) => { p.sf = opts.feet[i] > 0 ? 1 : -1; });
     resetKickoff(s, -1);
     return s;
   }
@@ -68,7 +87,7 @@
   function resetKickoff(s, conceder) {
     s.players.forEach((p, i) => {
       const right = attacksRight(s, i);
-      Object.assign(p, { vx: 0, vy: 0, ch: false, ct: 0, stun: 0, dashT: 0, recover: 0, sw: null, pk: null, fy: 0, x: right ? C.FL + 190 : C.FR - 190, y: C.CY, fx: right ? 1 : -1 });
+      Object.assign(p, { vx: 0, vy: 0, ch: false, ct: 0, stun: 0, dashT: 0, recover: 0, sw: null, pk: null, fy: 0, sh: false, bs: 0, recvT: 0, touchCd: 6, x: right ? C.FL + 190 : C.FR - 190, y: C.CY, fx: right ? 1 : -1 });
     });
     if (s.solo) Object.assign(s.players[1], { x: -5000, y: -5000, off: true });
     let bx = C.CX;
@@ -81,7 +100,7 @@
     s.players.forEach((p, i) => {
       const inp = inputs[i];
       p.lastKp = inp.kp; p.lastDc = inp.dc; p.init = true;
-      if (s.phase !== 'play' && s.phase !== 'goal') { p.ch = false; p.ct = 0; p.sw = null; p.pk = null; }
+      if (s.phase !== 'play' && s.phase !== 'goal') { p.ch = false; p.ct = 0; p.sw = null; p.pk = null; p.sh = false; }
     });
   }
 
@@ -109,7 +128,7 @@
     const power = powerOf(ct);
     const t = power >= 1.25 ? 6 : power > 0.6 ? 5 : 3;
     p.sw = { ct, lob, t };
-    ev(s, 'swing', { p: p.i, t, lob: lob ? 1 : 0, power: r2(power) });
+    ev(s, 'swing', { p: p.i, t, lob: lob ? 1 : 0, power: r2(power), foot: touchFoot(p, ballSide(s, p)) });
   }
 
   function kick(s, p, ct, lob) {
@@ -121,19 +140,24 @@
     if (tx * p.fx + ty * p.fy > -0.2) { nx = p.fx * 0.85 + tx * 0.15; ny = p.fy * 0.85 + ty * 0.15; } else { nx = tx; ny = ty; }
     let l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
     // Striking cleanly is the skill: a PERFECT charge goes exactly where you aim; a rushed or
-    // overcooked one, or one struck at a flat-out sprint, strays a few degrees either way.
+    // overcooked one, one on the wrong foot, one hit off-balance while cutting across the ball, or
+    // one struck under pressure strays a few degrees. The striking foot follows the ball's side.
+    const side = ballSide(s, p), weak = side !== 0 && side !== p.sf, foot = side !== 0 ? side : p.sf;
+    const press = pressure(s, p);
     const quality = perfect ? 1 : ct > C.PERF_END ? 0.35 : 0.5 + 0.5 * Math.min(1, Math.max(0, ct) / C.CHARGE_FULL);
     const sprint = clamp(Math.hypot(p.vx, p.vy) / C.TOP, 0, 1);
-    const errDeg = (perfect ? 0.4 : (1 - quality) * 10 + 1) + sprint * sprint * 2.5;
+    const lat = p.vx * -ny + p.vy * nx; // running one way while aiming another
+    const offBal = clamp(Math.abs(lat) / C.TOP, 0, 1);
+    const errDeg = perfect ? 0.4 : (1 - quality) * 10 + 1 + (weak ? 2.4 : 0) + offBal * 2 * (1 - quality) + press * 2.6 + sprint * sprint * 2.5;
     const err = (Math.random() + Math.random() - 1) * errDeg * Math.PI / 180;
     { const c = Math.cos(err), sn = Math.sin(err); const ex = nx * c - ny * sn; ny = nx * sn + ny * c; nx = ex; }
     let sp, vz;
-    if (lob) { sp = 3.6 + 6 * power; vz = 6 + 3.2 * power; }   // chip: up and over
-    else { sp = 5 + 12 * power; vz = power > 0.55 ? (power - 0.5) * 5.5 : 0; } // driven shots rise, then dip
+    const weakMul = weak ? 0.92 : 1;
+    if (lob) { sp = (3.6 + 6 * power) * weakMul; vz = 6 + 3.2 * power; }   // chip: up and over
+    else { sp = (5 + 12 * power) * weakMul; vz = power > 0.55 ? (power - 0.5) * 5.5 : 0; } // driven shots rise, then dip
     const volley = b.z > 6;
     b.vx = nx * sp; b.vy = ny * sp; b.vz = vz + (volley ? 1 : 0);
-    const lat = p.vx * -ny + p.vy * nx; // running one way while aiming another => curve
-    b.spin = clamp(lat * 0.0034, -0.017, 0.017) * (power > 0.6 ? 1 : 0.5) * (lob ? 0.5 : 1);
+    b.spin = clamp(lat * 0.0034 + (weak ? -p.sf * 0.0013 * power : 0), -0.017, 0.017) * (power > 0.6 ? 1 : 0.5) * (lob ? 0.5 : 1);
     b.hot = perfect && !lob ? 80 : 0; b.last = p.i;
     p.vx -= nx * 1.0; p.vy -= ny * 1.0; p.touchCd = 16;
     s.hitstop = Math.max(s.hitstop, perfect ? 6 : power > 0.6 ? 2 : 0);
@@ -141,17 +165,19 @@
     const onTarget = !!pred && pred.side === (s.solo ? pred.side : (attacksRight(s, p.i) ? 1 : 0));
     if (power > 0.6) { p.st.shots++; if (onTarget) p.st.onTarget++; }
     if (perfect) p.st.perfect++;
-    ev(s, 'kick', { p: p.i, x: r1(b.x), y: r1(b.y), perfect, power: r2(power), lob: lob ? 1 : 0, volley: volley ? 1 : 0, curve: Math.abs(b.spin) > 0.01, onTarget: onTarget ? 1 : 0, dx: r2(nx), dy: r2(ny) });
+    ev(s, 'kick', { p: p.i, x: r1(b.x), y: r1(b.y), perfect, power: r2(power), lob: lob ? 1 : 0, volley: volley ? 1 : 0, curve: Math.abs(b.spin) > 0.01, onTarget: onTarget ? 1 : 0, dx: r2(nx), dy: r2(ny), foot: foot > 0 ? 'R' : 'L', weak: weak ? 1 : 0 });
   }
 
   // ---------- physics ----------
   function stepPlayer(s, p, inp) {
-    if (!p.init) { p.lastKp = inp.kp; p.lastDc = inp.dc; p.init = true; }
+    if (!p.init) { p.lastKp = inp.kp; p.lastDc = inp.dc; p.lastKn = inp.kn; p.init = true; }
     if (p.dashCd > 0) p.dashCd--;
     if (p.recover > 0) p.recover--;
     if (p.touchCd > 0) p.touchCd--;
     if (p.skidCd > 0) p.skidCd--;
     if (p.evCd > 0) p.evCd--;
+    if (p.recvT > 0) p.recvT--;
+    p.sh = !!inp.sh;
 
     // movement: analog (mouse / gamepad) or digital (keyboard)
     let ax, ay;
@@ -173,6 +199,12 @@
         p.dashT = C.DASH_T; p.dashCd = C.DASH_CD; p.dashHit = false;
         ev(s, 'dash', { p: p.i, x: r1(p.x), y: r1(p.y) });
       }
+    }
+
+    // a knock-on is deliberate: push the ball into space and run onto it
+    if (inp.kn !== p.lastKn) {
+      p.lastKn = inp.kn;
+      if (p.stun === 0 && !p.ch && !p.sw && !p.pk) knockBall(s, p);
     }
 
     const pressedNew = inp.kp !== p.lastKp;
@@ -207,7 +239,7 @@
       p.dashT--; p.vx *= 0.97; p.vy *= 0.97;
       if (p.dashT === 0 && !p.dashHit) { p.recover = 30; ev(s, 'dashmiss', { p: p.i, x: r1(p.x), y: r1(p.y) }); }
     } else {
-      const top = C.TOP * (p.ch ? 0.62 : 1) * (p.recover > 0 ? 0.4 : 1) * (p.sw ? 0.45 : 1);
+      const top = C.TOP * (p.ch ? 0.62 : 1) * (p.recover > 0 ? 0.4 : 1) * (p.sw ? 0.45 : 1) * (p.sh ? C.SHIELD_SPEED : 1);
       const speed = Math.hypot(p.vx, p.vy);
       if (m > 0.05) {
         const reversing = p.vx * ax + p.vy * ay < -0.3 * speed * m;
@@ -227,8 +259,11 @@
     const [a, b] = s.players;
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy), min = C.PR * 2;
     if (d >= min || d === 0) return;
-    const nx = dx / d, ny = dy / d, ov = (min - d) / 2;
-    a.x -= nx * ov; a.y -= ny * ov; b.x += nx * ov; b.y += ny * ov;
+    const nx = dx / d, ny = dy / d, ov = min - d;
+    // a shielding player is heavier: contact moves them less
+    const wa = a.sh ? 0.28 : 1, wb = b.sh ? 0.28 : 1;
+    a.x -= nx * ov * (wa / (wa + wb)); a.y -= ny * ov * (wa / (wa + wb));
+    b.x += nx * ov * (wb / (wa + wb)); b.y += ny * ov * (wb / (wa + wb));
     const aDash = a.dashT > 0 && !a.dashHit, bDash = b.dashT > 0 && !b.dashHit;
     if (aDash !== bDash) {
       const atk = aDash ? a : b, vic = aDash ? b : a, sg = aDash ? 1 : -1;
@@ -245,9 +280,143 @@
     }
   }
 
-  // player <-> ball. A slow ball in front of a player gets a controlled touch: it is pushed
-  // ahead in the direction they face. Walking = small touches (tight control); sprinting = longer
-  // touches (the ball runs a little ahead, and a defender can nick it). Fast balls need a trap.
+  // which side of the player the ball is on: +1 their right, -1 their left, 0 dead ahead
+  const ballSide = (s, p) => Math.sign(p.fx * (s.ball.y - p.y) - p.fy * (s.ball.x - p.x));
+  // how hard an opponent is pressing you: only someone in front of you, weighted by how fast they
+  // are closing. Deterministic, so losing the ball to pressure always has a visible cause.
+  function pressure(s, p) {
+    const o = s.players[1 - p.i];
+    if (!o || o.off || o.stun > 0) return 0;
+    const dx = o.x - p.x, dy = o.y - p.y, d = Math.hypot(dx, dy) || 1;
+    if (d >= C.PRESS_R) return 0;
+    if ((dx * p.fx + dy * p.fy) / d < -0.2) return 0; // behind you is not pressure
+    const closing = Math.max(0, -((o.vx - p.vx) * dx + (o.vy - p.vy) * dy) / d);
+    return clamp((1 - d / C.PRESS_R) * (0.55 + 0.45 * Math.min(1, closing / 2)), 0, 1);
+  }
+  const touchFoot = (p, side) => ((side !== 0 ? side : p.sf) > 0 ? 'R' : 'L');
+
+  // A touch is a physical act: the ball only moves when the foot meets it, and the same arrangement
+  // of body and ball always plays it the same way. Touch frequency and length follow the pace -
+  // close taps while walking, longer knocks at a sprint - and the ball is only struck when it is
+  // not already running away from the foot.
+  function stepTouches(s) {
+    const b = s.ball;
+    if (b.net) return;
+    for (const p of s.players) {
+      if (p.off || p.stun > 0 || p.touchCd > 0 || p.recvT > 0) continue;
+      if (b.z > 8) continue;
+      const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
+      if (d > C.PR + C.BR + C.TOUCH_R) continue;         // beyond the reach of the foot
+      if ((dx * p.fx + dy * p.fy) / d < -0.45) continue; // a ball behind is left for the turn
+      const rvx = b.vx - p.vx, rvy = b.vy - p.vy, relSpeed = Math.hypot(rvx, rvy);
+      const spd = Math.hypot(p.vx, p.vy), sprint = clamp(spd / C.TOP, 0, 1);
+      if (relSpeed > C.CTRL_SLOW) continue;              // a fast ball is received, not dribbled
+      if (spd < 0.35 && relSpeed < 1.2) continue;        // standing on a slow ball: let it settle
+      const press = pressure(s, p);
+      const rightX = -p.fy, rightY = p.fx;
+      const lat = dx * rightX + dy * rightY;
+      if (Math.abs(lat) > 5) p.bs = lat > 0 ? 1 : -1;    // foot side follows the ball, with hysteresis
+      const side = p.bs || p.sf, weak = side !== p.sf;
+      const extra = (C.TOUCH_PUSH + C.TOUCH_SPRINT * sprint * sprint) * (weak ? 0.75 : 1) * (1 - press * 0.25) * (p.sh ? 0.8 : 1);
+      const away = (rvx * dx + rvy * dy) / d;            // + = the ball is already leaving the foot
+      if (away > Math.max(0.2, extra * 0.2)) continue;
+      // aim: where you face, steered back to the front of the foot. A wrong-foot touch drifts across
+      // the body; a pressured touch squirts away from the defender.
+      const steer = clamp(-lat / 26, -0.5, 0.5) - (weak ? side * 0.16 : 0);
+      let nx = p.fx + rightX * steer, ny = p.fy + rightY * steer;
+      if (press > 0.02) {
+        const o = s.players[1 - p.i];
+        const ax = p.x - o.x, ay = p.y - o.y, al = Math.hypot(ax, ay) || 1;
+        nx += ax / al * press * 0.35; ny += ay / al * press * 0.35;
+      }
+      const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+      const push = Math.max(0.5, spd) + extra;
+      b.vx = nx * push; b.vy = ny * push; b.vz = 0; b.spin *= 0.25; b.last = p.i;
+      p.touchCd = C.TOUCH_CD;
+      if (extra > 0.95 && !p.evCd) { p.evCd = 5; ev(s, 'touch', { p: p.i, x: r1(b.x), y: r1(b.y), f: r1(push), foot: side > 0 ? 'R' : 'L', weak: weak ? 1 : 0, q: r2(clamp(1 - (weak ? 0.24 : 0) - press * 0.35, 0.15, 1)), kind: 'step' }); }
+    }
+  }
+
+  // knock-on: an intentional push three or four strides into space, to run onto
+  function knockBall(s, p) {
+    const b = s.ball;
+    const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
+    if (b.z > 8 || b.net || d > C.CARRY_R + 4) return;
+    const side = ballSide(s, p) || p.sf, weak = side !== p.sf;
+    const rightX = -p.fy, rightY = p.fx;
+    const steer = weak ? -side * 0.14 : 0; // a weak-foot knock drifts across the body, always the same way
+    let nx = p.fx + rightX * steer, ny = p.fy + rightY * steer;
+    const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+    b.vx = nx * C.KNOCK_SPEED; b.vy = ny * C.KNOCK_SPEED; b.vz = weak ? 0.8 : 0.35;
+    b.spin *= 0.2; b.last = p.i;
+    p.touchCd = 10;
+    ev(s, 'touch', { p: p.i, x: r1(b.x), y: r1(b.y), f: C.KNOCK_SPEED, foot: touchFoot(p, side), weak: weak ? 1 : 0, q: weak ? 0.6 : 1, kind: 'knock' });
+  }
+
+  // the physical bounce off a body no one controls (stunned, wrong height, ball flying through)
+  function bodyBounce(s, p, nx, ny, rel) {
+    const b = s.ball, mb = 0.5, mp = 1, j = -1.15 * rel / (1 / mb + 1 / mp);
+    b.vx += j / mb * nx; b.vy += j / mb * ny; p.vx -= j / mp * nx; p.vy -= j / mp * ny;
+    b.spin *= 0.5; b.last = p.i;
+  }
+
+  // first touch on a fast ball: pace, angle, pressure and which foot decide how much you keep. A
+  // clean touch kills the pace and leaves it at your feet; a poor one squirts past you.
+  function receive(s, p, c) {
+    const b = s.ball, { nx, ny, rel, rvx, rvy, relSpeed, press, side } = c;
+    const facing = p.fx * nx + p.fy * ny; // 1 = ball arriving straight at your front
+    const weak = side !== 0 && side !== p.sf;
+    const spd = Math.hypot(p.vx, p.vy);
+    let q = 1 - clamp((relSpeed - 7) / 20, 0, 0.35) - clamp((1 - facing) / 2, 0, 1) * 0.3 - press * 0.32 - (weak ? 0.22 : 0) - clamp(spd / C.TOP, 0, 1) * 0.12 + (p.sh ? 0.14 : 0);
+    q = clamp(q, 0.06, 1);
+    const keep = 0.12 + (1 - q) * 0.55;
+    const rx = rvx - 2 * rel * nx, ry = rvy - 2 * rel * ny; // reflected relative velocity
+    b.vx = p.vx + rx * keep; b.vy = p.vy + ry * keep;
+    const sq = Math.min(1.5, (1 - q) * 1.3) * (side || p.sf); // a loose touch spills to the outside of the foot
+    b.vx += -ny * sq; b.vy += nx * sq;
+    b.vz = Math.abs(b.vz) * 0.3; b.spin *= 0.3; b.last = p.i;
+    p.touchCd = 3; p.recvT = C.RECV_T; p.recvPart = 'foot';
+    ev(s, 'trap', { p: p.i, x: r1(b.x), y: r1(b.y), q: r2(q), part: 'foot', foot: touchFoot(p, side), clean: q > 0.6 ? 1 : 0 });
+  }
+
+  // chest / thigh: a quiet player can kill a dropping ball dead and let it fall to their feet
+  function chestControl(s, p, c) {
+    const b = s.ball, { relSpeed, press, side } = c;
+    const weak = side !== 0 && side !== p.sf;
+    const q = clamp(1 - clamp((relSpeed - 6) / 14, 0, 0.5) - press * 0.3 - (weak ? 0.15 : 0) + (p.sh ? 0.1 : 0), 0.15, 1);
+    b.vx = p.vx * 0.4 + b.vx * (1 - q) * 0.35; b.vy = p.vy * 0.4 + b.vy * (1 - q) * 0.35;
+    b.vz = -1.2 - (1 - q) * 0.8; // dropped to the ground, not held
+    b.spin *= 0.2; b.last = p.i;
+    p.touchCd = 10; p.recvT = C.RECV_T; p.recvPart = 'chest'; // long enough for the ball to fall clear
+    ev(s, 'trap', { p: p.i, x: r1(b.x), y: r1(b.y), q: r2(q), part: 'chest', foot: '', clean: q > 0.6 ? 1 : 0 });
+  }
+
+  // header: a dropping ball above head height is met and sent where the body faces; a high ball is
+  // headed up and away, a lower one driven down toward the goal
+  function headBall(s, p, c) {
+    const b = s.ball, { nx, ny, relSpeed, press, side } = c;
+    const weak = side !== 0 && side !== p.sf;
+    const power = clamp(1.6 + relSpeed * 0.42 + Math.hypot(p.vx, p.vy) * 0.25, 1.6, 8.5) * (weak ? 0.82 : 1) * (1 - press * 0.18);
+    const rightX = -p.fy, rightY = p.fx;
+    let ax = p.fx * 0.85 + nx * 0.15, ay = p.fy * 0.85 + ny * 0.15;
+    if (weak) { ax -= rightX * p.sf * 0.12; ay -= rightY * p.sf * 0.12; } // weak-foot headers drift wide
+    if (press > 0.02) {
+      const o = s.players[1 - p.i];
+      const ex2 = p.x - o.x, ey2 = p.y - o.y, el = Math.hypot(ex2, ey2) || 1;
+      ax += ex2 / el * press * 0.3; ay += ey2 / el * press * 0.3;
+    }
+    const l = Math.hypot(ax, ay) || 1; ax /= l; ay /= l;
+    b.vx = ax * power; b.vy = ay * power;
+    b.vz = b.z > 42 ? Math.max(0.5, -b.vz * 0.25) : -1.6;
+    b.spin *= 0.4; b.last = p.i;
+    p.touchCd = 8; p.recvT = C.RECV_T + 4; p.recvPart = 'head';
+    s.hitstop = Math.max(s.hitstop, 2);
+    ev(s, 'header', { p: p.i, x: r1(b.x), y: r1(b.y), f: r1(power), dx: r2(ax), dy: r2(ay), weak: weak ? 1 : 0 });
+  }
+
+  // player <-> ball. What happens on contact depends on the height band and how fast the ball is
+  // arriving: a slow ball at the feet is shepherded (the actual touches come off footfalls, see
+  // stepTouches), a fast one must be received, a dropping one can be chested or headed.
   function collideBall(s, p) {
     const b = s.ball;
     if (b.z > C.BODY_H) return; // ball flies over the player
@@ -259,59 +428,57 @@
     if (p.dashT > 0 && !p.dashHit) { // a dash into the ball pokes it hard
       p.dashHit = true;
       b.vx = p.vx * 1.1 + nx * 3; b.vy = p.vy * 1.1 + ny * 3; b.vz = 1.5; b.last = p.i; b.spin = 0;
-      ev(s, 'touch', { p: p.i, x: r1(b.x), y: r1(b.y), f: 3 });
+      ev(s, 'touch', { p: p.i, x: r1(b.x), y: r1(b.y), f: 3, foot: touchFoot(p, ballSide(s, p)), weak: 0, q: 1, kind: 'poke' });
       return;
     }
-    if (rel >= 0) return;
-    const controllable = p.stun <= 0 && b.z < 14 && p.touchCd <= 0;
-    if (controllable && relSpeed < 9.5) {
-      const spd = Math.hypot(p.vx, p.vy), sprint = clamp(spd / C.TOP, 0, 1);
-      let tx = p.fx * 0.7 + nx * 0.3, ty = p.fy * 0.7 + ny * 0.3;
-      if (tx * nx + ty * ny < 0.15) { tx = nx; ty = ny; }
-      const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
-      // a touch plays the ball about a stride ahead of you: a little quicker than you are running
-      // (more at a sprint, so a defender can nick it), never a pass to nobody
-      const sp = Math.max(1.1, spd * (1.06 + 0.2 * sprint * sprint)) * (p.ch ? 0.92 : 1);
-      b.vx = tx * sp; b.vy = ty * sp; b.vz = 0; b.spin *= 0.3; b.last = p.i;
-      p.touchCd = 5;
-      if (!p.evCd) { p.evCd = 7; ev(s, 'touch', { p: p.i, x: r1(b.x), y: r1(b.y), f: r1(sp) }); }
-    } else if (controllable) {
-      // first touch on a fast ball: facing it = clean trap, otherwise it spills
-      const facing = -(p.fx * nx + p.fy * ny); // 1 = ball arriving straight at your front
-      const keep = facing > 0.4 ? 0.14 : 0.38;
-      const rx = rvx - 2 * rel * nx, ry = rvy - 2 * rel * ny; // reflected relative velocity
-      b.vx = p.vx + rx * keep; b.vy = p.vy + ry * keep; b.vz = Math.abs(b.vz) * 0.3; b.spin = 0; b.last = p.i;
-      p.touchCd = 6;
-      ev(s, 'trap', { p: p.i, x: r1(b.x), y: r1(b.y), clean: facing > 0.4 ? 1 : 0 });
-    } else {
-      const mb = 0.5, mp = 1, j = -1.3 * rel / (1 / mb + 1 / mp);
-      b.vx += j / mb * nx; b.vy += j / mb * ny; p.vx -= j / mp * nx; p.vy -= j / mp * ny;
-      b.spin *= 0.5; b.last = p.i;
+    if (rel >= 0 && !(b.z >= 8 && b.vz <= 0)) return; // a dropping ball can still be met
+    const side = ballSide(s, p), press = pressure(s, p), c = { nx, ny, rel, rvx, rvy, relSpeed, press, side };
+    if (p.stun > 0) { bodyBounce(s, p, nx, ny, rel); return; }
+    if (b.z >= C.KICK_H) { // head height
+      if (b.vz <= 0 && d < C.PR + C.BR + 10) headBall(s, p, c); else bodyBounce(s, p, nx, ny, rel);
+      return;
     }
+    if (b.z >= 8) { // chest / thigh height
+      if (Math.hypot(p.vx, p.vy) < 2.2 && p.touchCd <= 0 && relSpeed < 11) chestControl(s, p, c);
+      else bodyBounce(s, p, nx, ny, rel);
+      return;
+    }
+    if (p.touchCd > 0 || p.recvT > 0) { if (relSpeed < C.CTRL_SLOW) softCarry(s, p); else bodyBounce(s, p, nx, ny, rel); return; }
+    if (relSpeed < C.CTRL_SLOW) softCarry(s, p);
+    else receive(s, p, c);
   }
 
-  // close control: when walking, turning or winding up a shot, the ball is gently kept near the
-  // front foot. The assist fades out as you approach full sprint, so sprinting with the ball
-  // means bigger, riskier touches.
+  // absorbing a slow ball that is already overlapping: a light transfer to the player's pace, never
+  // a push. Propulsion only comes from a footfall or an intentional knock.
+  function softCarry(s, p) {
+    const b = s.ball;
+    b.vx += (p.vx - b.vx) * 0.12; b.vy += (p.vy - b.vy) * 0.12;
+    b.spin *= 0.85; b.last = p.i;
+  }
+
+  // close control: the foot shepherds a slow ball at walking pace. It fades while charging (the
+  // ball is loose in a wind-up and can be poked out of it) and under pressure. Progress with the
+  // ball comes from the stride touches above, not from this.
   function closeControl(s) {
     const b = s.ball;
-    if (b.z > 8 || b.x < C.FL || b.x > C.FR) return;
+    if (b.z > 8 || b.x < C.FL || b.x > C.FR || b.net) return;
     let best = null, bestD = 1e9;
     for (const p of s.players) {
-      if (p.off || p.stun > 0 || p.dashT > 0 || p.touchCd > 8) continue;
+      if (p.off || p.stun > 0 || p.dashT > 0 || p.touchCd > 0) continue;
       const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
-      if (d > C.PR + C.BR + 20 || (dx * p.fx + dy * p.fy) / d < -0.3) continue;
-      if (Math.hypot(b.vx - p.vx, b.vy - p.vy) > 6.5) continue;
-      const sprint = clamp(Math.hypot(p.vx, p.vy) / C.TOP, 0, 1);
-      const k = p.ch || p.sw ? 1 : 1 - sprint * sprint * 0.85;
-      const fx = p.x + p.fx * (C.PR + C.BR + 4), fy = p.y + p.fy * (C.PR + C.BR + 4);
+      if (d > C.CARRY_R || (dx * p.fx + dy * p.fy) / d < -0.45) continue;
+      if (Math.hypot(b.vx - p.vx, b.vy - p.vy) > C.CTRL_SLOW) continue;
+      const side = ballSide(s, p) || p.sf;
+      const fx = p.x + p.fx * (C.PR + C.BR + 2) - p.fy * side * 5;
+      const fy = p.y + p.fy * (C.PR + C.BR + 2) + p.fx * side * 5;
       const fd = Math.hypot(b.x - fx, b.y - fy);
-      if (fd < bestD) { bestD = fd; best = { p, fx, fy, k }; }
+      if (fd < bestD) { bestD = fd; best = { p, fx, fy }; }
     }
     if (!best) return;
-    const { p, fx, fy, k } = best;
-    b.vx += ((p.vx - b.vx) * 0.12 + (fx - b.x) * 0.05) * k;
-    b.vy += ((p.vy - b.vy) * 0.12 + (fy - b.y) * 0.05) * k;
+    const { p, fx, fy } = best;
+    const k = (p.sh ? 1 : 0.72) * (p.ch ? 0.45 : 1) * (1 - pressure(s, p) * 0.3);
+    b.vx += ((p.vx - b.vx) * 0.1 + (fx - b.x) * C.CARRY_PULL) * k;
+    b.vy += ((p.vy - b.vy) * 0.1 + (fy - b.y) * C.CARRY_PULL) * k;
   }
 
   function stepBall(s) {
@@ -416,6 +583,7 @@
   function physics(s, inputs) {
     s.players.forEach((p, i) => { if (!p.off) stepPlayer(s, p, inputs[i]); });
     if (!s.solo) collidePlayers(s);
+    stepTouches(s);
     s.players.forEach(p => { if (!p.off) collideBall(s, p); });
     closeControl(s);
     stepBall(s);
@@ -522,7 +690,7 @@
   // ---------- bot ----------
   function botInput(s, i) {
     const p = s.players[i], o = s.players[1 - i], ball = s.ball, B = s.bot[i];
-    const inp = { u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: B.dc };
+    const inp = { u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: B.dc, sh: false, kn: 0 };
     if (s.phase !== 'play' && s.phase !== 'goal') { B.hold = 0; return inp; }
     const dir = attacksRight(s, i) ? 1 : -1;
     if (--B.aimT <= 0) { B.aim = (Math.random() * 2 - 1) * (C.GH / 2 - 24); B.aimT = 90; }
@@ -577,9 +745,10 @@
       sc: s.score, tm: Math.ceil(s.time / 60), sd: s.sd ? 1 : 0, rd: s.ready.map(Number), hf: s.half, sw: s.swapped ? 1 : 0, so: s.solo ? 1 : 0,
       b: [r1(b.x), r1(b.y), b.hot > 0 ? 1 : 0, r1(b.z)],
       p: s.players.map(p => [r1(p.x), r1(p.y), r2(p.fx), r2(p.fy), p.ch ? p.ct : -1,
-        p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, p.dashCd, p.recover > 0 ? 1 : 0, r1(p.vx), r1(p.vy)]),
+        p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, p.dashCd, p.recover > 0 ? 1 : 0, r1(p.vx), r1(p.vy),
+        p.sh ? 1 : 0, r2(p.recvT / C.RECV_T), p.recvPart === 'chest' ? 1 : p.recvPart === 'head' ? 2 : 0]),
     };
   }
 
-  return { C, createSim, stepSim, syncInputs, setPhase, botInput, netState };
+  return { C, createSim, stepSim, syncInputs, setPhase, botInput, netState, strongFoot };
 });
