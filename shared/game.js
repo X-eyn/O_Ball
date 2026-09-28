@@ -8,12 +8,14 @@
 
   const C = {
     W: 1100, H: 680, FL: 70, FR: 1030, FT: 92, FB: 652,
-    GH: 170, GD: 42, POST_R: 6, PR: 18, BR: 10,
+    GH: 140, GD: 42, POST_R: 6, PR: 18, BR: 10,
     // movement: players have mass. They accelerate into top speed, carve arcs when turning
     // at speed and skid when reversing.
     TOP: 4.3, ACCEL: 0.09, REVERSE: 0.16, STOP: 0.86,
     // ball
-    GROUND_FRIC: 0.988, AIR_DRAG: 0.996, GRAV: 0.32, BOUNCE: 0.45, WALL_E: 0.75,
+    GROUND_FRIC: 0.988, AIR_DRAG: 0.996, GRAV: 0.32, BOUNCE: 0.45, WALL_E: 0.55,
+    ROLL: 0.028,     // rolling resistance on grass (px/tick²): a slow ball dies, a struck one carries
+    WALL_GRIP: 0.8,  // the boards are padded: a ball keeps this much of its speed along them
     BAR: 62,         // crossbar height (px of height; the pitch uses 1 world unit = 50px)
     BODY_H: 55,      // a ball higher than this flies over players
     KICK_H: 30,      // a ball higher than this can't be kicked
@@ -49,7 +51,7 @@
   function createSim(tick, opts = {}) {
     const s = {
       tick, players: [mkPlayer(0), mkPlayer(1)],
-      ball: { x: C.CX, y: C.CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, hot: 0, last: -1 },
+      ball: { x: C.CX, y: C.CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, hot: 0, last: -1, net: 0 },
       score: [0, 0], time: C.MATCH_TICKS, sd: false, half: 1, swapped: false, solo: !!opts.solo,
       phase: 'kickoff', pt: 0, ps: tick, rf: 0, goalTick: -1, dramaCd: 0,
       hitstop: 0, freeze: 0, winner: -1, events: [], ready: [false, false],
@@ -71,7 +73,7 @@
     if (s.solo) Object.assign(s.players[1], { x: -5000, y: -5000, off: true });
     let bx = C.CX;
     if (conceder >= 0 && !s.solo) bx += attacksRight(s, conceder) ? -46 : 46;
-    Object.assign(s.ball, { x: bx, y: C.CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, hot: 0, last: -1 });
+    Object.assign(s.ball, { x: bx, y: C.CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, hot: 0, last: -1, net: 0 });
     setPhase(s, 'kickoff');
   }
 
@@ -90,8 +92,8 @@
     for (let t = 1; t <= n; t++) {
       stepBall(shadow);
       const b = shadow.ball;
-      if (b.x < C.FL - C.BR) return { side: 0, t, x: b.x, y: b.y };
-      if (b.x > C.FR + C.BR) return { side: 1, t, x: b.x, y: b.y };
+      if (b.net === -1 && b.x < C.FL - C.BR) return { side: 0, t, x: b.x, y: b.y };
+      if (b.net === 1 && b.x > C.FR + C.BR) return { side: 1, t, x: b.x, y: b.y };
       if (Math.hypot(b.vx, b.vy) < 1.5 && b.z <= 0) return null;
     }
     return null;
@@ -118,11 +120,13 @@
     let nx, ny;
     if (tx * p.fx + ty * p.fy > -0.2) { nx = p.fx * 0.85 + tx * 0.15; ny = p.fy * 0.85 + ty * 0.15; } else { nx = tx; ny = ty; }
     let l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
-    // gentle aim assist on shots that are already roughly on target
-    if (power > 0.6 && !lob) {
-      let gx = (attacksRight(s, p.i) ? C.FR : C.FL) - b.x, gy = C.CY - b.y; const gl = Math.hypot(gx, gy) || 1; gx /= gl; gy /= gl;
-      if (nx * gx + ny * gy > 0.92) { nx = nx * 0.75 + gx * 0.25; ny = ny * 0.75 + gy * 0.25; l = Math.hypot(nx, ny); nx /= l; ny /= l; }
-    }
+    // Striking cleanly is the skill: a PERFECT charge goes exactly where you aim; a rushed or
+    // overcooked one, or one struck at a flat-out sprint, strays a few degrees either way.
+    const quality = perfect ? 1 : ct > C.PERF_END ? 0.35 : 0.5 + 0.5 * Math.min(1, Math.max(0, ct) / C.CHARGE_FULL);
+    const sprint = clamp(Math.hypot(p.vx, p.vy) / C.TOP, 0, 1);
+    const errDeg = (perfect ? 0.4 : (1 - quality) * 10 + 1) + sprint * sprint * 2.5;
+    const err = (Math.random() + Math.random() - 1) * errDeg * Math.PI / 180;
+    { const c = Math.cos(err), sn = Math.sin(err); const ex = nx * c - ny * sn; ny = nx * sn + ny * c; nx = ex; }
     let sp, vz;
     if (lob) { sp = 3.6 + 6 * power; vz = 6 + 3.2 * power; }   // chip: up and over
     else { sp = 5 + 12 * power; vz = power > 0.55 ? (power - 0.5) * 5.5 : 0; } // driven shots rise, then dip
@@ -242,8 +246,8 @@
   }
 
   // player <-> ball. A slow ball in front of a player gets a controlled touch: it is pushed
-  // ahead in the direction they face. Walking = small touches (tight control); sprinting = big
-  // touches (the ball runs away from you, and a defender can nick it). Fast balls need a trap.
+  // ahead in the direction they face. Walking = small touches (tight control); sprinting = longer
+  // touches (the ball runs a little ahead, and a defender can nick it). Fast balls need a trap.
   function collideBall(s, p) {
     const b = s.ball;
     if (b.z > C.BODY_H) return; // ball flies over the player
@@ -265,7 +269,9 @@
       let tx = p.fx * 0.7 + nx * 0.3, ty = p.fy * 0.7 + ny * 0.3;
       if (tx * nx + ty * ny < 0.15) { tx = nx; ty = ny; }
       const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
-      const sp = Math.max(1.5, spd * (1.16 + 0.42 * sprint * sprint)) * (p.ch ? 0.92 : 1);
+      // a touch plays the ball about a stride ahead of you: a little quicker than you are running
+      // (more at a sprint, so a defender can nick it), never a pass to nobody
+      const sp = Math.max(1.1, spd * (1.06 + 0.2 * sprint * sprint)) * (p.ch ? 0.92 : 1);
       b.vx = tx * sp; b.vy = ty * sp; b.vz = 0; b.spin *= 0.3; b.last = p.i;
       p.touchCd = 5;
       if (!p.evCd) { p.evCd = 7; ev(s, 'touch', { p: p.i, x: r1(b.x), y: r1(b.y), f: r1(sp) }); }
@@ -315,6 +321,7 @@
       b.vy = b.vx * sn + b.vy * c; b.vx = vx; b.spin *= 0.985;
       if (Math.abs(b.spin) < 0.0005) b.spin = 0;
     }
+    const px = b.x, py = b.y; // where it was, for the swept collisions below
     b.x += b.vx; b.y += b.vy;
     // height
     if (b.z > 0 || b.vz > 0) {
@@ -328,9 +335,43 @@
     const air = b.z > 0.5;
     const fr = air ? C.AIR_DRAG : C.GROUND_FRIC;
     b.vx *= fr; b.vy *= fr;
+    if (!air) { const v = Math.hypot(b.vx, b.vy); if (v > 0) { const k = Math.max(0, v - C.ROLL) / v; b.vx *= k; b.vy *= k; } }
     if (b.hot > 0) b.hot--;
+    // Swept collisions. A struck ball can travel further in one tick than the band in front of the
+    // end line is deep, and further than a post is wide, so its path is tested, not just where it
+    // ends up (otherwise a hard shot wide of the goal passes the board and lands in the net). If the
+    // path meets the end board (wide of the posts, or over the bar) or a post, the ball is put back
+    // where it struck; the code below then plays the bounce, the bar or the post as usual.
+    for (const [wall, dir] of [[C.FL + C.BR, -1], [C.FR - C.BR, 1]]) {
+      if ((px - wall) * dir <= 0 && (b.x - wall) * dir > 0) { // crossed the board's plane, heading out
+        const u = (wall - px) / (b.x - px), yc = py + (b.y - py) * u;
+        const clean = yc > C.GY1 + C.BR * 0.5 && yc < C.GY2 - C.BR * 0.5 && b.z < C.BAR - C.BR;
+        if (!clean) { b.x = wall + dir * 0.01; b.y = yc; }
+      }
+    }
+    if (b.z < C.BAR) for (const [cx, cy] of C.POSTS) {
+      const dx = b.x - px, dy = b.y - py, fx = px - cx, fy = py - cy, R = C.BR + C.POST_R;
+      const A = dx * dx + dy * dy; if (A < 1e-9) continue;
+      const B = 2 * (fx * dx + fy * dy), Cc = fx * fx + fy * fy - R * R, disc = B * B - 4 * A * Cc;
+      if (Cc <= 0 || disc <= 0) continue; // started touching it (resolved below) or never meets it
+      const t0 = (-B - Math.sqrt(disc)) / (2 * A);
+      if (t0 >= 0 && t0 <= 1) { const k = Math.min(1, t0 + 0.02); b.x = px + dx * k; b.y = py + dy * k; break; }
+    }
     const inMouth = b.y > C.GY1 && b.y < C.GY2;
-    if (b.x < C.FL || b.x > C.FR) { // inside a goal net
+    // A ball is only ever in a net if it went in through the mouth (between the posts, under the
+    // bar). Anything else that ends up behind the line (pushed there in a scramble, poked by a dash)
+    // is against the end board, and goes back in play off it: position alone never scores.
+    if ((b.x < C.FL || b.x > C.FR) && !b.net) {
+      const side = b.x > C.FR ? 1 : -1, line = side > 0 ? C.FR : C.FL;
+      const inside = side > 0 ? px <= C.FR : px >= C.FL;
+      const yc = inside && b.x !== px ? py + (b.y - py) * (line - px) / (b.x - px) : b.y;
+      if (yc > C.GY1 && yc < C.GY2 && b.z < C.BAR) b.net = side;
+      else {
+        b.x = side > 0 ? C.FR - C.BR : C.FL + C.BR; b.vx = -side * Math.abs(b.vx) * C.WALL_E; b.vy *= C.WALL_GRIP; b.spin *= 0.3;
+      }
+    }
+    if (b.x >= C.FL && b.x <= C.FR) b.net = 0;
+    if (b.net) { // inside a goal net
       if (b.y < C.GY1 + C.BR) { b.y = C.GY1 + C.BR; b.vy = Math.abs(b.vy) * 0.3; }
       if (b.y > C.GY2 - C.BR) { b.y = C.GY2 - C.BR; b.vy = -Math.abs(b.vy) * 0.3; }
       if (b.x < C.FL - C.GD + C.BR) { b.x = C.FL - C.GD + C.BR; b.vx = Math.abs(b.vx) * 0.2; }
@@ -340,14 +381,14 @@
     } else {
       const sp = Math.hypot(b.vx, b.vy);
       let hit = false;
-      if (b.y < C.FT + C.BR) { b.y = C.FT + C.BR; b.vy = Math.abs(b.vy) * C.WALL_E; b.spin *= 0.3; hit = true; }
-      if (b.y > C.FB - C.BR) { b.y = C.FB - C.BR; b.vy = -Math.abs(b.vy) * C.WALL_E; b.spin *= 0.3; hit = true; }
+      if (b.y < C.FT + C.BR) { b.y = C.FT + C.BR; b.vy = Math.abs(b.vy) * C.WALL_E; b.vx *= C.WALL_GRIP; b.spin *= 0.3; hit = true; }
+      if (b.y > C.FB - C.BR) { b.y = C.FB - C.BR; b.vy = -Math.abs(b.vy) * C.WALL_E; b.vx *= C.WALL_GRIP; b.spin *= 0.3; hit = true; }
       const atLine = b.x < C.FL + C.BR || b.x > C.FR - C.BR;
       if (atLine) {
         const left = b.x < C.FL + C.BR;
         if (!inMouth) {
           if (left) { b.x = C.FL + C.BR; b.vx = Math.abs(b.vx) * C.WALL_E; } else { b.x = C.FR - C.BR; b.vx = -Math.abs(b.vx) * C.WALL_E; }
-          b.spin *= 0.3; hit = true;
+          b.vy *= C.WALL_GRIP; b.spin *= 0.3; hit = true;
         } else if (b.z > C.BAR - C.BR) {
           // too high for the goal: the crossbar, or over it into the stand netting
           const bar = b.z < C.BAR + C.BR;
@@ -410,7 +451,7 @@
     if (s.lastRb === undefined) { s.lastRb = rb; return; }
     if (rb === s.lastRb) return;
     s.lastRb = rb;
-    Object.assign(s.ball, { x: clamp(p.x + p.fx * 34, C.FL + C.BR + 2, C.FR - C.BR - 2), y: clamp(p.y + p.fy * 34, C.FT + C.BR + 2, C.FB - C.BR - 2), z: 0, vx: 0, vy: 0, vz: 0, spin: 0, hot: 0 });
+    Object.assign(s.ball, { x: clamp(p.x + p.fx * 34, C.FL + C.BR + 2, C.FR - C.BR - 2), y: clamp(p.y + p.fy * 34, C.FT + C.BR + 2, C.FB - C.BR - 2), z: 0, vx: 0, vy: 0, vz: 0, spin: 0, hot: 0, net: 0 });
     ev(s, 'reset', { x: r1(s.ball.x), y: r1(s.ball.y) });
   }
 
@@ -444,8 +485,8 @@
         physics(s, inputs);
         if (s.phase === 'play') {
           const b = s.ball;
-          if (b.x < C.FL - C.BR) scoreGoal(s, s.swapped ? 0 : 1);
-          else if (b.x > C.FR + C.BR) scoreGoal(s, s.swapped ? 1 : 0);
+          if (b.net === -1 && b.x < C.FL - C.BR) scoreGoal(s, s.swapped ? 0 : 1);
+          else if (b.net === 1 && b.x > C.FR + C.BR) scoreGoal(s, s.swapped ? 1 : 0);
           else if (s.solo) { /* no clock in practice */ }
           else if (!s.sd && s.half === 1 && --s.time <= C.MATCH_TICKS / 2) {
             s.half = 2; setPhase(s, 'half'); ev(s, 'half', { score: s.score.slice() });
@@ -484,14 +525,26 @@
     const inp = { u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: B.dc };
     if (s.phase !== 'play' && s.phase !== 'goal') { B.hold = 0; return inp; }
     const dir = attacksRight(s, i) ? 1 : -1;
-    if (--B.aimT <= 0) { B.aim = (Math.random() * 2 - 1) * 60; B.aimT = 90; }
+    if (--B.aimT <= 0) { B.aim = (Math.random() * 2 - 1) * (C.GH / 2 - 24); B.aimT = 90; }
     const gx = dir > 0 ? C.FR + 8 : C.FL - 8, gy = C.CY + B.aim, ownX = dir > 0 ? C.FL : C.FR;
     let ux = gx - ball.x, uy = gy - ball.y; const ug = Math.hypot(ux, uy) || 1; ux /= ug; uy /= ug;
     const bd = Math.hypot(ball.x - p.x, ball.y - p.y), od = Math.hypot(ball.x - o.x, ball.y - o.y);
     const side = (p.x - ball.x) * -ux + (p.y - ball.y) * -uy; // >0 => behind the ball
     let tx, ty;
+    let pressing = false;
     if (od < bd - 30 && (ball.x - C.CX) * dir < 150) {
-      tx = ball.x + (ownX - ball.x) * 0.45; ty = ball.y + (C.CY - ball.y) * 0.45;
+      // defend: get goal-side of the ball on the line to the middle of our goal (blocking the
+      // shot), closing the gap as the attacker comes in; once goal-side and close, step in and take it
+      let vx = ownX - ball.x, vy = C.CY - ball.y; const vg = Math.hypot(vx, vy) || 1; vx /= vg; vy /= vg;
+      const gap = clamp(vg * 0.3, 34, 130);
+      tx = ball.x + vx * gap; ty = ball.y + vy * gap;
+      const goalSide = (p.x - ball.x) * vx + (p.y - ball.y) * vy > 10;
+      if (goalSide && bd < 72) {
+        // press from the side of the ball facing our goal, so our touch plays it back upfield
+        // (straight at the ball along the goal line would steer it into our own net)
+        let cx = C.CX - ball.x, cy = C.CY - ball.y; const cl = Math.hypot(cx, cy) || 1; cx /= cl; cy /= cl;
+        tx = ball.x - cx * 14; ty = ball.y - cy * 14; pressing = true;
+      }
     } else if (side < C.PR) {
       const px = -uy, py = ux, sg = ((p.x - ball.x) * px + (p.y - ball.y) * py) > 0 ? 1 : -1;
       tx = ball.x - ux * 40 + px * sg * 48; ty = ball.y - uy * 40 + py * sg * 48;
@@ -506,7 +559,8 @@
       inp.k = true;
     }
     const pd = Math.hypot(o.x - p.x, o.y - p.y);
-    if (od < C.REACH + 6 && pd < 110 && p.dashCd === 0 && !p.ch && Math.random() < 0.04) {
+    // tackle only when it can actually arrive: a lunge from too far misses and leaves the way open
+    if (od < C.REACH + 6 && pd < (pressing ? 62 : 80) && p.dashCd === 0 && !p.ch && Math.random() < (pressing ? 0.09 : 0.04)) {
       inp.l = inp.r = inp.u = inp.d = 0;
       if (o.x - p.x > 8) inp.r = 1; if (o.x - p.x < -8) inp.l = 1;
       if (o.y - p.y > 8) inp.d = 1; if (o.y - p.y < -8) inp.u = 1;
