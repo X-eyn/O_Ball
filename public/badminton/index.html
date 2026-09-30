@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#070b12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Office Badminton">
+<title>Office Badminton 🏸</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23070b12'/><path d='M16 6l6 10-6 10-6-10z' fill='%23e4ff3c'/></svg>">
+<!--BOOT-->
+</head>
+<body>
+<!-- boot: a simple measured loading screen (see boot.js) -->
+<div id="boot" role="progressbar" aria-label="Loading Office Badminton" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+<style>
+#boot{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#070b12;color:#f2f4f7;font-family:'Barlow Condensed','Arial Narrow',sans-serif;transition:opacity .4s cubic-bezier(.2,.8,.2,1)}
+#boot.out{opacity:0;pointer-events:none}
+#boot .bx{display:flex;flex-direction:column;align-items:center;gap:20px;width:min(360px,calc(100vw - 32px));text-align:center}
+#boot .brand{font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1}
+#boot .brand i{color:#e4ff3c;font-style:italic}
+#boot .ring{position:relative;width:120px;height:120px}
+#boot svg{width:100%;height:100%;transform:rotate(-90deg)}
+#boot .trk{fill:none;stroke:rgba(255,255,255,.09);stroke-width:5}
+#boot .bar{fill:none;stroke:#e4ff3c;stroke-width:5;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset .25s linear}
+#boot .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:32px;font-variant-numeric:tabular-nums}
+#boot .pct small{font-size:15px;color:#8b93a4;margin-left:2px}
+#boot .lbl{font-weight:700;font-size:14px;letter-spacing:.16em;text-transform:uppercase;min-height:17px}
+#boot .sub{font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:12px;color:#5c6475}
+#boot .err{display:none;font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.5;color:#ff6b6b}
+#boot.failed .err{display:block}
+#boot.failed .bar{stroke:#ff6b6b}
+#boot button{margin-top:10px;background:#e4ff3c;color:#070b12;border:0;padding:9px 18px;font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-weight:800;font-size:14px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
+@media (max-height:480px){#boot .bx{gap:10px}#boot .ring{width:84px;height:84px}}
+</style>
+<div class="bx">
+  <div class="brand">OFFICE <i>BADMINTON</i></div>
+  <div class="ring"><svg viewBox="0 0 120 120"><circle class="trk" cx="60" cy="60" r="52"/><circle class="bar" cx="60" cy="60" r="52"/></svg><div class="pct">0<small>%</small></div></div>
+  <div class="lbl">Starting</div>
+  <div class="sub"></div>
+  <div class="err"></div>
+</div>
+</div>
+
+<div id="stage">
+  <!-- broadcast header: names, score, who serves, rally counter -->
+  <header id="hud" class="hidden">
+    <div class="hud-l">
+      <div class="hud-room"><span class="cap">Room</span><b id="roomCode"></b></div>
+      <div id="subbug"></div>
+    </div>
+    <div id="scorebug">
+      <div class="sb-side sb-l"><span class="sb-name" id="n0">RED</span><span class="sb-score" id="s0">0</span></div>
+      <div class="sb-mid">
+        <div class="sb-serve" id="serveIcon" title="serving">🏸</div>
+        <div class="sb-rally" id="rallyBadge"></div>
+        <div class="sb-target">first to 7</div>
+      </div>
+      <div class="sb-side sb-r"><span class="sb-score" id="s1">0</span><span class="sb-name" id="n1">BLUE</span></div>
+    </div>
+    <div class="hud-r">
+      <span id="hudRight"></span>
+      <button class="hbtn touch-only" id="emoteBtn" aria-label="Emotes">☺</button>
+      <button class="hbtn" id="fsBtn" aria-label="Full screen">⛶</button>
+      <button class="hbtn" id="inviteBtn">Invite</button>
+      <button class="hbtn" id="menuBtn">Menu <span class="key">Esc</span></button>
+    </div>
+  </header>
+
+  <div id="view">
+    <canvas id="c"></canvas>
+    <div id="vignette"></div>
+    <div id="flash"></div>
+    <div id="labels"></div>
+    <div id="bigText"></div>
+    <div id="banner"><div class="bn-band"><div class="bn-text" id="bnText"></div><div class="bn-sub" id="bnSub"></div></div></div>
+    <div id="screen"></div>
+    <div id="footer"></div>
+
+    <!-- bottom HUD: stamina + charge -->
+    <div id="dash" class="hidden"><div class="stam"><i id="stamFill"></i></div><span class="cap">Stamina</span></div>
+    <div id="charge" class="hidden"><div class="ring"><i id="chargeFill"></i></div><span class="cap">Shot</span></div>
+    <div id="powerTip" class="hidden">release on <b>gold</b> for a perfect strike</div>
+
+    <!-- main menu / home -->
+    <div id="home" class="hidden">
+      <div class="home-col">
+        <div class="logo"><span>Office</span><span>Badminton</span></div>
+        <label class="as">
+          <span class="cap">Playing as</span>
+          <input id="nameInput" maxlength="16" placeholder="Your name" autocomplete="off" spellcheck="false">
+        </label>
+        <nav class="main-nav">
+          <button class="mi" id="createBtn"><span class="mi-t">Play</span><span class="mi-s">Create a room, send the link, winner stays on</span></button>
+          <button class="mi" id="practiceBtn"><span class="mi-t">Practice</span><span class="mi-s">Rally against the bot, first to 7</span></button>
+          <div class="mi mi-join">
+            <span class="mi-t">Join</span>
+            <input id="codeInput" maxlength="8" placeholder="Room code" autocomplete="off" spellcheck="false">
+            <button id="joinBtn" class="go" aria-label="Join room">→</button>
+          </div>
+        </nav>
+        <div id="roomsList"></div>
+        <a class="other" href="/">⚽ Looking for Office Ball?</a>
+      </div>
+      <aside class="home-board">
+        <div class="board-h"><span>Badminton table</span><span class="cap">Rating</span></div>
+        <div id="homeLb" class="lb"></div>
+      </aside>
+      <div class="home-foot">Keyboard · Mouse / trackpad · Controller · Touch</div>
+    </div>
+  </div>
+</div>
+
+<!-- pause menu -->
+<div id="menu" class="hidden">
+  <div class="menu-shell">
+    <nav class="menu-nav">
+      <div class="menu-title">Menu</div>
+      <button data-pane="resume">Resume</button>
+      <button data-pane="invite">Invite</button>
+      <button data-pane="room">Room</button>
+      <button data-pane="controls">Controls</button>
+      <button data-pane="table">Badminton table</button>
+      <button data-pane="settings">Settings</button>
+      <button data-pane="leave" class="danger">Leave room</button>
+    </nav>
+    <section class="menu-body">
+      <div class="pane" data-pane="invite">
+        <h3>Invite</h3>
+        <p class="muted">Send this link to anyone on the office network. They open it and they're in.</p>
+        <div class="linkbox"><input id="shareLink" readonly><button id="copyBtn" class="btn primary">Copy link</button></div>
+        <p id="shareHint" class="muted small"></p>
+      </div>
+      <div class="pane" data-pane="room">
+        <h3>Room <span id="roomCode2" class="accent"></span></h3>
+        <p class="muted">Winner stays on. Everyone else waits in line; the loser goes to the back.</p>
+        <ul id="memberList"></ul>
+        <button id="sitBtn" class="btn">Sit out</button>
+      </div>
+      <div class="pane" data-pane="controls">
+        <h3>Controls</h3>
+        <div id="ctrlHelp" class="ctrl-help"></div>
+      </div>
+      <div class="pane" data-pane="table">
+        <h3>Badminton table</h3>
+        <div id="lbTable" class="lb"></div>
+      </div>
+      <div class="pane" data-pane="settings">
+        <h3>Settings</h3>
+        <div class="set-row"><span>Name</span><button id="renameBtn" class="btn">Change name</button></div>
+        <div class="set-row"><span>Sound</span><button id="muteBtn" class="btn">On</button></div>
+        <div class="set-row"><span>Placement assist</span><button id="assistBtn" class="btn">On</button></div>
+        <p class="muted small set-desc">With no direction held, your player glides the last metre or two to where the shuttle is best met. Any movement input takes over.</p>
+        <div class="set-row"><label for="qualitySel">Graphics</label><select id="qualitySel" class="sel"></select></div>
+        <p id="qualityDesc" class="muted small set-desc"></p>
+        <p id="netInfo" class="muted small"></p>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="emotes" class="hidden"></div>
+<div id="rotate" role="alert"><b>Turn your phone sideways</b><span>Office Badminton is played in landscape.</span></div>
+<div id="toasts"></div>
+<div id="conn" class="hidden">Connection lost. Reconnecting</div>
+<div id="touchui" class="hidden">
+  <div id="stickZone"><div id="stick"><i id="knob"></i></div></div>
+  <div id="touchBtns">
+    <button id="tLift">Lift</button>
+    <button id="tDash">Dash</button>
+    <button id="tJump">Jump</button>
+    <button id="tShoot">Shoot</button>
+  </div>
+</div>
+</body>
+</html>

@@ -114,30 +114,57 @@ function fonts() {
 }
 
 // ---------------------------------------------------------------- manifest
-const appFiles = () => fs.readdirSync(PUB).filter(n => /\.(js|css)$/.test(n)).map(n => path.join(PUB, n)).concat(path.join(SHARED, 'game.js'));
-let last = null;
-function manifest() {
-  // one hash over all app code: the directory its URLs live under
+// The two pages the server serves, and the files each one starts from.
+const GAMES = {
+  football: {
+    entry: path.join(PUB, 'client.js'), script: path.join(SHARED, 'game.js'),
+    loader: path.join(PUB, 'loader.js'), style: path.join(PUB, 'style.css'), page: path.join(PUB, 'index.html'),
+  },
+  badminton: {
+    entry: path.join(PUB, 'badminton', 'client.js'), script: path.join(SHARED, 'badminton.js'),
+    loader: path.join(PUB, 'badminton', 'boot.js'), style: path.join(PUB, 'badminton', 'style.css'), page: path.join(PUB, 'badminton', 'index.html'),
+  },
+};
+const game = kind => GAMES[kind] || GAMES.football;
+// every code file the site ships: root scripts and styles, the shared simulations, the badminton page
+const appFiles = () => {
+  const out = [];
+  for (const n of fs.readdirSync(PUB)) if (/\.(js|css)$/.test(n)) out.push(path.join(PUB, n));
+  for (const n of fs.readdirSync(SHARED)) if (/\.js$/.test(n)) out.push(path.join(SHARED, n));
+  const bad = path.join(PUB, 'badminton');
+  if (fs.existsSync(bad)) for (const n of fs.readdirSync(bad)) if (/\.(js|css)$/.test(n)) out.push(path.join(bad, n));
+  return out;
+};
+// One build id for the whole site (a hash over every code file), shared by both pages' manifests:
+// a change anywhere gives every code URL a new name, so no browser can mix old and new modules.
+let lastBuild = '', last = {};
+function manifest(kind = 'football') {
+  const g = game(kind);
   const code = appFiles().map(file);
   const codeHash = crypto.createHash('sha256').update(code.map(f => f.abs + f.hash).join('|')).digest('hex').slice(0, 12);
   const models = fs.readdirSync(MODELS).filter(n => !/\.txt$/i.test(n)).sort().map(n => [n, file(path.join(MODELS, n))]);
   const key = codeHash + models.map(([n, f]) => n + f.hash).join('');
-  if (last && last.key === key) return last.m;
+  if (last[kind] && last[kind].key === key) return last[kind].m;
+  lastBuild = codeHash;
 
-  const appUrl = abs => abs === path.join(SHARED, 'game.js') ? `/app/${codeHash}/shared/game.js` : `/app/${codeHash}/` + path.relative(PUB, abs).split(path.sep).join('/');
+  const appUrl = abs => abs.startsWith(SHARED + path.sep)
+    ? `/app/${codeHash}/shared/` + path.relative(SHARED, abs).split(path.sep).join('/')
+    : `/app/${codeHash}/` + path.relative(PUB, abs).split(path.sep).join('/');
   const urlOf = abs => abs.startsWith(THREE_DIR + path.sep) ? `/vendor/three@${THREE_V}/` + path.relative(THREE_DIR, abs).split(path.sep).join('/') : appUrl(abs);
-  const entry = path.join(PUB, 'client.js');
-  const modules = moduleGraph(entry).map(abs => { const f = file(abs); return { url: urlOf(abs), size: f.size, hash: f.hash }; });
-  const game = file(path.join(SHARED, 'game.js'));
+  // the boot loader's own graph and the game's, so the whole download is known before it starts
+  const graph = [...new Set([...moduleGraph(g.loader), ...moduleGraph(g.entry), g.script])];
+  const modules = graph.map(abs => { const f = file(abs); return { url: urlOf(abs), size: f.size, hash: f.hash }; });
+  const script = file(g.script);
   const assets = {};
   for (const [n, f] of models) assets[n] = { url: `/asset/${f.hash}/${n}`, size: f.size, hash: f.hash };
   const humanHash = file(path.join(PUB, 'human.js')).hash;
   const m = {
+    kind,
     build: codeHash,
-    entry: urlOf(entry),
-    loader: appUrl(path.join(PUB, 'loader.js')),
-    style: appUrl(path.join(PUB, 'style.css')),
-    script: { url: appUrl(path.join(SHARED, 'game.js')), size: game.size },
+    entry: urlOf(g.entry),
+    loader: urlOf(g.loader),
+    style: urlOf(g.style),
+    script: { url: urlOf(g.script), size: script.size },
     modules,
     fonts: fonts().map(f => { const x = file(f.abs); return { family: f.family, style: f.style, weight: f.weight, range: f.range, url: f.url, size: x.size, hash: x.hash, eager: f.eager }; }),
     assets,
@@ -147,7 +174,7 @@ function manifest() {
     derived: { kit: `kit:${assets['body.glb'].hash}:${humanHash}` },
     importmap: { imports: { three: `/vendor/three@${THREE_V}/build/three.module.js`, 'three/addons/': `/vendor/three@${THREE_V}/examples/jsm/` } },
   };
-  last = { key, m };
+  last[kind] = { key, m };
   // compress everything the page is about to ask for now, in the background, so no request waits on it
   for (const u of modules) { const abs = resolveUrl(u.url); if (abs) encoded(file(abs), 'gzip'); }
   for (const [, f] of models) if (COMPRESSIBLE.has(path.extname(f.abs))) encoded(f, 'gzip');
@@ -161,8 +188,11 @@ function manifest() {
 function resolveUrl(u) {
   let m;
   if ((m = u.match(/^\/app\/([0-9a-f]{12})\/(.+)$/))) {
-    if (!last || m[1] !== last.m.build) return null;
-    if (m[2] === 'shared/game.js') return path.join(SHARED, 'game.js');
+    if (!lastBuild || m[1] !== lastBuild) return null;
+    if (m[2].startsWith('shared/')) {
+      const abs = path.normalize(path.join(SHARED, m[2].slice(7)));
+      return abs.startsWith(SHARED + path.sep) && /\.js$/.test(abs) ? abs : null;
+    }
     const abs = path.normalize(path.join(PUB, m[2]));
     return abs.startsWith(PUB + path.sep) && /\.(js|css)$/.test(abs) ? abs : null;
   }
@@ -182,4 +212,4 @@ function resolveUrl(u) {
   return null;
 }
 
-module.exports = { file, encoded, manifest, resolveUrl, COMPRESSIBLE };
+module.exports = { file, encoded, manifest, resolveUrl, COMPRESSIBLE, GAMES };

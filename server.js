@@ -8,12 +8,14 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const { WebSocketServer } = require('ws');
 const OB = require('./shared/game.js');
+const BM = require('./shared/badminton.js');
 const assets = require('./assets.js');
 
 const PORT = +process.env.PORT || 3000;
 const PUB = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const STATS_FILE = path.join(DATA_DIR, 'stats.json');
+const BADMINTON_FILE = path.join(DATA_DIR, 'badminton.json');
 const LOG_FILE = path.join(DATA_DIR, 'server.log');
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { }
 const fmt = x => { try { if (x && x.stack) return x.stack; if (typeof x === 'object') return JSON.stringify(x); return String(x); } catch { return String(x); } };
@@ -28,35 +30,43 @@ const TICK_MS = 1000 / 60;
 const OVER_T = 60 * 8, OVER_BOT_T = 60 * 5, PAUSE_T = 60 * 12;
 
 // ---------------- persistent stats ----------------
-let db = { players: {}, h2h: {} };
-try {
-  db = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
-  db.players = db.players || {}; db.h2h = db.h2h || {};
-} catch { /* first run */ }
-let saveTimer = null;
-function saveDb() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+// One table per sport: football keeps its own file and ELO, badminton has its own, so the two
+// ladders never mix.
+const FILES = { football: STATS_FILE, badminton: BADMINTON_FILE };
+const DBS = {};
+function loadDb(file) {
+  const d = { players: {}, h2h: {} };
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    d.players = raw.players || {}; d.h2h = raw.h2h || {};
+  } catch { /* first run */ }
+  return d;
+}
+for (const s of Object.keys(FILES)) DBS[s] = loadDb(FILES[s]);
+const saveTimers = {};
+function saveDb(sport = 'football') {
+  clearTimeout(saveTimers[sport]);
+  saveTimers[sport] = setTimeout(() => {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(STATS_FILE + '.tmp', JSON.stringify(db, null, 1));
-      fs.renameSync(STATS_FILE + '.tmp', STATS_FILE);
+      fs.writeFileSync(FILES[sport] + '.tmp', JSON.stringify(DBS[sport], null, 1));
+      fs.renameSync(FILES[sport] + '.tmp', FILES[sport]);
     } catch (e) { console.error('Could not save stats:', e.message); }
   }, 400);
 }
 const nkey = n => String(n).trim().toLowerCase();
-function prof(name) {
-  const k = nkey(name);
+function prof(sport, name) {
+  const db = DBS[sport] || DBS.football, k = nkey(name);
   if (!db.players[k]) db.players[k] = { name, rating: 1000, w: 0, l: 0, gf: 0, ga: 0, perfect: 0, shots: 0, tackles: 0, bestStreak: 0, games: 0 };
   db.players[k].name = name;
   return db.players[k];
 }
-const ratingOf = name => (db.players[nkey(name)] || { rating: 1000 }).rating;
+const ratingOf = (sport, name) => ((DBS[sport] || DBS.football).players[nkey(name)] || { rating: 1000 }).rating;
 function h2hKey(a, b) { const ka = nkey(a), kb = nkey(b); return { k: ka < kb ? ka + '|' + kb : kb + '|' + ka, flip: ka > kb }; }
-function h2hGet(a, b) { const { k, flip } = h2hKey(a, b); const r = db.h2h[k] || [0, 0]; return flip ? [r[1], r[0]] : [r[0], r[1]]; }
-function h2hAdd(winner, loser) { const { k, flip } = h2hKey(winner, loser); const r = db.h2h[k] || (db.h2h[k] = [0, 0]); r[flip ? 1 : 0]++; }
-function leaderboard() {
-  return Object.values(db.players).filter(p => p.games > 0).sort((a, b) => b.rating - a.rating).slice(0, 25)
+function h2hGet(sport, a, b) { const { k, flip } = h2hKey(a, b); const r = (DBS[sport] || DBS.football).h2h[k] || [0, 0]; return flip ? [r[1], r[0]] : [r[0], r[1]]; }
+function h2hAdd(sport, winner, loser) { const db = DBS[sport] || DBS.football, { k, flip } = h2hKey(winner, loser); const r = db.h2h[k] || (db.h2h[k] = [0, 0]); r[flip ? 1 : 0]++; }
+function leaderboard(sport = 'football') {
+  return Object.values((DBS[sport] || DBS.football).players).filter(p => p.games > 0).sort((a, b) => b.rating - a.rating).slice(0, 25)
     .map(p => ({ name: p.name, rating: Math.round(p.rating), w: p.w, l: p.l, gf: p.gf, ga: p.ga, perfect: p.perfect, shots: p.shots, tackles: p.tackles, bestStreak: p.bestStreak }));
 }
 
@@ -80,35 +90,37 @@ const clean = n => String(n || '').replace(/[\u0000-\u001f<>]/g, '').trim().slic
 // ---------------- rooms ----------------
 const rooms = new Map();
 let nextId = 0;
-const blankInput = () => ({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, rb: 0, sh: false, kn: 0 });
+const blankInput = () => ({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, jp: 0, rb: 0, sh: false, kn: 0, ax: 0, ay: 0, lob: false });
 // non-human slots: 'bot' (practice opponent) and 'none' (solo practice, no opponent)
 const isAI = id => id === 'bot' || id === 'none';
+const sportOf = v => (v === 'badminton' ? 'badminton' : 'football');
 
 function newCode() {
   const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   let c;
-  do { c = Array.from({ length: 4 }, () => A[crypto.randomInt(A.length)]).join(''); } while (rooms.has(c));
+  do { c = Array.from({ length: 4 }, () => A[crypto.randomInt(A.length)]).join(''); } while ([...rooms.keys()].some(k => k.endsWith(':' + c)));
   return c;
 }
-function getRoom(code) {
+function getRoom(code, sport = 'football') {
   code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'LOBBY';
-  let r = rooms.get(code);
-  if (!r) { r = new Room(code); rooms.set(code, r); }
+  const key = sportOf(sport) + ':' + code;
+  let r = rooms.get(key);
+  if (!r) { r = sportOf(sport) === 'badminton' ? new BadmintonRoom(code) : new Room(code); rooms.set(key, r); }
   return r;
 }
-function roomList() {
-  return [...rooms.values()].filter(r => r.online() > 0).map(r => ({
+function roomList(sport = 'football') {
+  return [...rooms.values()].filter(r => r.sport === sport && r.online() > 0).map(r => ({
     code: r.code, players: r.online(),
     names: [...r.members.values()].filter(m => m.connected).map(m => m.name).slice(0, 6),
     live: (r.phase === 'match' || r.phase === 'prematch') && !r.botMatch,
   }));
 }
-function lbChanged() { const msg = JSON.stringify({ t: 'lb', list: leaderboard() }); for (const r of rooms.values()) r.sendRaw(msg); }
+function lbChanged(sport = 'football') { const msg = JSON.stringify({ t: 'lb', list: leaderboard(sport) }); for (const r of rooms.values()) if (r.sport === sport) r.sendRaw(msg); }
 
 class Room {
-  constructor(code) {
+  constructor(code, sport = 'football') {
     Object.assign(this, {
-      code, members: new Map(), slots: [null, null], queue: [], phase: 'waiting', phaseT: 0,
+      code, sport, members: new Map(), slots: [null, null], queue: [], phase: 'waiting', phaseT: 0,
       sim: null, botMatch: false, streak: { id: null, n: 0 }, result: null, matchInfo: null,
       tick: 0, dirty: true, emptyT: 0, lastQueueKey: '',
     });
@@ -135,7 +147,7 @@ class Room {
     }
     ws.member = m; ws.room = this;
     ws.send(JSON.stringify({ t: 'welcome', id: m.id, code: this.code }));
-    ws.send(JSON.stringify({ t: 'lb', list: leaderboard() }));
+    ws.send(JSON.stringify({ t: 'lb', list: leaderboard(this.sport) }));
     if (this.matchInfo) ws.send(JSON.stringify(this.matchInfo));
     if (this.result) ws.send(JSON.stringify(this.result));
     this.dirty = true;
@@ -144,7 +156,7 @@ class Room {
   leave(m) {
     if (!m.connected) return;
     m.connected = false; m.ws = null; m.goneT = 0;
-    m.input = Object.assign(blankInput(), { kp: m.input.kp, dc: m.input.dc });
+    m.input = Object.assign(blankInput(), { kp: m.input.kp, dc: m.input.dc, jp: m.input.jp });
     this.dirty = true;
     const si = this.slots.indexOf(m.id);
     if (si >= 0 && !this.botMatch && this.phase === 'match') {
@@ -159,7 +171,7 @@ class Room {
         const n = v => (Number.isFinite(v) ? v | 0 : 0);
         if (m.needSync) { m.needSync = false; const si = this.slots.indexOf(m.id); if (si >= 0 && this.sim) this.sim.players[si].init = false; }
         const f = v => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
-        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn) };
+        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), jp: n(msg.jp), as: !!msg.as, ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn) };
         break;
       }
       case 'emote': {
@@ -208,7 +220,7 @@ class Room {
     if (n === 0) { this.sim = null; this.matchInfo = null; this.phase = 'waiting'; return; }
     if (n === 1) {
       const hid = this.slots.find(x => x !== null);
-      const solo = (this.members.get(hid) || {}).practice === 'solo';
+      const solo = this.sport === 'football' && (this.members.get(hid) || {}).practice === 'solo';
       if (solo) this.slots = [hid, 'none']; // solo practice: the human is always slot 0
       else this.slots[this.slots.indexOf(null)] = 'bot';
       this.startMatch(true, solo);
@@ -223,8 +235,8 @@ class Room {
     const sameName = nkey(names[0]) === nkey(names[1]);
     this.matchInfo = {
       t: 'match', bot, solo, slots: this.slots.slice(), names,
-      ratings: this.slots.map((id, i) => isAI(id) ? null : Math.round(ratingOf(names[i]))),
-      h2h: bot || sameName ? null : h2hGet(names[0], names[1]),
+      ratings: this.slots.map((id, i) => isAI(id) ? null : Math.round(ratingOf(this.sport, names[i]))),
+      h2h: bot || sameName ? null : h2hGet(this.sport, names[0], names[1]),
       streak: this.slots.includes(this.streak.id) && this.streak.n >= 1 ? { slot: this.slots.indexOf(this.streak.id), n: this.streak.n } : null,
     };
     this.send(this.matchInfo);
@@ -240,7 +252,7 @@ class Room {
     const played = OB.C.MATCH_TICKS - s.time;
     const rated = !this.botMatch && nkey(names[0]) !== nkey(names[1]) && !(forfeit && played < 20 * 60 && !s.sd);
     if (rated) {
-      const pr = names.map(prof);
+      const pr = names.map(n => prof(this.sport, n));
       const W = pr[w], L = pr[1 - w];
       const expected = 1 / (1 + Math.pow(10, (L.rating - W.rating) / 400));
       const d = Math.max(1, Math.round(32 * (1 - expected)));
@@ -250,15 +262,15 @@ class Room {
         p.games++; p.gf += s.score[i]; p.ga += s.score[1 - i];
         p.perfect += st.perfect; p.shots += st.shots; p.tackles += st.tackles;
       });
-      h2hAdd(names[w], names[1 - w]);
-      h2h = h2hGet(names[0], names[1]);
+      h2hAdd(this.sport, names[w], names[1 - w]);
+      h2h = h2hGet(this.sport, names[0], names[1]);
       const wid = this.slots[w];
       this.streak = this.streak.id === wid ? { id: wid, n: this.streak.n + 1 } : { id: wid, n: 1 };
       W.bestStreak = Math.max(W.bestStreak || 0, this.streak.n);
       elo = [w === 0 ? d : -d, w === 1 ? d : -d];
       ratings = pr.map(p => Math.round(p.rating));
       if (this.streak.n >= 2) streak = { name: names[w], n: this.streak.n };
-      saveDb(); lbChanged();
+      saveDb(this.sport); lbChanged(this.sport);
       if (this.streak.n >= 3) this.toast(`👑 ${names[w]} is on a ${this.streak.n}-win streak. Someone stop them!`);
     }
     this.result = {
@@ -340,11 +352,133 @@ class Room {
       this.dirty = false;
       this.send({
         t: 'room', code: this.code, phase: this.phase, slots: this.slots, queue: this.queue, streak: this.streak,
-        members: [...this.members.values()].map(m => ({ id: m.id, name: m.name, connected: m.connected, sitting: m.sitting, rating: Math.round(ratingOf(m.name)) })),
+        members: [...this.members.values()].map(m => ({ id: m.id, name: m.name, connected: m.connected, sitting: m.sitting, rating: Math.round(ratingOf(this.sport, m.name)) })),
       });
     }
     if (!this.sim) { if (this.tick % 6 === 0) this.send({ t: 's', k: this.tick, rp: this.phase }); return; }
     const st = OB.netState(this.sim);
+    st.t = 's'; st.k = this.tick; st.rp = this.phase; st.rt = this.phaseT;
+    if (this.sim.events.length) { st.ev = this.sim.events; this.sim.events = []; }
+    this.sendRaw(JSON.stringify(st));
+  }
+}
+
+// ---------------- badminton room ----------------
+// Same room machinery (members, queue, winner stays on), a different game underneath: the shuttle
+// sim in shared/badminton.js, its own phases, its own stats table.
+class BadmintonRoom extends Room {
+  constructor(code) { super(code, 'badminton'); }
+
+  inputs() { return this.slots.map((id, i) => id === 'bot' ? BM.botInput(this.sim, i) : id === 'none' ? blankInput() : ((this.members.get(id) || {}).input || blankInput())); }
+
+  startMatch(bot) {
+    const names = this.slots.map(id => this.nameOf(id));
+    this.sim = BM.createSim(this.tick, { botSkill: 0.62, ai: this.slots.map(id => isAI(id)) });
+    this.botMatch = bot; this.solo = false; this.result = null;
+    this.phase = 'prematch'; this.phaseT = BM.C.PRE_T; // the sim's own countdown: ready, then serve
+    const sameName = nkey(names[0]) === nkey(names[1]);
+    this.matchInfo = {
+      t: 'match', bot, solo: false, slots: this.slots.slice(), names,
+      ratings: this.slots.map((id, i) => isAI(id) ? null : Math.round(ratingOf('badminton', names[i]))),
+      h2h: bot || sameName ? null : h2hGet('badminton', names[0], names[1]),
+      streak: this.slots.includes(this.streak.id) && this.streak.n >= 1 ? { slot: this.slots.indexOf(this.streak.id), n: this.streak.n } : null,
+    };
+    this.send(this.matchInfo);
+  }
+
+  finish(w, forfeit) {
+    const s = this.sim;
+    this.phase = 'over'; this.phaseT = this.botMatch ? 60 * 5 : BM.C.OVER_T;
+    if (s.phase !== 'over') { s.winner = w; BM.setPhase(s, 'over'); }
+    const names = this.slots.map(id => this.nameOf(id));
+    let elo = null, ratings = null, h2h = null, streak = null;
+    const rated = !this.botMatch && nkey(names[0]) !== nkey(names[1]) && !forfeit;
+    if (rated) {
+      const pr = names.map(n => prof('badminton', n));
+      const W = pr[w], L = pr[1 - w];
+      const expected = 1 / (1 + Math.pow(10, (L.rating - W.rating) / 400));
+      const d = Math.max(1, Math.round(32 * (1 - expected)));
+      W.rating += d; L.rating -= d; W.w++; L.l++;
+      pr.forEach((p, i) => {
+        const st = s.players[i].st;
+        p.games++; p.gf += s.score[i]; p.ga += s.score[1 - i];
+        p.perfect += st.perfects; p.shots += st.smashes; p.tackles += st.dives;
+      });
+      h2hAdd('badminton', names[w], names[1 - w]);
+      h2h = h2hGet('badminton', names[0], names[1]);
+      const wid = this.slots[w];
+      this.streak = this.streak.id === wid ? { id: wid, n: this.streak.n + 1 } : { id: wid, n: 1 };
+      W.bestStreak = Math.max(W.bestStreak || 0, this.streak.n);
+      elo = [w === 0 ? d : -d, w === 1 ? d : -d];
+      ratings = pr.map(p => Math.round(p.rating));
+      if (this.streak.n >= 2) streak = { name: names[w], n: this.streak.n };
+      saveDb('badminton'); lbChanged('badminton');
+      if (this.streak.n >= 3) this.toast(`🏸 ${names[w]} is on a ${this.streak.n}-win streak. Someone stop them!`);
+    }
+    this.result = {
+      t: 'result', winner: w, forfeit, score: s.score.slice(), names, bot: this.botMatch, rated,
+      stats: s.players.map(p => Object.assign({}, p.st)), elo, ratings, h2h, streak,
+    };
+    this.send(this.result);
+    this.dirty = true;
+  }
+
+  step() {
+    this.tick++;
+    for (const [id, m] of this.members) {
+      if (!m.connected && ++m.goneT > 60 * 60 && !this.slots.includes(id)) { this.members.delete(id); this.dirty = true; }
+    }
+    this.refreshQueue();
+    if (this.sim) this.sim.tick = this.tick;
+    const humanSlotsOk = () => this.slots.every(id => isAI(id) || (this.members.get(id) || {}).connected);
+
+    switch (this.phase) {
+      case 'waiting':
+        if (this.humansAvailable() > 0) this.tryStart();
+        break;
+      case 'prematch':
+        if (this.botMatch && this.humansAvailable() >= 2) { this.abort('A challenger appeared. Real match!'); break; }
+        if (!humanSlotsOk() || (this.botMatch && !this.available(this.slots.find(id => !isAI(id))))) { this.abort(); break; }
+        BM.stepSim(this.sim, this.inputs());
+        if (--this.phaseT <= 0) this.phase = 'match';
+        break;
+      case 'match':
+        if (this.botMatch && (this.humansAvailable() >= 2 || !this.available(this.slots.find(id => !isAI(id))))) {
+          this.abort(this.humansAvailable() >= 2 ? 'A challenger appeared. Real match!' : null); break;
+        }
+        BM.stepSim(this.sim, this.inputs());
+        if (this.sim.phase === 'over') this.finish(this.sim.winner, false);
+        break;
+      case 'paused':
+        if (humanSlotsOk()) { this.phase = 'match'; this.toast('Resuming…'); break; }
+        if (--this.phaseT <= 0) {
+          const i = this.slots.findIndex(id => (this.members.get(id) || {}).connected);
+          if (i >= 0) { this.toast(`${this.nameOf(this.slots[1 - i])} didn't come back. Win by forfeit.`); this.finish(i, true); }
+          else this.abort();
+        }
+        break;
+      case 'over': {
+        BM.stepSim(this.sim, this.inputs());
+        this.phaseT--;
+        if (this.botMatch && this.humansAvailable() >= 2) { this.rotate(); break; }
+        const humans = [0, 1].filter(i => !isAI(this.slots[i]) && (this.members.get(this.slots[i]) || {}).connected);
+        const allReady = humans.length > 0 && humans.every(i => this.sim.ready[i]);
+        if (this.phaseT <= 0 || (allReady && this.phaseT < (this.botMatch ? 60 * 5 : BM.C.OVER_T) - 90)) this.rotate();
+        break;
+      }
+    }
+  }
+
+  broadcast() {
+    if (this.dirty) {
+      this.dirty = false;
+      this.send({
+        t: 'room', code: this.code, phase: this.phase, slots: this.slots, queue: this.queue, streak: this.streak,
+        members: [...this.members.values()].map(m => ({ id: m.id, name: m.name, connected: m.connected, sitting: m.sitting, rating: Math.round(ratingOf(this.sport, m.name)) })),
+      });
+    }
+    if (!this.sim) { if (this.tick % 6 === 0) this.send({ t: 's', k: this.tick, rp: this.phase }); return; }
+    const st = BM.netState(this.sim);
     st.t = 's'; st.k = this.tick; st.rp = this.phase; st.rt = this.phaseT;
     if (this.sim.events.length) { st.ev = this.sim.events; this.sim.events = []; }
     this.sendRaw(JSON.stringify(st));
@@ -377,8 +511,9 @@ async function sendFile(req, res, f, cacheControl) {
 }
 // index.html with this build's manifest, import map, stylesheet and loader written into it
 const esc = s => JSON.stringify(s).replace(/</g, '\\u003c');
-function page(req, res) {
-  const m = assets.manifest(), tpl = assets.file(path.join(PUB, 'index.html'));
+function page(req, res, kind = 'football') {
+  const g = assets.GAMES[kind] || assets.GAMES.football;
+  const m = assets.manifest(kind), tpl = assets.file(g.page);
   const { importmap, ...client } = m;
   const head = [
     `<link rel="stylesheet" href="${m.style}">`,
@@ -410,15 +545,17 @@ function diag(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  let p;
-  try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { return send(res, 400, 'Bad request', 'text/plain'); }
+  let p, url;
+  try { url = new URL(req.url, 'http://x'); p = decodeURIComponent(url.pathname); } catch { return send(res, 400, 'Bad request', 'text/plain'); }
+  const qSport = sportOf(url.searchParams.get('sport'));
   if (p === '/api/info') return send(res, 200, JSON.stringify({ port: PORT, ips: lanIps().map(i => i.address) }));
-  if (p === '/api/rooms') return send(res, 200, JSON.stringify(roomList()));
-  if (p === '/api/leaderboard') return send(res, 200, JSON.stringify(leaderboard()));
+  if (p === '/api/rooms') return send(res, 200, JSON.stringify(roomList(qSport)));
+  if (p === '/api/leaderboard') return send(res, 200, JSON.stringify(leaderboard(qSport)));
   if (p === '/api/new') return send(res, 200, JSON.stringify({ code: newCode() }));
   if (p === '/api/build') return send(res, 200, JSON.stringify({ build: assets.manifest().build }));
   if (p === '/api/diag' && req.method === 'POST') return diag(req, res);
-  if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res).catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
+  if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'football').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
+  if (p === '/badminton' || /^\/badminton\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'badminton').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
   const abs = assets.resolveUrl(p);
   if (abs) return sendFile(req, res, assets.file(abs), IMMUTABLE).catch(() => send(res, 404, 'Not found', 'text/plain'));
   if (/^\/(app|asset|vendor)\//.test(p)) return send(res, 404, 'Not found (the game has been updated: reload)', 'text/plain');
@@ -434,12 +571,13 @@ const wss = new WebSocketServer({ server, path: '/ws', perMessageDeflate: false,
 wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   try { ws._socket.setNoDelay(true); } catch { }
-  const code = new URL(req.url, 'http://x').searchParams.get('room');
+  const q = new URL(req.url, 'http://x').searchParams;
+  const code = q.get('room'), sport = sportOf(q.get('sport'));
   ws.on('pong', () => { ws.isAlive = true; });
   ws.on('message', data => {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     if (!msg || typeof msg !== 'object') return;
-    if (msg.t === 'hello' && !ws.member) return getRoom(code).join(ws, msg);
+    if (msg.t === 'hello' && !ws.member) return getRoom(code, sport).join(ws, msg);
     if (ws.member && ws.member.ws === ws) ws.room.onMessage(ws.member, msg);
   });
   ws.on('close', () => { if (ws.member && ws.member.ws === ws) ws.room.leave(ws.member); });
@@ -481,13 +619,14 @@ server.on('error', e => {
   process.exit(1);
 });
 server.listen(PORT, '0.0.0.0', () => {
-  assets.manifest(); // hash and compress the game's files now, not on the first visitor's time
+  assets.manifest('football'); assets.manifest('badminton'); // hash and compress now, not on the first visitor's time
   const ips = lanIps();
   const main = ips[0] ? `http://${ips[0].address}:${PORT}` : `http://localhost:${PORT}`;
   console.log('\n  ⚽  OFFICE BALL server is running\n');
   console.log(`  Share this with teammates:  ${main}`);
   ips.slice(1).forEach(i => console.log(`  (other network: ${i.name})   http://${i.address}:${PORT}`));
-  console.log(`  On this PC:                 http://localhost:${PORT}\n`);
+  console.log(`  On this PC:                 http://localhost:${PORT}`);
+  console.log(`  Badminton:                  ${main}/badminton\n`);
   console.log('  If Windows asks about the firewall, click "Allow" (Private networks).');
   console.log('  Keep this window open while you play. Ctrl+C to stop.\n');
   if (process.argv.includes('--open')) {

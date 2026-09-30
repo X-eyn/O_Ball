@@ -2,6 +2,41 @@
 
 Fast 1v1 browser football for the office LAN. The winner stays on, and there's an ELO leaderboard.
 
+## Office Badminton 🏸
+
+The same server also serves a badminton game at **`/badminton`** (`http://<host>:3000/badminton`).
+It has its own court, its own ELO table (`data/badminton.json`) and the same room flow: create a room,
+send the invite link (`/badminton/r/CODE`), winner stays on, everyone else waits in line. Alone in a
+room you get the practice bot.
+
+- **First to 7**, rally scoring, on a court 1.35x the size of a real one (more room to move and to hit
+  into). The shuttle's flight is scaled with it exactly and played at 85% of real speed, so every
+  flight keeps its real shape with a little more time to read it (a smash arrives in ~0.47 s).
+- **Reading the shuttle**: it always shows through players as a glowing ring (lime when it is coming
+  at you), with a line down to its shadow for height. A ring closes on the landing spot as it comes
+  down, the ring at your feet turns gold when it is in reach, and a red pulse under your opponent
+  means they are winding up a smash: brace.
+- **Shot**: hold and release (Space / click / A). Where you meet the shuttle picks the shot: overhead
+  full charge is a **smash**, soft a **drop**; waist height a **drive**; low full charge a **clear**, soft a
+  **net shot**; a full charge on a shuttle floating over the tape is a **kill**. Release on gold for a
+  perfect strike.
+- **Jump** (F / B / mouse thumb button): a short crouch, then up. A full-charge overhead met in the air is
+  a **jump smash**: faster the higher you meet it, steeper, best at the top of the jump, and it lands you
+  heavy. Jump out of a dash for a long leap.
+- **Defending a smash**: it is too fast to react to, so read the wind-up. Hold Shot to **brace** and
+  release as it arrives to **counter** it flat into the open court (clean and on time: a **parry**); a late
+  tap **blocks** it dead over the net; Lift sends it high.
+- Big contacts carry weight: the whole game holds for a few frames of hit-stop, a smash that kills
+  slams into the floor, and a match-winning slam plays back slow.
+- **Movement**: a quick tap is a small step, a hold runs; stops are crisp (about 0.4 m from full speed).
+  With nothing held, **placement assist** glides you the last metre or two to where the incoming shuttle
+  is best met (any input takes over; turn it off under Menu > Settings). The camera frames you, the
+  shuttle, where it is landing and your opponent, widening as the shuttle climbs.
+- **Lift** (E / Y / Shift+click) sends it high; **dash** (Shift / X) bursts to the shuttle and
+  becomes a **diving save** when you are stretched. Dashes, jumps and smashes cost stamina.
+- The code is `shared/badminton.js` (rules and physics, server-side), `public/badminton/`
+  (client, 3D hall, `anim.js` for the athletes, sounds) and `tools/badminton_test.js` (headless checks).
+
 ## Start it (host PC, once)
 
 1. Double-click **`start.bat`**. It opens the game in your browser.
