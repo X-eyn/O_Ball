@@ -161,7 +161,7 @@ class CDP {
     await cdp.key('KeyA', 65, true); await sleep(700); await cdp.key('KeyA', 65, false);
     await sleep(1200);
 
-    const state = await cdp.ev(`(() => { const s = window.__ob.state(); if (!s) return null; const p = s.p || []; return { rp: s.rp, ph: s.ph, ball: s.b, players: p.map(a => a.slice(0, 14)), allFinite: [...s.b, ...p.flat()].every(Number.isFinite), events: p.length }; })()`);
+    const state = await cdp.ev(`(() => { const s = window.__ob.state(); if (!s) return null; const p = s.p || []; return { rp: s.rp, ph: s.ph, ball: s.b, players: p.map(a => a.slice(0, 14)), serverPhases: p.map(a => a[14]), allFinite: [...s.b, ...p.flat()].every(Number.isFinite), events: p.length }; })()`);
     const perf = await cdp.ev(`window.__ob.perf()`).catch(() => null);
     console.log('state:', JSON.stringify(state));
     console.log('perf:', JSON.stringify(perf));
@@ -169,6 +169,66 @@ class CDP {
     const shot1 = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(OUT, 'play.png'), Buffer.from(shot1.data, 'base64'));
     console.log('screenshot:', path.join(OUT, 'play.png'));
+
+    // ---- drawn-world audit: sample every frame what is actually rendered while dribbling and
+    // turning, and check the ball is contained at the feet of whoever owns it (not trailing off)
+    console.log('dribble audit: sampling the drawn world frame by frame...');
+    await cdp.ev(`(() => {
+      window.__audit = [];
+      const loop = () => {
+        const w = window.__ob.world && window.__ob.world();
+        const s = window.__ob.state && window.__ob.state();
+        if (w && w.players && w.ball && s && s.b) {
+          const bv = s.bv || [0, 0];
+          window.__audit.push([w.ball[0], w.ball[1], Math.hypot(bv[0], bv[1]), s.rp, s.ph,
+            w.players[0][0], w.players[0][1], w.players[0][2], w.players[0][3],
+            w.players[1][0], w.players[1][1], w.players[1][2], w.players[1][3]]);
+        }
+        if (window.__audit.length > 2500) window.__audit.shift();
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+      return true;
+    })()`);
+    const keys = [['KeyD', 68, 1500], ['KeyW', 87, 700], ['KeyA', 65, 900], ['KeyS', 83, 600], ['KeyD', 68, 900], ['KeyA', 65, 900], ['KeyW', 87, 800], ['KeyD', 68, 1000], ['KeyA', 65, 1200], ['KeyD', 68, 1200], ['KeyS', 83, 800], ['KeyW', 87, 900]];
+    for (const [code, vk, ms] of keys) {
+      await cdp.key(code, vk, true);
+      await sleep(ms);
+      await cdp.key(code, vk, false);
+    }
+    const audit = await cdp.ev(`window.__audit || []`);
+    if (Array.isArray(audit) && audit.length > 5) {
+      let nearBest = 0, frontBest = 0, worst = 0, worstS = null, samples = 0, fast = 0;
+      for (const a of audit) {
+        if (a[3] !== 'match' || a[4] !== 'play') continue; // kickoffs, replays and celebrations are not possession
+        if (a[2] > 4.5) { fast++; continue; }              // a kicked ball in flight is nobody's feet
+        const bx = a[0], by = a[1];
+        let bd = Infinity, bb = 180;
+        for (let i = 0; i < 2; i++) {
+          const px = a[5 + i * 4], py = a[6 + i * 4], fx = a[7 + i * 4], fy = a[8 + i * 4];
+          const d = Math.hypot(bx - px, by - py);
+          if (d < bd) {
+            bd = d;
+            const face = Math.atan2(fx, fy);
+            let ang = Math.atan2(bx - px, by - py) - face;
+            ang = Math.atan2(Math.sin(ang), Math.cos(ang));
+            bb = Math.abs(ang) * 180 / Math.PI;
+          }
+        }
+        samples++;
+        if (bd < 62) nearBest++;
+        if (bb < 115) frontBest++; // the stance lags the stick mid-turn, so 115° is still "at the foot"
+        if (bd > worst) { worst = bd; worstS = { i: samples, d: +bd.toFixed(0), bear: +bb.toFixed(0) }; }
+      }
+      const pctNear = samples ? nearBest / samples * 100 : 0, pctFront = samples ? frontBest / samples * 100 : 0;
+      console.log(`drawn-world audit: ${audit.length} frames, ${samples} carried (${fast} in flight) · ball at the feet in ${pctNear.toFixed(0)}% · in front in ${pctFront.toFixed(0)}% · worst ${worst.toFixed(0)}px`);
+      if (samples < 3) cdp.logs.push('assert: too few carried-ball frames sampled (' + samples + ')');
+      if (samples >= 5 && pctNear < 85) cdp.logs.push(`assert: drawn ball is only at the feet in ${pctNear.toFixed(0)}% of carried frames`);
+      if (samples >= 5 && pctFront < 70) cdp.logs.push(`assert: drawn ball is only in front in ${pctFront.toFixed(0)}% of carried frames`);
+      if (samples >= 5 && worst > 120) cdp.logs.push(`assert: drawn ball strays to ${worst.toFixed(0)}px while carried`);
+    } else {
+      cdp.logs.push('assert: drawn-world audit collected no frames');
+    }
 
     console.log(cdp.logs.length ? 'CONSOLE ISSUES:' : 'console: clean');
     for (const l of cdp.logs.slice(0, 30)) console.log('  ' + l);

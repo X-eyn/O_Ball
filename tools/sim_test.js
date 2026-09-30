@@ -50,6 +50,7 @@ console.log('\n2. stride touches');
 {
   const s = fresh();
   const p = place(s, C.CX - 300, C.CY, 1);
+  s.players[1].x = C.FL + 30; s.players[1].y = C.FT + 30; // opponent out of the running lane
   const b = s.ball; b.x = p.x + 34; b.y = p.y; b.vx = b.vy = 0;
   let touches = 0, maxGap = 0;
   for (let t = 0; t < 180; t++) {
@@ -78,6 +79,7 @@ console.log('\n2. stride touches');
   const gapAt = ax => {
     const s = fresh();
     const p = place(s, C.CX - 300, C.CY, 1);
+    s.players[1].x = C.FL + 30; s.players[1].y = C.FT + 30;
     const b = s.ball; b.x = p.x + 34; b.y = p.y; b.vx = b.vy = 0;
     let maxGap = 0;
     for (let t = 0; t < 240 && p.x < C.FR - 80; t++) {
@@ -87,9 +89,9 @@ console.log('\n2. stride touches');
     return maxGap;
   };
   const walk = gapAt(0.4), jog = gapAt(0.55), sprint = gapAt(1);
-  ok(walk < 50, `walking keeps the ball at your feet (${walk.toFixed(0)}px)`);
-  ok(jog < 65, `jogging is one touch ahead (${jog.toFixed(0)}px)`);
-  ok(sprint > jog + 4 && sprint < 120, `sprinting runs the ball away (${sprint.toFixed(0)}px)`);
+  ok(walk < 30, `walking keeps the ball at your feet (${walk.toFixed(0)}px)`);
+  ok(jog < 32, `jogging keeps it at the foot (${jog.toFixed(0)}px)`);
+  ok(sprint < 36, `sprinting still contains it (${sprint.toFixed(0)}px)`);
 }
 {
   const s = fresh();
@@ -101,18 +103,24 @@ console.log('\n2. stride touches');
   ok(Math.hypot(b.x - p.x, b.y - p.y) < 45, 'the ball rests at your feet');
 }
 
-console.log('\n3. sprint vs walk knock');
+console.log('\n3. containment at every pace');
 {
+  // measured to the FOOT point, the way the sim plays the ball
+  const footOf = p => {
+    const fwd = C.FOOT_BASE + C.FOOT_SWING * Math.max(0, Math.sin(p.ph));
+    return { x: p.x + p.cfx * fwd - p.cfy * p.sf * C.FOOT_SIDE, y: p.y + p.cfy * fwd + p.cfx * p.sf * C.FOOT_SIDE };
+  };
   const gap = input => {
     const s = fresh();
     const p = place(s, C.CX - 300, C.CY, 1);
+    s.players[1].x = C.FL + 30; s.players[1].y = C.FT + 30;
     const b = s.ball; b.x = p.x + 34; b.y = p.y; b.vx = b.vy = 0;
     let mx = 0;
-    for (let t = 0; t < 150 && p.x < C.FR - 60; t++) { step(s, input); mx = Math.max(mx, Math.hypot(b.x - p.x, b.y - p.y)); }
+    for (let t = 0; t < 150 && p.x < C.FR - 60; t++) { step(s, input); const f = footOf(p); mx = Math.max(mx, Math.hypot(b.x - f.x, b.y - f.y)); }
     return mx;
   };
-  const walk = gap({ ax: 0.3 }), sprint = gap({ ax: 1 });
-  ok(sprint > walk + 6, `sprint knocks travel further than walk (${sprint.toFixed(0)} vs ${walk.toFixed(0)}px)`);
+  const walk = gap({ ax: 0.3 }), jog = gap({ ax: 0.6 }), sprint = gap({ ax: 1 });
+  ok(walk < 22 && jog < 24 && sprint < 26, `the ball is contained at every pace (walk ${walk.toFixed(0)}, jog ${jog.toFixed(0)}, sprint ${sprint.toFixed(0)}px from the foot)`);
 }
 
 console.log('\n4. first touch quality');
@@ -180,7 +188,9 @@ function shot(sf, n) {
     p.sf = sf;
     const b = s.ball; b.x = p.x + 30; b.y = p.y + 24; b.vx = b.vy = 0;
     let kp = 0;
-    for (let t = 0; t < 26; t++) step(s, { k: true, kp });
+    // a short charge: the ball is still where it was put, so the foot it is struck with is decided
+    // by its side (a long hold lets the containment bring it to the strong foot first)
+    for (let t = 0; t < 5; t++) step(s, { k: true, kp });
     kp++;
     let evt = null;
     for (let t = 0; t < 12 && !evt; t++) {
@@ -253,7 +263,28 @@ console.log('\n7. shield and knock-on');
   ok(s.events.some(e => e.type === 'touch' && e.type === 'touch' && e.q !== undefined), 'knock-on emits a touch event');
 }
 
-console.log('\n8. random-input stress');
+console.log('\n8. shooting on the run');
+{
+  // hold the ball while flat out, charge (which slows you into the strike), release: it must connect
+  let hits = 0, trials = 12, firstContact = [];
+  for (let i = 0; i < trials; i++) {
+    const s = fresh();
+    const p = place(s, C.CX - 300, C.CY, 1);
+    const b = s.ball; b.x = p.x + 34; b.y = p.y; b.vx = b.vy = 0;
+    let kp = 0, kicked = false;
+    for (let t = 0; t < 240 && !kicked; t++) {
+      if (t === 60 || t === 100) kp++;
+      step(s, { ax: 1, k: t >= 60 && t < 100, kp });
+      if (s.events.some(e => e.type === 'kick')) { kicked = true; firstContact.push(t); }
+      s.events.length = 0;
+    }
+    if (kicked) hits++;
+  }
+  ok(hits >= trials - 1, `shooting while running connects (${hits}/${trials})`);
+  ok(firstContact.length > 0 && Math.max(...firstContact) - Math.min(...firstContact) <= 2, `the release is deterministic (contact at ${firstContact[0]}-${firstContact[Math.max(0, firstContact.length - 1)]})`);
+}
+
+console.log('\n9. random-input stress');
 {
   const s = OB.createSim(0, { feet: [1, -1] });
   let nan = false, badEvent = null, ticks = 0;
@@ -289,7 +320,7 @@ console.log('\n8. random-input stress');
   ok(!nan, 'solo practice stays finite with all the new mechanics in play');
 }
 
-console.log('\n9. snapshot shape');
+console.log('\n10. snapshot shape');
 {
   const s = fresh();
   const st = OB.netState(s);

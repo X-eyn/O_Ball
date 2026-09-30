@@ -673,7 +673,9 @@ class Player {
     if (dt > 0) { this.yawVel = clamp(this.yawVel + (om * om * dy - 2 * om * this.yawVel) * dt, -16, 16); this.yaw += this.yawVel * dt; }
     this.root.rotation.y = this.yaw;
     const amp = clamp(this.speed / 4.5, 0, 1.25), A = Math.min(amp, 1.1);
-    this.phase += dt * (6 + this.speed * 2.2) * (amp > 0.05 ? 1 : 0);
+    const sPhase = Number.isFinite(p[14]) ? p[14] : null; // sim gait phase: boot and ball share one clock
+    if (sPhase !== null) this.phase = sPhase * 6.2831853;
+    else this.phase += dt * (6 + this.speed * 2.2) * (amp > 0.05 ? 1 : 0);
     this.kickT = Math.max(0, this.kickT - dt * 4.5);
     this.swingT = Math.max(0, this.swingT - dt);
     const charging = ct >= 0;
@@ -823,7 +825,7 @@ class Player {
       this.hipTurn = damp(this.hipTurn || 0, clamp(side, -0.4, 0.4) * (1 - this.shufW), 8, dt);
     } else this.hipTurn = damp(this.hipTurn || 0, 0, 8, dt);
     AD.add('hips', 0, this.hipTurn); AD.add('chest', 0, -this.hipTurn * 0.6);
-    this.h.animate(dt, t, this.speed, P, W, { pose: AD, lift, clips, fast, dir: travelDir * (this.speed > 0.5 ? 1 : 0) || 1 });
+    this.h.animate(dt, t, this.speed, P, W, { pose: AD, lift, clips, fast, serverPhase: travelDir < 0 ? null : sPhase, dir: travelDir * (this.speed > 0.5 ? 1 : 0) || 1 });
     // footfalls: when a foot comes down at pace, kick up a little turf
     if (this.h.ready && o.step && this.speed > 2.2 && !this.celW) {
       const sc = this.h.group.scale.y;

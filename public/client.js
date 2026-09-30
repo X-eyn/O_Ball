@@ -398,7 +398,7 @@ const home = (() => {
 
   // attract mode: two bots play a real match locally
   let sim = null, acc = 0, last = 0, prevWorld = null, curWorld = null;
-  const toWorld = s => ({ ball: [s.ball.x, s.ball.y, s.ball.hot > 0 ? 1 : 0, s.ball.z || 0], players: s.players.map(p => [p.x, p.y, p.fx, p.fy, p.ch ? p.ct : -1, p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, 0, 0]) });
+  const toWorld = s => ({ ball: [s.ball.x, s.ball.y, s.ball.hot > 0 ? 1 : 0, s.ball.z || 0], players: s.players.map(p => [p.x, p.y, p.fx, p.fy, p.ch ? p.ct : -1, p.stun > 0 ? 1 : 0, p.dashT > 0 ? 1 : 0, 0, 0, 0, 0, 0, 0, 0, (p.ph || 0) / 6.2831853]) });
   function enter() {
     document.title = 'Office Ball';
     $('home').classList.remove('hidden');
@@ -735,7 +735,7 @@ function interpWorld(v) {
     const pb = b.p[k];
     if (jump(pa[0], pa[1], pb[0], pb[1])) return t < 0.5 ? pa : pb;
     const d = t < 1 ? pa : pb, tf = Math.min(t, 1);
-    return [lerp(pa[0], pb[0], t), lerp(pa[1], pb[1], t), lerp(pa[2], pb[2], tf), lerp(pa[3], pb[3], tf), d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13]];
+    return [lerp(pa[0], pb[0], t), lerp(pa[1], pb[1], t), lerp(pa[2], pb[2], tf), lerp(pa[3], pb[3], tf), d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14]];
   });
   return { ball, players };
 }
@@ -1137,7 +1137,7 @@ function renderScreens(s) {
 }
 
 // ---------------- frame ----------------
-let lastRenderTick = 0, lastFrameAt = null;
+let lastRenderTick = 0, lastFrameAt = null, lastWorld = null;
 const setText = (el, v) => { v = String(v); if (el.textContent !== v) el.textContent = v; };
 const setHTML = (el, v) => { if (el._html !== v) { el._html = v; el.innerHTML = v; } };
 const setClass = (el, v) => { if (el.className !== v) el.className = v; };
@@ -1249,6 +1249,7 @@ function frame(now) {
     noTrail: s && s.ph === 'kickoff',
     scoreboard: s && s.p ? { names: s.so ? [names[0], 'PRACTICE'] : names, score: s.so ? [(s.sc || [0])[0], '-'] : (s.sc || [0, 0]), mid: s.so ? 'SOLO' : s.sd ? 'SUDDEN DEATH' : s.ph === 'half' ? 'HALF TIME' : (s.hf === 2 ? '2ND HALF' : '1ST HALF') } : null,
   };
+  lastWorld = world; // what was just drawn (debug hook: tools/browser_check.js audits it)
   if (R) R.frame(rv, now);
   Sound.crowd(s && s.p ? clamp((rv.hype || 0) * 1.4 + (mode === 'celebrate' ? 0.8 : 0), 0, 1) : 0);
 
@@ -1284,7 +1285,7 @@ function frame(now) {
 }
 
 // read-only hook for debugging/automated tests
-window.__ob = { perf: () => monitor.summary(pacer.target), stats: () => R && R.stats && R.stats(), cam: () => R && R.debugCam(), scene: () => R && R.debugScene && R.debugScene(), project: (x, y, h) => R && R.project(x, y, h), state: () => hist[hist.length - 1], slot: mySlot, renderTick: () => lastRenderTick, delay: () => clock.delay, ctrl: () => ctrl };
+window.__ob = { perf: () => monitor.summary(pacer.target), stats: () => R && R.stats && R.stats(), cam: () => R && R.debugCam(), scene: () => R && R.debugScene && R.debugScene(), project: (x, y, h) => R && R.project(x, y, h), state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, renderTick: () => lastRenderTick, delay: () => clock.delay, ctrl: () => ctrl };
 
 // ---------------- start ----------------
 // Called by the boot loader once every file is here. Resolves when the game is completely ready

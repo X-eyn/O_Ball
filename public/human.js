@@ -613,7 +613,11 @@ export class Human {
     const wJog = smooth(1.5, 2.3, v) * (1 - wSprint), wWalk = Math.max(0, 1 - wIdle - wJog - wSprint);
     // backpedalling plays the cycle in reverse, so the feet travel the way the body is moving
     const dir = add.dir < 0 ? -1 : 1;
-    this.phase = (((this.phase + dir * dt * (wWalk * 0.95 + wJog * 1.35 + wSprint * 1.5)) % 1) + 1) % 1;
+    // the sim's gait phase, when it is provided, is the one true clock: the boot that strikes the
+    // ball is the boot the player sees. Backpedalling keeps the local phase (the sim only walks it
+    // forwards).
+    if (add.serverPhase !== null && add.serverPhase !== undefined && Number.isFinite(add.serverPhase)) this.phase = ((add.serverPhase % 1) + 1) % 1;
+    else this.phase = (((this.phase + dir * dt * (wWalk * 0.95 + wJog * 1.35 + wSprint * 1.5)) % 1) + 1) % 1;
     const clipW = add.clips || {}; let other = 0; for (const k in clipW) other += clipW[k];
     const lk = Math.max(0, 1 - other);
     [wIdle, wWalk, wJog, wSprint].forEach((w, i) => { const a = this.act[LOCO[i]]; a.setEffectiveWeight(w * lk); a.time = i ? this.phase * a.getClip().duration : (t * 0.9) % a.getClip().duration; });
