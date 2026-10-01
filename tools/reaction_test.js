@@ -314,6 +314,7 @@ function pageHelper() {
           elbowUp: +off.y.toFixed(3), elbowOut: +off.dot(bodyRight).toFixed(3), elbowFwd: +off.dot(bodyFwd).toFixed(3),
           sideOn: +sideOn.toFixed(1), pelvisY: +pelvis.y.toFixed(3), headY: +head.y.toFixed(3), feetZ: +feetZ.toFixed(3), knees: knees.map(x => +x.toFixed(2)),
           nrm: nrm.toArray().map(x => +x.toFixed(3)), wMax: +wMax.toFixed(1), wBone, wMaxW: +wMaxW.toFixed(1), wBoneW, clr: +(ath.h._clearA || 0).toFixed(2),
+          lw: +(ath.lungeW || 0).toFixed(3), ld: ath.lungeDir, md: ath.fw && ath.fw.mode, fb: ath.fw && ath.fw.feetBy, drop: ath.fw ? +ath.fw.drop.toFixed(3) : null,
           ball: ball.toArray().map(x => +x.toFixed(3)), yaw: +yaw.toFixed(3), reachHoriz: +Math.hypot(ball.x - ath.root.position.x, ball.z - ath.root.position.z).toFixed(3),
         });
         // ---- pictures: two views at the contact instant (and a film strip on request)
@@ -444,7 +445,9 @@ function evaluate(cs, m) {
   // low and wide: lunge / knees; jump: off the floor
   const reach = Math.hypot(cs.at[0], cs.at[1]);
   // (the bottom of the lunge around the contact: a player keeps sinking through the stroke)
-  const stand = F[0].pelvisY, low = Math.min(...F.filter(f => f.u >= -0.05 && f.u <= 0.1).map(f => f.pelvisY)), dropM = stand - low;
+  // (standing: the highest the pelvis was before the stroke - not the first frame, which may still be
+  // coming up out of the previous case's lunge: the athlete is not reset between cases)
+  const stand = Math.max(...F.filter(f => f.u < -0.35).map(f => f.pelvisY).concat(F[0].pelvisY)), low = Math.min(...F.filter(f => f.u >= -0.05 && f.u <= 0.1).map(f => f.pelvisY)), dropM = stand - low;
   info.drop = dropM.toFixed(2);
   // (how far down the hips go matters less than that the racket gets there, checked by the IK error:
   // a low wide shuttle must still see a real lunge, and an ankle-high one the body folded down to it)

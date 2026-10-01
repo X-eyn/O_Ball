@@ -41,17 +41,22 @@ const P = o => o;
 export const STROKES = {
   // overhead forehand: side-on, elbow high, racket dropped behind the back, the free arm up at the
   // shuttle; then the trunk uncoils, the arm extends to full reach and pronates through it
+  // LOAD is the trophy position: side-on, the upper arm out near shoulder height with the elbow
+  // bent and the racket dropped down the back, the free arm up at the shuttle, the trunk arched a
+  // little away. CONTACT at full stretch above and slightly in front. FOLLOW: the racket carried on
+  // down across the body to the left hip as the hips and chest turn right through to face the net
+  // and past it, the free arm tucked in.
   over: {
-    fwd: 0.11, fol: 0.16,
+    fwd: 0.11, fol: 0.3,
     load: P({ hips: [0.02, -0.34, 0], spine: [-0.1, -0.14, 0], chest: [-0.22, -0.22, 0.06], neck: [-0.28, 0.2, 0], head: [-0.3, 0.1, 0],
       clavR: [-0.2, 0, -0.35], armR: [0.35, 0.9, -2.05], foreR: [-2.05, 0, 0], handR: [0.55, 0, 0.2],
-      clavL: [-0.1, 0, 0.2], armL: [-1.25, 0, 1.55], foreL: [-0.25, 0, 0], handL: [0, 0, 0] }),
+      clavL: [-0.1, 0, 0.15], armL: [-2.3, 0, 0.35], foreL: [-0.2, 0, 0], handL: [0, 0, 0] }),
     contact: P({ hips: [0.04, 0, 0], spine: [0.04, 0, 0], chest: [0.04, 0.02, -0.06], neck: [-0.25, -0.1, 0], head: [-0.28, 0, 0],
       clavR: [-0.25, 0, -0.3], armR: [-0.65, 0.45, -2.5], foreR: [-0.12, 0, 0], handR: [-0.2, 0, -0.1],
-      clavL: [0, 0, 0.1], armL: [-0.7, 0, 0.35], foreL: [-1.6, 0, 0], handL: [0, 0, 0] }),
-    follow: P({ hips: [0.1, 0.3, 0], spine: [0.22, 0.12, 0], chest: [0.3, 0.22, -0.05], neck: [0.05, -0.2, 0], head: [0.05, 0, 0],
-      clavR: [0, 0, -0.05], armR: [-1.0, 0.9, -0.55], foreR: [-0.6, 0, 0], handR: [-0.7, 0, -0.2],
-      clavL: [0, 0, 0.05], armL: [0.25, 0, 0.3], foreL: [-1.2, 0, 0], handL: [0, 0, 0] }),
+      clavL: [0, 0, 0.1], armL: [-0.6, 0, 0.3], foreL: [-1.7, 0, 0], handL: [0, 0, 0] }),
+    follow: P({ hips: [0.12, 0.45, 0], spine: [0.25, 0.2, 0], chest: [0.3, 0.35, -0.05], neck: [0.05, -0.3, 0], head: [0, -0.1, 0],
+      clavR: [0.05, 0, 0.05], armR: [-0.8, 0.6, -0.2], foreR: [-0.5, 0, 0], handR: [-0.6, 0, -0.3],
+      clavL: [0, 0, 0.05], armL: [0.35, 0, 0.35], foreL: [-1.3, 0, 0], handL: [0, 0, 0] }),
   },
   // the smash: the same stroke, arched harder, uncoiled harder, and folded right through
   smash: {
@@ -60,7 +65,7 @@ export const STROKES = {
   },
   // the net kill: a short, sharp overhead tap with the wrist doing the work
   kill: {
-    fwd: 0.06, fol: 0.1,
+    fwd: 0.07, fol: 0.18,
     load: P({ chest: [-0.05, -0.12, 0], spine: [0.05, -0.05, 0], neck: [-0.15, 0, 0], head: [-0.12, 0, 0], clavR: [-0.2, 0, -0.25],
       armR: [-0.1, -0.2, -2.3], foreR: [-1.35, 0, 0], handR: [0.7, 0, 0], armL: [-1.0, 0, 0.6], foreL: [-0.6, 0, 0] }),
     contact: P({ chest: [0.12, 0.08, 0], spine: [0.1, 0.03, 0], clavR: [-0.2, 0, -0.25], armR: [-0.55, 0.2, -2.4], foreR: [-0.2, 0, 0], handR: [-0.55, 0, 0], armL: [-0.6, 0, 0.4], foreL: [-1.3, 0, 0] }),
@@ -83,7 +88,7 @@ export const STROKES = {
   },
   // underarm (lift, clear from low, net shot): racket low behind, the body folded over the lunge
   under: {
-    fwd: 0.1, fol: 0.16,
+    fwd: 0.11, fol: 0.24,
     load: P({ hips: [0.12, -0.18, 0], spine: [0.28, -0.08, 0], chest: [0.18, -0.12, 0], neck: [-0.2, 0, 0], clavR: [0, 0, -0.1], armR: [0.25, -0.3, -0.55], foreR: [-1.15, 0, 0], handR: [0.75, 0, 0], armL: [0.55, 0, 0.55], foreL: [-0.5, 0, 0] }),
     contact: P({ hips: [0.12, 0.05, 0], spine: [0.28, 0.02, 0], chest: [0.16, 0.04, 0], neck: [-0.15, 0, 0], clavR: [0, 0, -0.1], armR: [-0.85, 0.1, -0.35], foreR: [-0.15, 0, 0], handR: [-0.3, 0, 0], armL: [0.6, 0, 0.6], foreL: [-0.4, 0, 0] }),
     follow: P({ hips: [0.06, 0.1, 0], spine: [0.12, 0.05, 0], chest: [0.02, 0.08, 0], neck: [-0.25, 0, 0], clavR: [-0.1, 0, -0.15], armR: [-2.1, 0.3, -0.5], foreR: [-0.5, 0, 0], handR: [-0.5, 0, 0], armL: [0.4, 0, 0.5], foreL: [-0.5, 0, 0] }),
@@ -136,7 +141,10 @@ const ELBOW = { over: [0.9, 0.25, 0.3], smash: [0.9, 0.25, 0.3], kill: [0.9, 0.1
 // the smash is the overhead with extra arch and fold
 STROKES.smash.load = add(STROKES.over.load, STROKES.smash.extend.load);
 STROKES.smash.contact = STROKES.over.contact;
-STROKES.smash.follow = add(STROKES.over.follow, STROKES.smash.extend.follow);
+// (the smash keeps the original, tighter follow-through: the fastest stroke, its contact is tuned to it)
+const SMASH_FOLLOW = { hips: [0.1, 0.3, 0], spine: [0.22, 0.12, 0], chest: [0.3, 0.22, -0.05], neck: [0.05, -0.2, 0], head: [0.05, 0, 0],
+  clavR: [0, 0, -0.05], armR: [-1.0, 0.9, -0.55], foreR: [-0.6, 0, 0], handR: [-0.7, 0, -0.2], clavL: [0, 0, 0.05], armL: [0.25, 0, 0.3], foreL: [-1.2, 0, 0], handL: [0, 0, 0] };
+STROKES.smash.follow = add(SMASH_FOLLOW, STROKES.smash.extend.follow);
 function add(a, b) { const o = {}; for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) { const x = a[k] || [0, 0, 0], y = b[k] || [0, 0, 0]; o[k] = [x[0] + y[0], x[1] + y[1], x[2] + y[2]]; } return o; }
 
 // which stroke plays a shot: the sim's shot kind first, then where the shuttle was met (side: + on
@@ -168,7 +176,9 @@ function sampleStroke(st, bone, u, c, out) {
   // cubic in and out: the forward swing accelerates all the way into the contact (a whip, fastest at
   // the shuttle) and the follow-through leaves it at that speed, decelerating after
   if (u <= 0) { const x = 1 + u / st.fwd, e = x * x * x; for (let i = 0; i < 3; i++) out[i] = lerp(l[i] * c, k[i], e); return true; }
-  if (u <= st.fol) { const x = 1 - u / st.fol, e = 1 - x * x * x; for (let i = 0; i < 3; i++) out[i] = lerp(k[i], f[i], e); return true; }
+  // (a long follow-through - an overhead's, 0.3 s - leaves the contact as fast as a short one would,
+  // with a long slow tail: quintic rather than cubic, so the racket meets the shuttle at full speed)
+  if (u <= st.fol) { const x = 1 - u / st.fol, e = 1 - Math.pow(x, st.fol > 0.2 ? 5 : 3); for (let i = 0; i < 3; i++) out[i] = lerp(k[i], f[i], e); return true; }
   for (let i = 0; i < 3; i++) out[i] = f[i];
   return true;
 }
@@ -208,13 +218,13 @@ function lunge(Q, w, side) {
 function jumpLegs(Q, crouch, ext, tuck, reach, kick) {
   for (const [s, k] of [[1, 'L'], [-1, 'R']]) {
     const lead = k === 'L' ? 1 : 0.75;
-    let th = -0.95 * crouch - 0.08 * ext - 0.8 * tuck * lead - 0.38 * reach, sh = 1.6 * crouch + 0.1 * ext + 1.35 * tuck * lead + 0.42 * reach;
-    const fo = -0.45 * crouch + 0.8 * ext + 0.4 * tuck + 0.1 * reach;
+    let th = -0.62 * crouch - 0.08 * ext - 0.8 * tuck * lead - 0.38 * reach, sh = 1.08 * crouch + 0.1 * ext + 1.35 * tuck * lead + 0.42 * reach;
+    const fo = -0.32 * crouch + 0.8 * ext + 0.4 * tuck + 0.1 * reach;
     if (kick) { const right = k === 'R' ? 1 : -1, ph = kick * right; th += 0.6 * ph; sh += 0.4 * Math.abs(kick) * (ph > 0 ? 1 : 0.4); }
     Q.set('thigh' + k, th, 0, s * (0.08 + 0.06 * tuck)); Q.set('shin' + k, sh); Q.set('foot' + k, fo); Q.set('toe' + k, 0.2 * ext);
   }
-  Q.set('hips', 0.35 * crouch - 0.05 * ext + 0.14 * tuck, 0, 0);
-  Q.set('spine', 0.22 * crouch + 0.06 * tuck, 0, 0);
+  Q.set('hips', 0.24 * crouch - 0.05 * ext + 0.14 * tuck, 0, 0);
+  Q.set('spine', 0.16 * crouch + 0.06 * tuck, 0, 0);
   Q.set('armL', 0.55 * crouch - 1.5 * ext - 0.75 * tuck - 0.5 * reach, 0, 0.3 + 0.25 * tuck + 0.35 * reach);
   Q.set('foreL', -0.5 - 0.3 * tuck);
 }
@@ -592,6 +602,7 @@ export class Athlete {
     // facing and gait (footwork.js): the body is organised round the net, not round the stick
     const mode = fw.pre(f, p, dt, { lunge: this.lungeW > 0.3, lungeSide: this.lungeSide, lungeRising: this.lungeRising, strokeYawWant: this.strokeYawWant, strokeYawW: this.strokeYawW });
     this.yaw = fw.yaw; this.gait = mode;
+    if (fw.snap) { this.lungeW = 0; this.lungeGX = this.lungeGZ = 0; this.reachX = this.reachZ = this.reachLift = 0; this.lungeAt = null; }
     const sp = Math.hypot(vx, vy);
     // the stance's weight follows how fast the feet are really going (the stepped gaits keep the
     // racket up and the ready shape; the mocap run lets the arms swing)
@@ -649,10 +660,13 @@ export class Athlete {
     if (pq && !air && STROKES[pq.name] && STROKES[pq.name].low) {
       const rch = Math.hypot(pq.side, pq.fwd);
       const amt = clamp(Math.max((rch - 0.6) / 0.5, rch > 0.75 ? (1.0 - pq.rz) / 0.6 : 0), 0, 1) * smooth(0.5, 0.12, pq.eta);
-      if (amt > lungeWant) { lungeWant = amt; if (amt > this.lungeW) { this.lungeSide = 1; this.lungeDir = pq.side < -0.2 ? -1 : 1; this.lungeAt = [pq.side, pq.fwd]; } }
+      // (the corner is taken from the shot that wants it: deeper than the lunge now, or the other
+      // corner - a forehand lunge straight into a backhand one changes sides)
+      const dirP = pq.side < -0.2 ? -1 : 1;
+      if (amt > lungeWant) { lungeWant = amt; if (amt > this.lungeW || dirP !== this.lungeDir) { this.lungeSide = 1; this.lungeDir = dirP; this.lungeAt = [pq.side, pq.fwd]; } }
     }
     // the front foot is always the racket foot (lungeSide +1 for footwork.js); lungeDir: which corner
-    if (st && lungeWant > this.lungeW) { this.lungeSide = 1; this.lungeDir = st.side < -0.2 ? -1 : 1; if (st.fwd != null) this.lungeAt = [st.side, st.fwd]; }
+    if (st && lungeWant > 0.05 && (lungeWant > this.lungeW || (st.side < -0.2 ? -1 : 1) !== this.lungeDir)) { this.lungeSide = 1; this.lungeDir = st.side < -0.2 ? -1 : 1; if (st.fwd != null) this.lungeAt = [st.side, st.fwd]; }
     this.lungeRising = lungeWant > this.lungeW + 0.02 && this.lungeW < 0.75;
     this.lungeW = lerp(this.lungeW, lungeWant, clamp((lungeWant > this.lungeW ? 26 : 12) * dt, 0, 1));
     if (this.lungeW > 0.01) { T.zero(); lunge(T, 1, this.lungeDir || 1); blend(T, this.lungeW, LEG_I); }
@@ -826,7 +840,9 @@ export class Athlete {
       }
     }
     if (this._liftOn) { h.group.position.y -= this._liftOn; this._liftOn = 0; } // (last frame's reaching hop: not the pose's)
-    h.animate(dt, t, fw.animSpeed, Q, W, { pose: AD, lift: 0, clips: {}, serverPhase: null, dir: 1, cadence: fw.cadence, floorOnly: fw.feetBy === 'free', fast: this.fast, spring: true });
+    h.animate(dt, t, fw.animSpeed, Q, W, { pose: AD, lift: 0, clips: {}, serverPhase: null, dir: 1, cadence: fw.cadence, floorOnly: fw.feetBy === 'free', fast: this.fast, spring: !inStroke && !f.prep && this.lungeW < 0.05 && this.diveW < 0.05 });
+    // (springs - human.js _spring - only while no shot is coming: moving and waiting. From the
+    // moment a shot is prepared the stroke layer drives the arm exactly as it is tuned to)
     // the feet on the floor (planned steps, locked strides, leg IK) and nothing through the floor
     h.root.updateMatrixWorld(true);
     fw.post(f, p, dt, this.hop);

@@ -51,12 +51,11 @@ for (const [k, s] of [['L', 'l'], ['R', 'r']]) Object.assign(RIG, {
 const RATE = BONES.map(n => ({ hips: 24, spine: 18, chest: 16, neck: 12, head: 11 })[n] ||
   (/^(clav|arm)/.test(n) ? 20 : /^(fore|hand)/.test(n) ? 24 : 32));
 // The springs (opt-in, see Human._spring): per bone, the natural frequency as a share of its RATE
-// and the damping. The trunk is firm and barely overshoots; the arms swing through a little; the
-// head settles like a head on a neck. Legs keep the plain filter (the foot IK owns them).
+// and the damping. The arms swing through a little; the head settles like a head on a neck. The
+// trunk and the legs keep the plain filter: the trunk carries the lunges and the strokes' body
+// turn, which must arrive on time, and the foot IK owns the legs.
 const SPRING = BONES.map(n => {
   const b = n.replace(/[LR]$/, '');
-  if (b === 'hips' || b === 'spine') return { w: 0.75, z: 0.85 };
-  if (b === 'chest') return { w: 0.72, z: 0.75 };
   if (b === 'neck' || b === 'head') return { w: 1.05, z: 0.8 };
   if (b === 'clav' || b === 'arm') return { w: 0.7, z: 0.62 };
   if (b === 'fore' || b === 'hand') return { w: 0.68, z: 0.58 };
@@ -722,7 +721,9 @@ export class Human {
       const k = 1 - Math.exp(-RATE[i] * fastK * dt);
       this.ref[i].forEach((r, j) => {
         const f = this.filt[i][j];
-        if (add.spring && SPRING[i]) this._spring(f, r.bone.quaternion, this.spw[i][j], RATE[i] * fastK * SPRING[i].w, SPRING[i].z, dt, snap);
+        // (a stroke driving this bone - fast > 3 - is followed exactly: the swing is the motion)
+        if (add.spring && SPRING[i] && fastK <= 3) this._spring(f, r.bone.quaternion, this.spw[i][j], RATE[i] * fastK * SPRING[i].w, SPRING[i].z, dt, snap);
+        else if (add.spring && SPRING[i]) { this.spw[i][j].set(0, 0, 0); if (snap) f.copy(r.bone.quaternion); else f.slerp(r.bone.quaternion, k); }
         else if (snap) f.copy(r.bone.quaternion); else f.slerp(r.bone.quaternion, k);
         r.bone.quaternion.copy(f);
         this._limit(r, LIMIT[i]);
@@ -772,14 +773,7 @@ export class Human {
   // frequency (rad/s), zeta the damping (1: no overshoot; 0.6: a small one). Integrated in steps of
   // at most 1/240 s; a spring too stiff to integrate this frame (a stroke's whip) just follows.
   _spring(q, target, w, w0, zeta, dt, snap) {
-    if (snap || !(dt > 0) || w0 * dt > 1.6) {
-      if (!snap && dt > 0) { // (still carry the velocity, so the spring takes over smoothly)
-        _qs.copy(target).multiply(_qs2.copy(q).invert()); if (_qs.w < 0) _qs.set(-_qs.x, -_qs.y, -_qs.z, -_qs.w);
-        const a = 2 * Math.acos(Math.min(1, _qs.w)), sn = Math.sqrt(Math.max(0, 1 - _qs.w * _qs.w));
-        if (sn > 1e-6) w.set(_qs.x / sn, _qs.y / sn, _qs.z / sn).multiplyScalar(Math.min(a / dt, 40)); else w.set(0, 0, 0);
-      } else w.set(0, 0, 0);
-      q.copy(target); return;
-    }
+    if (snap || !(dt > 0) || w0 * dt > 1.6) { w.set(0, 0, 0); q.copy(target); return; }
     const n = Math.max(1, Math.ceil(dt * 240)), h = dt / n, k = w0 * w0, c = 2 * zeta * w0;
     for (let s = 0; s < n; s++) {
       // the error as an axis-angle vector (the short way round)

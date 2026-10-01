@@ -359,6 +359,7 @@ export class Footwork {
     if (this.mode === 'lunge' && this.o && this.o.lungeRising) { F[this.o.lungeSide < 0 ? 'L' : 'R'].noLock = true; F[this.o.lungeSide < 0 ? 'R' : 'L'].noLock = true; }
     // (re)start: both feet planted where they are, or under the hips when there is no history
     if (this.snap || !this.fInit) {
+      this.g = null; this.bob = 0; // (the gait's rhythm starts afresh with the feet: a new point, a reconnect)
       for (const [k] of SIDES) {
         const ft = F[k], an = anchor(k, x, y, yaw);
         Object.assign(ft, { st: 'plant', x: an[0], z: an[1], yaw: yaw + FW.STANCE[k].toe, lift: 0, pitch: 0, lock: false, ox: 0, oz: 0, oy: 0 });
