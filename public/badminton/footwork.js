@@ -47,6 +47,19 @@ export const FW = {
   RUN_IN: Infinity, RUN_OUT: 4.2,
 };
 
+// The gait (see Footwork.plan). Cadence in steps per second: F0 + FK per m/s, up to FMAX (a
+// sprint), and up to FSIDE when a sideways step would otherwise be wider than SIDE_MAX (m). Duty:
+// each foot's share of the cycle on the floor, D0 - DK per m/s, down to DMIN (flight between steps).
+// Swing height H0 + HK per m/s up to HMAX (m); the hips' bob BOB0 + BOBK per m/s up to BOBMAX (m).
+// A planted foot further than SETTLE (m) from under its hip is stepped back under it at rest.
+export const GAIT = {
+  F0: 2.2, FK: 0.29, FMAX: 4.6, FSIDE: 5.4, SIDE_MAX: 0.62,
+  D0: 0.64, DK: 0.042, DMIN: 0.3,
+  H0: 0.05, HK: 0.022, HMAX: 0.26,
+  BOB0: 0.012, BOBK: 0.004, BOBMAX: 0.045,
+  SETTLE: 0.07, REACH_MIN: 0.5, TSW_MIN: 0.11, STRAND: 0.62, STANCE_MIN: 0.06, CROSS_BACK: 4.5,
+};
+
 // Legs: which bones, which contacts.
 const SIDES = [['L', 'l'], ['R', 'r']];
 
@@ -403,7 +416,7 @@ export class Footwork {
     }
     // ---- the hips come down when the planted feet are spread wider than the legs reach
     if (this.ikW > 0.01) {
-      let dropT = by === 'plan' ? 0.035 * smooth(2, 7, spd) * gs : 0;
+      let dropT = by === 'plan' ? (this.bob || 0) : 0;
       for (const [k, s] of SIDES) {
         const ft = F[k]; if (ft.st !== 'plant' && !(by === 'anim' && ft.lock)) continue;
         const L = R.leg[k], hip = b['thigh_' + s].getWorldPosition(_v1);
@@ -414,7 +427,7 @@ export class Footwork {
         dropT = Math.max(dropT, (hip.y - ank.y) - vReach);
       }
       dropT = clamp(dropT, 0, 0.32 * gs) * this.ikW;
-      const kd = dt > 0 ? 1 - Math.exp(-Math.min(dt, 0.1) * (dropT > this.drop ? 30 : 7)) : 1;
+      const kd = dt > 0 ? 1 - Math.exp(-Math.min(dt, 0.1) * (dropT > this.drop ? 30 : by === 'plan' ? 30 : 7)) : 1;
       this.drop = this.snap ? dropT : this.drop + (dropT - this.drop) * kd;
       if (this.drop > 1e-4) {
         const pv = b.pelvis, upL = _v4.copy(UP).applyQuaternion(pv.parent.getWorldQuaternion(_q4).invert());
@@ -449,74 +462,94 @@ export class Footwork {
     }
   }
 
-  // The stepping planner: which foot lifts, where it lands, how it travels.
+  // The gait: a rhythm, not a string of events. One phase clock drives both feet, half a cycle
+  // apart, as in any real walk or run. The cadence and the share of each cycle a foot spends on the
+  // floor (the duty) come from the speed: slow, the steps are short and there is double support;
+  // fast, the steps are long and quick with a flight phase between them (a sprint: ~4.5 steps/s,
+  // a third of the cycle on the floor). Each foot lands where the hips will be halfway through its
+  // stance (Raibert), so it is under the body when the body is over it: ahead by half the ground the
+  // stance covers when it lands, behind by as much when it lifts. That keeps the feet under the body
+  // at every speed: no splits, no foot left behind. Sideways (a chasse, the body square to the net)
+  // a step is never wider than SIDE_MAX: the cadence goes up instead.
   plan(F, A, anchor, x, y, yaw, vx, vy, spd, dt, gs) {
     const now = this.clock;
     const fx = Math.sin(yaw), fz = Math.cos(yaw), rx = -Math.cos(yaw), rz = Math.sin(yaw);
+    const vF = vx * fx + vy * fz, vR = vx * rx + vy * rz;
+    const G = this.g || (this.g = { ph: 0, on: false });
     const moving = spd > 0.3;
-    // a step: quicker and relatively lower the faster the player goes
-    // running (travelling along the body): long swings, the heel kicked up behind, flight phases;
-    // stepping and chasséing (across the body, or slow): short, quick, low steps
-    const cb = spd > 0.1 ? (vx * fx + vy * fz) / spd : 0;
-    const runW = smooth(3, 6, spd) * smooth(0.55, 0.85, cb);
-    this.runW = runW;
-    const Tsw = lerp(clamp(0.25 - 0.014 * spd, 0.13, 0.25), clamp(0.2 + 0.014 * spd, 0.24, 0.34), runW);
-    const lift = gs * (moving ? lerp(0.06 + 0.012 * Math.min(spd, 8), 0.08 + 0.028 * Math.min(spd, 10), runW) : 0.05);
-    const reach = gs * lerp(0.56, 0.6, runW); // a planted foot this far from under its hip must be picked up
+    // cadence (steps per second) and duty (each foot's share of the cycle on the floor)
+    let fs = clamp(GAIT.F0 + GAIT.FK * spd, GAIT.F0, GAIT.FMAX);
+    // (a chasse: quicker steps rather than wider ones; a crossover behind strides like a run)
+    if (!(this.mode === 'back' && spd > GAIT.CROSS_BACK)) fs = clamp(Math.max(fs, Math.abs(vR) / (GAIT.SIDE_MAX * gs)), GAIT.F0, GAIT.FSIDE);
+    const duty = clamp(GAIT.D0 - GAIT.DK * spd, GAIT.DMIN, GAIT.D0);
+    const P = 2 / fs; // seconds per cycle (a step with each foot)
+    const cb = spd > 0.1 ? vF / spd : 0;
+    this.runW = smooth(3, 6, spd) * smooth(0.55, 0.85, cb);
+    this.cadenceHz = fs; this.duty = duty;
+    // how far each planted foot is from where it would stand under the body now
+    const err = {};
+    for (const k of ['L', 'R']) { const ft = F[k], an = anchor(k, x, y, yaw); err[k] = Math.hypot(ft.x - an[0], ft.z - an[1]); }
+    // start and stop: stepping starts when the body moves (or has drifted off its feet) and stops
+    // once it is slow with both feet planted under it
+    if (!G.on && (moving || err.L > GAIT.SETTLE * 1.6 * gs || err.R > GAIT.SETTLE * 1.6 * gs)) {
+      G.on = true;
+      // lead with the foot that has furthest to go (from a standstill sideways: the foot on the side
+      // of travel), so the first step is the useful one: put the phase at that foot's lift-off
+      const lead = Math.abs(vR) > Math.abs(vF) * 0.8 && moving ? (vR > 0 ? 'R' : 'L') : (err.L > err.R ? 'L' : 'R');
+      G.ph = ((lead === 'L' ? duty : duty + 0.5) - 0.001 + 1) % 1;
+    }
+    if (G.on && !moving && F.L.st === 'plant' && F.R.st === 'plant' && err.L < GAIT.SETTLE * gs && err.R < GAIT.SETTLE * gs) G.on = false;
+    const ph0 = G.ph;
+    if (G.on) G.ph = (G.ph + dt / P) % 1;
+    this.gph = G.ph; this.gOn = G.on;
+    // the landing spot for foot k with tl seconds still to touchdown: under the hips at mid-stance
     const target = (k, tl) => {
-      const px = x + vx * tl, py = y + vy * tl;
-      const an = anchor(k, px, py, yaw);
-      // land ahead of the hip by half a stance: as far ahead as it will end up behind
-      const sp = Math.max(spd, 1e-6), lead = Math.min(spd * 0.065, 0.4 * gs);
-      let tx = an[0] + vx / sp * lead, tz = an[1] + vy / sp * lead;
-      // a chassé never crosses: the left foot stays left of the right one (in the body's frame)
+      const lead = tl + duty * P * 0.5;
+      const an = anchor(k, x + vx * lead, y + vy * lead, yaw);
+      let tx = an[0], tz = an[1];
+      // a chasse never crosses: the left foot stays left of the right one (in the body's frame)
       const o = F[k === 'L' ? 'R' : 'L'];
       const lat = (tx - x) * rx + (tz - y) * rz, olat = (o.x - x) * rx + (o.z - y) * rz;
-      if (this.mode !== 'cross' && this.mode !== 'step') {
+      // (only a real crossover run - fast, the feet passing each other - or a run along the body
+      // may cross; slowing out of one, the feet sort themselves out at once. Going back side-on
+      // faster than a chasse can carry (CROSS_BACK m/s) is a crossover behind, as players do)
+      if (!((this.mode === 'cross' && spd > 2.5) || this.mode === 'run' || this.mode === 'sprint' || (this.mode === 'step' && spd > 2.5) || (this.mode === 'back' && spd > GAIT.CROSS_BACK))) {
         if (k === 'L' && lat > olat - FW.MIN_GAP * gs) { const dl = olat - FW.MIN_GAP * gs - lat; tx += rx * dl; tz += rz * dl; }
         if (k === 'R' && lat < olat + FW.MIN_GAP * gs) { const dl = olat + FW.MIN_GAP * gs - lat; tx += rx * dl; tz += rz * dl; }
       }
       return [tx, tz];
     };
-    // the error of each planted foot: how far it is from where it would stand under the body now
-    const err = {};
-    for (const k of ['L', 'R']) { const ft = F[k], an = anchor(k, x, y, yaw); err[k] = Math.hypot(ft.x - an[0], ft.z - an[1]); }
-    const start = k => {
-      const ft = F[k], tg = target(k, Tsw);
-      let tx = tg[0], tz = tg[1];
-      // a single step is never longer than a stride
-      const sx = tx - ft.x, sz = tz - ft.z, sl = Math.hypot(sx, sz), maxS = gs * (0.55 + 0.11 * spd);
-      if (sl > maxS) { tx = ft.x + sx / sl * maxS; tz = ft.z + sz / sl * maxS; }
-      Object.assign(ft, { st: 'swing', fx: ft.x, fz: ft.z, fy: ft.lift, fyaw: ft.yaw, p0: ft.pitch || 0, t0: now, dur: Tsw * (moving ? 1 : 1.2), tx, tz, tyaw: yaw + FW.STANCE[k].toe, h: lift });
-      this.lastStep = k; this.stats.steps++;
-    };
-    // forced: a planted foot the body has left too far behind is picked up, whatever the other
-    // foot is doing (at pace that makes a flight phase, as in any run)
-    for (const k of ['L', 'R']) if (F[k].st === 'plant' && err[k] > reach) { start(k); this.stats.forced++; }
-    let sw = F.L.st === 'swing' ? 'L' : F.R.st === 'swing' ? 'R' : null;
-    if (sw && F.L.st === 'swing' && F.R.st === 'swing') sw = 'both';
-    const since = now - (this.landAt || 0);
-    const free = !sw || (sw !== 'both' && spd > 4.5 && (now - F[sw].t0) / F[sw].dur > 0.55);
-    if (free) {
-      const cands = ['L', 'R'].filter(k => F[k].st === 'plant');
-      let c = cands[0];
-      if (cands.length === 2) {
-        if (Math.abs(err.L - err.R) < 0.03 * gs) {
-          // from a standstill lead with the foot on the side of travel (the racket foot going
-          // forward); in a run of steps, alternate
-          const lr = vx * rx + vy * rz, lf = vx * fx + vy * fz;
-          c = since > 0.35 ? (Math.abs(lr) > Math.abs(lf) * 0.8 ? (lr > 0 ? 'R' : 'L') : 'R') : (this.lastStep === 'L' ? 'R' : 'L');
-        } else c = err.L > err.R ? 'L' : 'R';
-      }
-      const thr = gs * (moving ? 0.045 : 0.07);
-      if (c && err[c] > thr && since > (moving ? 0.015 : 0.1)) start(c);
-    }
-    // swings: along a low arc, retargeted while there is time to change the step
+    // each foot's place in its own cycle: L at the clock, R half a cycle on. A foot lifts when its
+    // place crosses the duty (the end of its stance). The swing then runs on its own timer: it only
+    // ever moves forward, whatever the speed does to the cadence or the duty meanwhile.
+    const local = (k, ph) => (ph + (k === 'R' ? 0.5 : 0)) % 1;
+    const crossed = (a, b, d) => (a <= b ? a < d && b >= d : a < d || b >= d); // a -> b passed d (wrapping)
+    const lift = gs * (moving ? clamp(GAIT.H0 + GAIT.HK * spd, GAIT.H0, GAIT.HMAX) : GAIT.H0 * 0.8);
+    const Tsw = Math.max(GAIT.TSW_MIN, (1 - duty) * P); // a swing's length at this speed (s)
     for (const k of ['L', 'R']) {
       const ft = F[k];
+      // lift-off: the swing starts where the foot is (and only when the other foot can take the
+      // weight, unless the body has left this one too far behind: then it goes regardless)
+      const other = F[k === 'L' ? 'R' : 'L'];
+      // due: past the end of its stance in the rhythm. Not only on the crossing itself: a foot that
+      // landed late (its swing ran past its slot) lifts as soon as it has had its minimum time down,
+      // so the feet fall back into the rhythm instead of one being left planted for a whole cycle
+      const due = G.on && dt > 0 && (crossed(local(k, ph0), local(k, G.ph), duty) || (local(k, G.ph) >= duty && now - (ft.pt || 0) > GAIT.STANCE_MIN));
+      // (a chasse with the feet still crossed from a crossover run: the foot on the wrong side steps
+      // out at once, the one further from where it belongs)
+      const shuffling = this.mode === 'shuffle' || this.mode === 'back';
+      const latK = (ft.x - x) * rx + (ft.z - y) * rz, latO = (other.x - x) * rx + (other.z - y) * rz;
+      const crossedFeet = shuffling && (k === 'L' ? latK > latO - FW.MIN_GAP * gs * 0.5 : latK < latO + FW.MIN_GAP * gs * 0.5) && err[k] >= err[k === 'L' ? 'R' : 'L'];
+      const stranded = G.on && (err[k] > gs * GAIT.STRAND + spd * Tsw * 0.5 || crossedFeet);
+      if (ft.st === 'plant' && (due || stranded) && (other.st === 'plant' || stranded || spd > 3)) {
+        Object.assign(ft, { st: 'swing', fx: ft.x, fz: ft.z, fy: ft.lift, fyaw: ft.yaw, p0: ft.pitch || 0, tx: ft.x, tz: ft.z, tyaw: yaw + FW.STANCE[k].toe, h: lift, su: 0 });
+        const tg = target(k, Tsw); ft.tx = tg[0]; ft.tz = tg[1];
+        this.lastStep = k; this.stats.steps++;
+        if (stranded && !due) this.stats.forced++;
+      }
       if (ft.st === 'plant') {
-        // pivot on the ball of the foot toward the body's heading; the heel lifts as the body
-        // leaves the foot behind (the push)
+        // planted: pivot on the ball of the foot toward the body's heading; the heel rises as the
+        // body leaves the foot behind (the push)
         const want = yaw + FW.STANCE[k].toe, dy = wrap(want - ft.yaw);
         if (Math.abs(dy) > 0.45) ft.yaw += clamp(dy - Math.sign(dy) * 0.45, -7 * dt, 7 * dt);
         const an = anchor(k, x, y, yaw);
@@ -526,26 +559,39 @@ export class Footwork {
         ft.lift = 0;
         continue;
       }
-      const u = clamp((now - ft.t0) / ft.dur, 0, 1);
-      if (u < 0.7) {
-        const tg = target(k, ft.dur * (1 - u));
+      // swinging: u runs 0 -> 1 from lift-off to touchdown, on the swing's own timer
+      // (a foot uncrossing a chasse - the feet still crossed from a crossover run - steps quickly)
+      const oth = F[k === 'L' ? 'R' : 'L'], latS = (ft.x - x) * rx + (ft.z - y) * rz, latT = (oth.x - x) * rx + (oth.z - y) * rz;
+      const uncross = (this.mode === 'shuffle' || this.mode === 'back') && (k === 'L' ? latS > latT - FW.MIN_GAP * gs * 0.5 : latS < latT + FW.MIN_GAP * gs * 0.5);
+      ft.su = Math.min(1, (ft.su || 0) + (dt > 0 ? dt / Tsw * (uncross ? 2.2 : 1) : 0));
+      const u = ft.su;
+      if (u < 0.8) {
+        // the landing spot follows the body's velocity while there is time to change the step
+        const tg = target(k, (1 - u) * Tsw);
         let tx = tg[0], tz = tg[1];
-        const sx = tx - ft.fx, sz = tz - ft.fz, sl = Math.hypot(sx, sz), maxS = gs * (0.55 + 0.11 * spd);
+        // never a step longer than the cycle can carry (a sudden reversal, a snap of the stick)
+        const sx = tx - ft.fx, sz = tz - ft.fz, sl = Math.hypot(sx, sz), maxS = gs * GAIT.REACH_MIN + spd * P * 1.15;
         if (sl > maxS) { tx = ft.fx + sx / sl * maxS; tz = ft.fz + sz / sl * maxS; }
-        const kr = dt > 0 ? 1 - Math.exp(-Math.min(dt, 0.1) * 25) : 0;
+        const kr = dt > 0 ? 1 - Math.exp(-Math.min(dt, 0.1) * 30) : 0;
         ft.tx += (tx - ft.tx) * kr; ft.tz += (tz - ft.tz) * kr;
         ft.tyaw = yaw + FW.STANCE[k].toe;
       }
-      // the foot comes up before it goes anywhere, and is down before it stops
-      const e = smooth(0.15, 0.85, u);
+      // the path: the foot leaves the floor before it travels and is back down as it arrives;
+      // running, the heel comes up behind early in the swing (the knee folds), so the lift peaks early
+      const e = smooth(0.1, 0.9, u), hu = Math.pow(u, lerp(1, 0.7, this.runW));
       ft.x = lerp(ft.fx, ft.tx, e); ft.z = lerp(ft.fz, ft.tz, e);
       ft.yaw = ft.fyaw + wrap(ft.tyaw - ft.fyaw) * e;
-      ft.lift = lerp(ft.fy, 0, e) + ft.h * Math.sin(Math.PI * u);
-      // toe-off (heel up, pushing off the ball of the foot), then the toes come up to clear the floor
-      // and the foot lands flat on the ball of the foot
-      ft.pitch = ft.p0 * (1 - smooth(0, 0.3, u)) + (0.15 + 0.35 * (this.runW || 0)) * smooth(0, 0.2, u) * (1 - smooth(0.25, 0.8, u));
-      if (u >= 1) { ft.st = 'plant'; ft.x = ft.tx; ft.z = ft.tz; ft.lift = 0; ft.yaw = ft.tyaw; this.landAt = now; }
+      ft.lift = lerp(ft.fy, 0, e) + ft.h * Math.sin(Math.PI * hu);
+      // toe-off (heel up, pushing off the ball of the foot), then the toes come up to clear the
+      // floor, and it lands flat on the ball of the foot
+      ft.pitch = ft.p0 * (1 - smooth(0, 0.3, u)) + (0.15 + 0.35 * this.runW) * smooth(0, 0.2, u) * (1 - smooth(0.25, 0.8, u));
+      if (u >= 1) { ft.st = 'plant'; ft.x = ft.tx; ft.z = ft.tz; ft.lift = 0; ft.yaw = ft.tyaw; this.landAt = now; ft.pt = now; }
     }
+    // the hips ride the rhythm: lowest as each foot takes the weight (mid-stance), highest between
+    // (a few centimetres; more at pace). Read by feet_ as a drop of the pelvis.
+    const bA = G.on ? gs * clamp(GAIT.BOB0 + GAIT.BOBK * spd, 0, GAIT.BOBMAX) : 0;
+    const bobT = bA * 0.5 * (1 + Math.cos(2 * Math.PI * 2 * (G.ph - duty * 0.5)));
+    this.bob = this.bob == null ? bobT : this.bob + (bobT - this.bob) * (dt > 0 ? 1 - Math.exp(-Math.min(dt, 0.1) * 40) : 0);
   }
 
   // entering the mocap run: start its cycle with the planted foot in its stance

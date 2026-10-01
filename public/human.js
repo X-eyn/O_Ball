@@ -50,6 +50,19 @@ for (const [k, s] of [['L', 'l'], ['R', 'r']]) Object.assign(RIG, {
 // hips, which reads as weight and follow-through; the legs stay tight so the feet don't slide
 const RATE = BONES.map(n => ({ hips: 24, spine: 18, chest: 16, neck: 12, head: 11 })[n] ||
   (/^(clav|arm)/.test(n) ? 20 : /^(fore|hand)/.test(n) ? 24 : 32));
+// The springs (opt-in, see Human._spring): per bone, the natural frequency as a share of its RATE
+// and the damping. The trunk is firm and barely overshoots; the arms swing through a little; the
+// head settles like a head on a neck. Legs keep the plain filter (the foot IK owns them).
+const SPRING = BONES.map(n => {
+  const b = n.replace(/[LR]$/, '');
+  if (b === 'hips' || b === 'spine') return { w: 0.75, z: 0.85 };
+  if (b === 'chest') return { w: 0.72, z: 0.75 };
+  if (b === 'neck' || b === 'head') return { w: 1.05, z: 0.8 };
+  if (b === 'clav' || b === 'arm') return { w: 0.7, z: 0.62 };
+  if (b === 'fore' || b === 'hand') return { w: 0.68, z: 0.58 };
+  return null;
+});
+const _qs = new THREE.Quaternion(), _qs2 = new THREE.Quaternion(), _vs = new THREE.Vector3();
 const FINGER = /^(index|middle|ring|pinky|thumb)_0[123]_[lr]$/;
 // Hard joint limits, applied to the final pose every frame, measured from the standing reference.
 // Knees are strict hinges; elbows are hinges that may still twist; everything else is capped by its
@@ -701,11 +714,16 @@ export class Human {
     // where layers blend in and out, and lets the torso and arms lag the hips for follow-through.
     const snap = !this.filt || dt > 0.1;
     if (!this.filt) this.filt = this.ref.map(rs => rs.map(() => new THREE.Quaternion()));
+    // opt-in (badminton): the upper body follows on damped springs instead (see _spring), so a limb
+    // accelerates into a move, carries a little past it and settles: weight and follow-through
+    if (add.spring && !this.spw) this.spw = this.ref.map(rs => rs.map(() => new THREE.Vector3()));
     for (let i = 0; i < BONES.length; i++) {
-      const k = 1 - Math.exp(-RATE[i] * (add.fast && add.fast[i] ? add.fast[i] : 1) * dt);
+      const fastK = add.fast && add.fast[i] ? add.fast[i] : 1;
+      const k = 1 - Math.exp(-RATE[i] * fastK * dt);
       this.ref[i].forEach((r, j) => {
         const f = this.filt[i][j];
-        if (snap) f.copy(r.bone.quaternion); else f.slerp(r.bone.quaternion, k);
+        if (add.spring && SPRING[i]) this._spring(f, r.bone.quaternion, this.spw[i][j], RATE[i] * fastK * SPRING[i].w, SPRING[i].z, dt, snap);
+        else if (snap) f.copy(r.bone.quaternion); else f.slerp(r.bone.quaternion, k);
         r.bone.quaternion.copy(f);
         this._limit(r, LIMIT[i]);
         f.copy(r.bone.quaternion);
@@ -748,6 +766,31 @@ export class Human {
       for (const rs of this.ref) for (const r of rs) r.bone.quaternion.copy(r.L);
       b.pelvis.position.set(0, 0.043, 0.9491); this.filt = null; this.mixQ = null; this.groundY = 0; this.phase = 0; this.env.length = 0;
     }
+  }
+  // A damped angular spring: q (the filtered rotation) is pulled toward target with angular
+  // velocity w (rad/s, the rotation's axis-angle rate in the bone's parent frame); w0 the natural
+  // frequency (rad/s), zeta the damping (1: no overshoot; 0.6: a small one). Integrated in steps of
+  // at most 1/240 s; a spring too stiff to integrate this frame (a stroke's whip) just follows.
+  _spring(q, target, w, w0, zeta, dt, snap) {
+    if (snap || !(dt > 0) || w0 * dt > 1.6) {
+      if (!snap && dt > 0) { // (still carry the velocity, so the spring takes over smoothly)
+        _qs.copy(target).multiply(_qs2.copy(q).invert()); if (_qs.w < 0) _qs.set(-_qs.x, -_qs.y, -_qs.z, -_qs.w);
+        const a = 2 * Math.acos(Math.min(1, _qs.w)), sn = Math.sqrt(Math.max(0, 1 - _qs.w * _qs.w));
+        if (sn > 1e-6) w.set(_qs.x / sn, _qs.y / sn, _qs.z / sn).multiplyScalar(Math.min(a / dt, 40)); else w.set(0, 0, 0);
+      } else w.set(0, 0, 0);
+      q.copy(target); return;
+    }
+    const n = Math.max(1, Math.ceil(dt * 240)), h = dt / n, k = w0 * w0, c = 2 * zeta * w0;
+    for (let s = 0; s < n; s++) {
+      // the error as an axis-angle vector (the short way round)
+      _qs.copy(target).multiply(_qs2.copy(q).invert()); if (_qs.w < 0) _qs.set(-_qs.x, -_qs.y, -_qs.z, -_qs.w);
+      const a = 2 * Math.acos(Math.min(1, _qs.w)), sn = Math.sqrt(Math.max(0, 1 - _qs.w * _qs.w));
+      if (sn > 1e-6) _vs.set(_qs.x / sn, _qs.y / sn, _qs.z / sn).multiplyScalar(a); else _vs.set(0, 0, 0);
+      w.x += (k * _vs.x - c * w.x) * h; w.y += (k * _vs.y - c * w.y) * h; w.z += (k * _vs.z - c * w.z) * h;
+      const wl = w.length();
+      if (wl * h > 1e-7) { q.premultiply(_qs.setFromAxisAngle(_vs.copy(w).divideScalar(wl), wl * h)); q.normalize(); }
+    }
+    if (!Number.isFinite(q.x + q.y + q.z + q.w + w.x + w.y + w.z)) { q.copy(target); w.set(0, 0, 0); }
   }
   // clamp one rig bone to its joint limit (see LIMIT), in the reference-aligned frame of its parent
   _limit(r, lim) {

@@ -200,16 +200,23 @@ function lunge(Q, w, side) {
   Q.set('thighR', -1.45 * w, 0, (s > 0 ? -0.22 : 0.12) * w); Q.set('shinR', 1.6 * w); Q.set('footR', -0.25 * w); Q.set('toeR', 0);
   Q.set('thighL', 1.1 * w, 0, 0.1 * w); Q.set('shinL', 0.3 * w); Q.set('footL', 0.6 * w); Q.set('toeL', -0.6 * w);
 }
-// jump: crouch (w 0..1), rise (0..1), air tuck, and the scissor kick of a jump smash (k: -1 legs
-// loaded, the right leg back; +1 switched through contact)
-function jumpLegs(Q, crouch, rise, tuck, kick) {
+// jump: crouch (w 0..1), the push-off (ext: legs driving straight through take-off, the ankles
+// pointed), the tuck in flight (knees drawn up, the left a little higher, as a jumper's are), the
+// reach for the floor before landing (legs coming down under the body, knees soft), and the scissor
+// kick of a jump smash (k: -1 legs loaded, the right leg back; +1 switched through contact). The
+// free arm swings with it: back in the crouch, thrown up through the push-off, out for balance.
+function jumpLegs(Q, crouch, ext, tuck, reach, kick) {
   for (const [s, k] of [[1, 'L'], [-1, 'R']]) {
-    let th = -0.95 * crouch - 0.15 * rise - 0.55 * tuck, sh = 1.6 * crouch + 0.2 * rise + 1.0 * tuck, fo = -0.45 * crouch + 0.7 * rise + 0.45 * tuck;
+    const lead = k === 'L' ? 1 : 0.75;
+    let th = -0.95 * crouch - 0.08 * ext - 0.8 * tuck * lead - 0.38 * reach, sh = 1.6 * crouch + 0.1 * ext + 1.35 * tuck * lead + 0.42 * reach;
+    const fo = -0.45 * crouch + 0.8 * ext + 0.4 * tuck + 0.1 * reach;
     if (kick) { const right = k === 'R' ? 1 : -1, ph = kick * right; th += 0.6 * ph; sh += 0.4 * Math.abs(kick) * (ph > 0 ? 1 : 0.4); }
-    Q.set('thigh' + k, th, 0, s * 0.08); Q.set('shin' + k, sh); Q.set('foot' + k, fo); Q.set('toe' + k, 0.15 * rise);
+    Q.set('thigh' + k, th, 0, s * (0.08 + 0.06 * tuck)); Q.set('shin' + k, sh); Q.set('foot' + k, fo); Q.set('toe' + k, 0.2 * ext);
   }
-  Q.set('hips', 0.35 * crouch - 0.05 * rise, 0, 0);
-  Q.set('spine', 0.22 * crouch, 0, 0);
+  Q.set('hips', 0.35 * crouch - 0.05 * ext + 0.14 * tuck, 0, 0);
+  Q.set('spine', 0.22 * crouch + 0.06 * tuck, 0, 0);
+  Q.set('armL', 0.55 * crouch - 1.5 * ext - 0.75 * tuck - 0.5 * reach, 0, 0.3 + 0.25 * tuck + 0.35 * reach);
+  Q.set('foreL', -0.5 - 0.3 * tuck);
 }
 function landing(Q, w) {
   for (const [s, k] of [[1, 'L'], [-1, 'R']]) { Q.set('thigh' + k, -0.85 * w, 0, s * 0.12); Q.set('shin' + k, 1.45 * w); Q.set('foot' + k, -0.42 * w); Q.set('toe' + k, 0); }
@@ -619,12 +626,15 @@ export class Athlete {
 
     // ---- legs: jump, landing, lunge, dive
     const crouchW = squat > 0 ? 1 : 0;
-    const rise = z > 0.02 && vz > 0 ? clamp(vz / 4.6, 0, 1) : 0;
-    const tuck = z > 0.02 ? clamp(1 - Math.abs(vz) / 4.6, 0, 1) * 0.8 + (vz < 0 ? 0.2 : 0) : 0;
+    // the push-off lasts the first moment of the rise; then the tuck; coming down, the legs reach
+    // for the floor over the last ~0.4 m
+    const ext = z > 0.02 && vz > 0 ? smooth(0.6, 0.95, vz / 4.6) : 0;
+    const reach = z > 0.02 && vz < 0 ? smooth(0.42, 0.1, z) : 0;
+    const tuck = z > 0.02 ? (1 - ext) * (1 - reach) : 0;
     this.jumpW = lerp(this.jumpW, air ? 1 : 0, clamp(30 * dt, 0, 1));
     const st = f.stroke;
     const kick = st && st.air && st.name === 'smash' ? clamp(st.u / 0.12, -1, 1) : 0;
-    if (this.jumpW > 0.01) { T.zero(); jumpLegs(T, crouchW, rise, tuck, kick); blend(T, this.jumpW, [...LEG_I, boneIndex('hips'), boneIndex('spine')]); }
+    if (this.jumpW > 0.01) { T.zero(); jumpLegs(T, crouchW, ext, tuck, reach, kick); blend(T, this.jumpW, [...LEG_I, boneIndex('hips'), boneIndex('spine'), boneIndex('armL'), boneIndex('foreL')]); }
     // landing absorb: deeper after a hard landing, easing out over the landing beat
     const landW = landT > 0 && z < 0.02 ? clamp(landT / 8, 0, 1) : 0;
     this.land = lerp(this.land, landW, clamp(20 * dt, 0, 1));
@@ -801,8 +811,22 @@ export class Athlete {
     }
     // lean into the run and its accelerations, back against a braking step
     if (!air && fw.feetBy !== 'free') { AD.add('spine', fw.lean.f * 0.6, 0, fw.lean.r * 0.6); AD.add('chest', fw.lean.f * 0.4, 0, fw.lean.r * 0.4); }
+    // the gait's rhythm through the upper body (footwork.js: one phase clock, the left foot landing
+    // at 0): each arm swings against its leg, the shoulders turn against the hips, more with pace.
+    // The free arm swings fully; the racket arm, carrying the racket up, a little.
+    {
+      const on = fw.gOn && fw.feetBy === 'plan' && !air && !inStroke ? 1 : 0;
+      this.swingW = lerp(this.swingW || 0, on * smooth(0.6, 6, sp), clamp(8 * dt, 0, 1));
+      if (this.swingW > 0.01) {
+        const c = Math.cos(2 * Math.PI * (fw.gph || 0)) * this.swingW, run = fw.runW || 0;
+        AD.add('armL', 0.62 * c, 0, 0); AD.add('foreL', -0.25 * Math.abs(c) - 0.35 * run * this.swingW, 0, 0);
+        AD.add('armR', -0.22 * c, 0, 0);
+        AD.add('chest', 0, 0.1 * c, 0); AD.add('hips', 0, -0.08 * c, 0);
+        AD.add('head', 0, -0.05 * c, 0);
+      }
+    }
     if (this._liftOn) { h.group.position.y -= this._liftOn; this._liftOn = 0; } // (last frame's reaching hop: not the pose's)
-    h.animate(dt, t, fw.animSpeed, Q, W, { pose: AD, lift: 0, clips: {}, serverPhase: null, dir: 1, cadence: fw.cadence, floorOnly: fw.feetBy === 'free', fast: this.fast });
+    h.animate(dt, t, fw.animSpeed, Q, W, { pose: AD, lift: 0, clips: {}, serverPhase: null, dir: 1, cadence: fw.cadence, floorOnly: fw.feetBy === 'free', fast: this.fast, spring: true });
     // the feet on the floor (planned steps, locked strides, leg IK) and nothing through the floor
     h.root.updateMatrixWorld(true);
     fw.post(f, p, dt, this.hop);

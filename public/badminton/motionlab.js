@@ -253,7 +253,10 @@ function runCase(ctx, C, c, shotTimes) {
       }
       m.kneeMax = Math.max(m.kneeMax, flex);
     }
-    if ((mode === 'shuffle' || mode === 'back') && lat.L > lat.R - 0.02) m.cross++;
+    // (a chasse never crosses; going back faster than a chasse can carry, the footwork crosses over
+    // behind on purpose - footwork.js GAIT.CROSS_BACK - so that is not counted)
+    const crossBack = 4.5; // (footwork.js GAIT.CROSS_BACK)
+    if ((mode === 'shuffle' || (mode === 'back' && spd <= crossBack)) && lat.L > lat.R - 0.02) m.cross++;
     if (c.trace) {
       const fr = { t: +t.toFixed(3), mode, by: A.fw && A.fw.feetBy, th: +(th).toFixed(3), sp: +spd.toFixed(2), drop: A.fw && +A.fw.drop.toFixed(3), lift: A.fw && +A.fw.dive.lift.toFixed(3), by2: A.fw && A.fw.liftBy, tilt: A.fw && +A.fw.dive.tilt.toFixed(2) };
       for (const [k, s2] of [['L', 'l'], ['R', 'r']]) {
