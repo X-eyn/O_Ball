@@ -58,6 +58,13 @@ room you get the practice bot.
 - **Esc** opens the menu, and against the practice bot the match pauses until you close it.
 - **Bot difficulty** (Menu > Settings): Easy, Normal, Hard or Pro. It is kept per player and applies
   to a practice match in play at once.
+- **Animation player** (`/badminton/anim`): every movement case (88) and shuttle case (30) from
+  `public/badminton/labcases.js` on the real renderer and athlete. Play / pause, frame step, scrub, slow
+  motion (down to 0.05x), loop, an orbit camera with presets, foot / sim / contact markers and a live
+  readout of the body layers (gait, feet, rhythm, hip drop, stroke, racket-to-shuttle distance). Any frame
+  is exact (scrubbing back replays from frame 0). Edit the code and the page reloads itself to the same
+  case, frame and camera; no server restart. Keys: Space, Left/Right (Shift x10), [ ], L, F, 1-5, /.
+  `tools/animplayer_check.js [--reload]` checks it headless.
 - The code is `shared/badminton.js` (rules and physics, server-side), `public/badminton/`
   (client, 3D hall, `anim.js` for the athletes, sounds) and `tools/badminton_test.js` (headless checks).
 

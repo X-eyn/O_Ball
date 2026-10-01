@@ -37,110 +37,14 @@ const LIMITS = {
                         // pivot through the net-facing position (~0.13 s) when a run swings behind the body
 };
 
-// ---------------------------------------------------------------- the 88 cases
-// dir: 0 = toward the net, 90 = the player's right (racket side), 180 = back, -90 = left.
-// start: [distance from the net, right of centre]. Modes (footwork.js): ready step run sprint
-// shuffle cross back lunge crouch jump land dive slide getup.
-const FWD = ['step', 'run', 'sprint', 'cross'];
-const ALL_GROUND = ['step', 'run', 'sprint', 'cross', 'shuffle', 'back', 'ready'];
-function classOf(d) { const a = Math.abs(((d + 540) % 360) - 180); return a <= 30 ? 'fwd' : a < 62 ? 'diag' : a <= 118 ? 'lat' : a < 150 ? 'bdiag' : 'back'; }
-function allowFor(d, speed) {
-  const k = classOf(d);
-  if (k === 'fwd') return FWD;
-  if (k === 'diag') return [...FWD, 'shuffle'];
-  if (k === 'lat') return speed === 'walk' ? ['shuffle'] : ['shuffle', 'cross', 'run', 'sprint'];
-  return ['back'];
+// (the 88 cases and the contact-sheet moments: public/badminton/labcases.js)
+let cases, SHOTS;
+// the shared cases (an ES module: imported, its 'module type' warning silenced)
+async function loadLab() {
+  const ew = process.emitWarning;
+  process.emitWarning = (w, ...a) => (String(w).includes('Module type') || (a[0] && a[0].code === 'MODULE_TYPELESS_PACKAGE_JSON') ? undefined : ew.call(process, w, ...a));
+  try { return await import(require('url').pathToFileURL(path.join(__dirname, '..', 'public', 'badminton', 'labcases.js')).href); } finally { process.emitWarning = ew; }
 }
-// body turn (theta, deg from the net, + to the right) a real player shows for this run
-function thetaFor(d, speed) {
-  const k = classOf(d), r = ((d + 540) % 360) - 180; // signed, + right
-  if (k === 'back') return [40, 112];
-  if (k === 'bdiag') return r > 0 ? [35, 112] : [-112, 112];
-  if (k === 'lat') return speed === 'walk' ? (r > 0 ? [-5, 35] : [-35, 5]) : (r > 0 ? [0, 80] : [-80, 0]);
-  if (k === 'fwd') return [-35, 35];
-  return r > 0 ? [0, 70] : [-70, 0];
-}
-function startFor(d, len) { return [+(4.6 + len * 0.5 * Math.cos(d * D)).toFixed(2), +(-len * 0.5 * Math.sin(d * D)).toFixed(2)]; }
-const cases = [];
-const dirs16 = Array.from({ length: 16 }, (_, i) => i * 22.5 - 180 + 22.5).map(d => +(((d + 540) % 360) - 180).toFixed(1));
-// 1-16 run in 16 directions (slot 0)
-for (const d of dirs16) cases.push({ name: `run ${d}`, slot: 0, start: startFor(d, 6), dur: 1.4, seq: [{ t0: 0, t1: 0.8, dir: d, mag: 1 }],
-  expect: [{ t0: 0.3, t1: 0.8, allow: allowFor(d, 'run'), frac: 0.6 }, { t0: 0.35, t1: 0.8, theta: thetaFor(d, 'run'), frac: 0.7 }, { t0: 1.25, t1: 1.4, allow: ['ready', 'step', 'shuffle', 'back', 'cross'], frac: 0.8 }] });
-// 17-32 walk in 16 directions (slot 1: the far side, mirrored)
-for (const d of dirs16) cases.push({ name: `walk ${d} s1`, slot: 1, start: startFor(d, 3), dur: 1.7, seq: [{ t0: 0, t1: 1.2, dir: d, mag: 0.3 }],
-  expect: [{ t0: 0.3, t1: 1.2, allow: allowFor(d, 'walk'), frac: 0.6 }, { t0: 0.35, t1: 1.2, theta: thetaFor(d, 'walk'), frac: 0.7 }] });
-// 33-40 sprint (Shift) in 8 directions
-for (let i = 0; i < 8; i++) { const d = i * 45 - 135; cases.push({ name: `sprint ${d}`, slot: i % 2, start: startFor(d, 6.5), dur: 1.3, seq: [{ t0: 0, t1: 0.7, dir: d, mag: 1, sp: 1 }],
-  expect: [{ t0: 0.3, t1: 0.7, allow: allowFor(d, 'sprint'), frac: 0.6 }, { t0: 0.35, t1: 0.7, theta: thetaFor(d, 'sprint'), frac: 0.6 }] }); }
-// 41-48 a single tap step in 8 directions
-for (let i = 0; i < 8; i++) { const d = i * 45 - 180; cases.push({ name: `tap ${d}`, slot: (i + 1) % 2, start: [4.5, 0], dur: 1.0, seq: [{ t0: 0.05, t1: 0.13, dir: d, mag: 1 }],
-  expect: [{ t0: 0.75, t1: 1.0, allow: ['ready'], frac: 0.9 }] }); }
-// 49 standing still (with split steps as the opponent strikes), 50 running with a noisy stick
-cases.push({ name: 'stand still + split steps', slot: 0, start: [4.5, 0], dur: 2, seq: [], split: [0.8, 1.5], expect: [{ t0: 0, t1: 2, allow: ['ready'], frac: 1 }, { t0: 0, t1: 2, theta: [-18, 18], frac: 1 }] });
-cases.push({ name: 'noisy stick', slot: 0, start: [4.5, -2.5], dur: 1.2, seq: [{ t0: 0, t1: 0.8, dir: 90, mag: 0.8, noise: 70, noiseMag: 0.5 }], expect: [{ t0: 0.3, t1: 0.8, allow: ['shuffle', 'cross', 'step', 'run'], frac: 0.7 }] });
-// 51-54 to each corner and back to base
-for (const [nm, d, st] of [['corner net-fh', 45, [5, -1.5]], ['corner net-bh', -45, [5, 1.5]], ['corner rear-fh', 135, [3.2, -1.5]], ['corner rear-bh', -135, [3.2, 1.5]]])
-  cases.push({ name: nm, slot: 0, start: st, dur: 2.0, seq: [{ t0: 0, t1: 0.6, dir: d, mag: 1 }, { t0: 0.75, t1: 1.35, dir: d + 180, mag: 1 }],
-    expect: [{ t0: 0.25, t1: 0.6, allow: allowFor(d, 'run'), frac: 0.6 }, { t0: 1.0, t1: 1.35, allow: allowFor(d + 180, 'run'), frac: 0.5 }] });
-// 55-56 circles
-cases.push({ name: 'circle cw', slot: 0, start: [4.8, -1.6], dur: 2.6, seq: [{ t0: 0, t1: 2.4, dir: 0, mag: 0.6, spin: 150 }] });
-cases.push({ name: 'circle ccw s1', slot: 1, start: [4.8, 1.6], dur: 2.6, seq: [{ t0: 0, t1: 2.4, dir: 0, mag: 0.6, spin: -150 }] });
-// 57-58 zig-zags
-cases.push({ name: 'zigzag lateral', slot: 0, start: [4.5, 0], dur: 2.2, seq: [{ t0: 0, t1: 2.0, dir: 90, mag: 1, flip: 21 }] });
-cases.push({ name: 'zigzag diagonal', slot: 0, start: [7.5, 0], dur: 2.0, seq: [0, 1, 2, 3, 4, 5].map(i => ({ t0: i * 0.28, t1: (i + 1) * 0.28, dir: i % 2 ? -40 : 40, mag: 1 })) });
-// 59-60 rapid direction flips (edge cases)
-cases.push({ name: 'flip every 3 frames', slot: 0, start: [4.5, 0], dur: 1.6, seq: [{ t0: 0, t1: 1.4, dir: 90, mag: 1, flip: 3 }] });
-cases.push({ name: 'random dir every frame', slot: 1, start: [4.5, 0], dur: 1.6, seq: [{ t0: 0, t1: 1.4, dir: 0, mag: 1, rand: 1 }] });
-// 61-64 reversals, 65 start-stop
-cases.push({ name: 'reverse fwd->back', slot: 0, start: [6.5, 0], dur: 1.8, seq: [{ t0: 0, t1: 0.5, dir: 0, mag: 1 }, { t0: 0.5, t1: 1.3, dir: 180, mag: 1 }], expect: [{ t0: 0.85, t1: 1.3, allow: ['back'], frac: 0.6 }] });
-cases.push({ name: 'reverse back->fwd', slot: 1, start: [2.5, 0], dur: 1.8, seq: [{ t0: 0, t1: 0.6, dir: 180, mag: 1 }, { t0: 0.6, t1: 1.2, dir: 0, mag: 1 }], expect: [{ t0: 0.3, t1: 0.6, allow: ['back'], frac: 0.6 }] });
-cases.push({ name: 'reverse left->right', slot: 0, start: [4.5, 1.5], dur: 1.8, seq: [{ t0: 0, t1: 0.45, dir: -90, mag: 1 }, { t0: 0.45, t1: 1.2, dir: 90, mag: 1 }] });
-cases.push({ name: 'reverse diag rear-fh->net-bh', slot: 0, start: [4.0, 0], dur: 1.8, seq: [{ t0: 0, t1: 0.5, dir: 135, mag: 1 }, { t0: 0.5, t1: 1.1, dir: -45, mag: 1 }] });
-cases.push({ name: 'start-stop x4', slot: 1, start: [4.5, -2.5], dur: 2.2, seq: [0, 1, 2, 3].map(i => ({ t0: i * 0.5, t1: i * 0.5 + 0.22, dir: 90, mag: 1 })) });
-// 66-67 moving while charging a shot
-cases.push({ name: 'charge fh on the move', slot: 0, start: [4.5, -2], dur: 1.4, chargeKind: 'fh', seq: [{ t0: 0, t1: 1.0, dir: 90, mag: 1, charge: 1 }] });
-cases.push({ name: 'charge overhead going back', slot: 0, start: [2.8, 0], dur: 1.4, chargeKind: 'over', seq: [{ t0: 0, t1: 1.0, dir: 170, mag: 1, charge: 1 }], expect: [{ t0: 0.4, t1: 1.0, allow: ['back'], frac: 0.6 }] });
-// 68-70 jumps
-cases.push({ name: 'jump in place', slot: 0, start: [4.5, 0], dur: 1.5, ev: [{ t: 0.2, jump: 1 }], expect: [{ t0: 0.35, t1: 0.8, allow: ['jump'], frac: 0.8 }, { t0: 1.3, t1: 1.5, allow: ['ready'], frac: 0.9 }] });
-cases.push({ name: 'jump moving back', slot: 1, start: [2.5, 0], dur: 1.8, seq: [{ t0: 0, t1: 1.3, dir: 180, mag: 1 }], ev: [{ t: 0.45, jump: 1 }] });
-cases.push({ name: 'jump moving lateral', slot: 0, start: [4.5, -2.5], dur: 1.8, seq: [{ t0: 0, t1: 1.2, dir: 90, mag: 1 }], ev: [{ t: 0.35, jump: 1 }] });
-// 71-78 dives in 8 directions and the get-up
-for (let i = 0; i < 8; i++) {
-  const d = i * 45 - 180;
-  cases.push({ name: `dive ${d}`, slot: i % 2, start: startFor(d, 4.5), dur: 1.9, ball: 'near', seq: [{ t0: 0, t1: 0.3, dir: d, mag: 1 }], ev: [{ t: 0.28, dive: 1 }],
-    expect: [{ t0: 0.32, t1: 0.55, allow: ['dive'], frac: 0.9 }, { t0: 0.7, t1: 0.85, allow: ['slide', 'getup'], frac: 0.9 }, { t0: 1.75, t1: 1.9, allow: ALL_GROUND, frac: 0.9 }] });
-}
-// 79-80 sprint then dive
-cases.push({ name: 'sprint->dive fwd', slot: 0, start: [8, 0], dur: 2.0, ball: 'near', seq: [{ t0: 0, t1: 0.45, dir: 0, mag: 1, sp: 1 }], ev: [{ t: 0.42, dive: 1 }], expect: [{ t0: 0.46, t1: 0.7, allow: ['dive'], frac: 0.9 }] });
-cases.push({ name: 'sprint->dive lateral', slot: 1, start: [4.5, -3.5], dur: 2.0, ball: 'near', seq: [{ t0: 0, t1: 0.45, dir: 90, mag: 1, sp: 1 }], ev: [{ t: 0.42, dive: 1 }], expect: [{ t0: 0.46, t1: 0.7, allow: ['dive'], frac: 0.9 }] });
-// 81-82 dives into the boundary
-cases.push({ name: 'dive at sideline', slot: 0, start: [4.5, 4.4], dur: 1.8, ball: 'near', seq: [{ t0: 0, t1: 0.2, dir: 90, mag: 1 }], ev: [{ t: 0.15, dive: 1 }] });
-cases.push({ name: 'dive at back line', slot: 1, start: [9.6, 0], dur: 1.8, ball: 'near', seq: [{ t0: 0, t1: 0.2, dir: 180, mag: 1 }], ev: [{ t: 0.15, dive: 1 }] });
-// 83-85 the far side (slot 1) mirrors
-cases.push({ name: 'rear-fh run s1', slot: 1, start: [2.8, -1.5], dur: 1.4, seq: [{ t0: 0, t1: 0.7, dir: 135, mag: 1 }], expect: [{ t0: 0.3, t1: 0.7, allow: ['back'], frac: 0.6 }, { t0: 0.35, t1: 0.7, theta: [35, 112], frac: 0.7 }] });
-cases.push({ name: 'shuffle left s1', slot: 1, start: [4.5, 2.2], dur: 1.4, seq: [{ t0: 0, t1: 0.9, dir: -90, mag: 0.45 }], expect: [{ t0: 0.3, t1: 0.9, allow: ['shuffle'], frac: 0.6 }] });
-cases.push({ name: 'dive fwd-right s1', slot: 1, start: [5.5, -1], dur: 1.9, ball: 'near', seq: [{ t0: 0, t1: 0.3, dir: 45, mag: 1 }], ev: [{ t: 0.28, dive: 1 }] });
-// 86-88 hit-stop, frame-time spikes, broken rows
-cases.push({ name: 'hit-stop frozen frames', slot: 0, start: [4.5, -2], dur: 1.4, seq: [{ t0: 0, t1: 1.0, dir: 90, mag: 1 }], frozen: [[0.35, 0.5], [0.7, 0.72]] });
-cases.push({ name: 'dt spikes', slot: 1, start: [4.8, -1.6], dur: 2.0, seq: [{ t0: 0, t1: 1.8, dir: 0, mag: 0.8, spin: 170 }], spikes: [[0.3, 0.5], [0.9, 1.2], [1.3, 0.25], [1.5, 0.0]] });
-cases.push({ name: 'broken rows', slot: 0, start: [4.5, 0], dur: 1.6, seq: [{ t0: 0, t1: 1.2, dir: 120, mag: 0.8 }],
-  corrupt: [{ t: 0, len: 1.6, v: 'short', n: 19 }, { t: 0.3, i: 2, v: 'nan' }, { t: 0.5, i: 0, v: 'undef' }, { t: 0.7, i: 14, v: 'inf' }, { t: 0.9, v: 'null' }, { t: 1.0, i: 20, v: 'nan', len: 0.2 }, { t: 1.1, i: 8, v: 'nan' }] });
-
-// contact sheets: which cases, at which times
-const SHOTS = {
-  'run -180': [0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95, 1.2],
-  'run 90': [0.05, 0.2, 0.35, 0.5, 0.65, 0.8],
-  'run -135': [0.05, 0.2, 0.35, 0.5, 0.65, 0.8],
-  'run 22.5': [0.05, 0.2, 0.35, 0.5, 0.65, 0.8],
-  'walk 90 s1': [0.1, 0.25, 0.4, 0.55, 0.7, 0.85],
-  'walk -180 s1': [0.1, 0.3, 0.5, 0.7, 0.9, 1.1],
-  'sprint 45': [0.05, 0.2, 0.35, 0.5, 0.65, 0.9],
-  'dive 0': [0.28, 0.34, 0.42, 0.52, 0.62, 0.75, 0.95, 1.15, 1.3, 1.45, 1.6, 1.8],
-  'dive 90': [0.28, 0.36, 0.46, 0.6, 0.8, 1.05, 1.3, 1.5, 1.7, 1.85],
-  'dive -135': [0.28, 0.36, 0.46, 0.6, 0.8, 1.05, 1.3, 1.5, 1.7, 1.85],
-  'corner rear-bh': [0.1, 0.3, 0.5, 0.8, 1.0, 1.2],
-  'jump moving back': [0.3, 0.45, 0.55, 0.7, 0.85, 1.0],
-};
 
 // ---------------------------------------------------------------- the browser
 function findBrowser() {
@@ -200,6 +104,7 @@ function judge(m) {
 }
 
 (async () => {
+  ({ MOTION_CASES: cases, MOTION_SHOTS: SHOTS } = await loadLab());
   if (opt('list')) { cases.forEach((c, i) => console.log(i + 1, c.name)); return; }
   fs.mkdirSync(OUT, { recursive: true });
   const profile = path.join(os.tmpdir(), 'obm-motion-profile');

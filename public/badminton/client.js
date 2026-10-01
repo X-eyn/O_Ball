@@ -825,6 +825,15 @@ function leaveRoom() {
   screenKey = '';
 }
 function route() {
+  // the animation player (animplayer.js): the renderer and the athletes, no room, no menu
+  if (/^\/badminton\/anim\/?$/i.test(location.pathname)) {
+    if (!route.anim) {
+      route.anim = true;
+      $('home').classList.add('hidden'); $('hud').classList.add('hidden');
+      import('./animplayer.js').then(m => { window.__anim = m.startPlayer(R); }).catch(e => { console.error(e); toast('Animation player failed: ' + e.message, 8000); });
+    }
+    return;
+  }
   const m = location.pathname.match(/^\/badminton\/r\/([A-Za-z0-9]{1,8})\/?$/i);
   const c = m ? m[1].toUpperCase() : null;
   if (c === code) {

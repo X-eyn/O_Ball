@@ -604,7 +604,8 @@ const server = http.createServer((req, res) => {
   if (p === '/api/build') return send(res, 200, JSON.stringify({ build: assets.manifest().build }));
   if (p === '/api/diag' && req.method === 'POST') return diag(req, res);
   if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'football').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
-  if (p === '/badminton' || /^\/badminton\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'badminton').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
+  // (/badminton/anim: the animation player, the same page)
+  if (p === '/badminton' || p === '/badminton/anim' || /^\/badminton\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'badminton').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
   const abs = assets.resolveUrl(p);
   if (abs) return sendFile(req, res, assets.file(abs), IMMUTABLE).catch(() => send(res, 404, 'Not found', 'text/plain'));
   if (/^\/(app|asset|vendor)\//.test(p)) return send(res, 404, 'Not found (the game has been updated: reload)', 'text/plain');

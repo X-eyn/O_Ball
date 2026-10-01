@@ -90,6 +90,52 @@ function inputAt(c, t, sd, rnd) {
   return o;
 }
 
+// Every frame of a case: the sim stepped by the case's input (it does not depend on the body), and
+// the frame the athlete is driven with. Shared by runCase (the checks) and the animation player.
+// Returns [{ t, dt, frozen, f, p: the sim player, row, ball }] from t = -warm to dur.
+export function motionFrames(c) {
+  const C = simC();
+  const slot = c.slot || 0, sd = slot === 0 ? 1 : -1;
+  let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const st = c.start || [4.2, 0];
+  const p = { x: -sd * st[0], y: sd * st[1], vx: 0, vy: 0, fx: sd, fy: 0, z: 0, vz: 0, squat: 0, landT: 0, diveT: 0, floorT: 0, ch: -1, sprint: false, recover: 0 };
+  const ballAt = () => {
+    if (Array.isArray(c.ball)) return [-sd * c.ball[0], sd * c.ball[1], c.ball[2], 0, 0, 0];
+    if (c.ball === 'near') return [p.x + sd * 0.6, p.y + sd * 0.5, 2.6, 0, 0, 0];
+    return [sd * 3.5, 0, 2.8, 0, 0, 0]; // high over the opponent's half
+  };
+  const out = [], DT = 1 / 60, dur = c.dur || 2;
+  let t = -WARM;
+  while (t < dur) {
+    // this frame's dt
+    let dt = DT, frozen = false;
+    for (const sp of c.spikes || []) if (Math.abs(t - sp[0]) < DT / 2) dt = sp[1];
+    for (const fz of c.frozen || []) if (t >= fz[0] && t < fz[1]) frozen = true;
+    const inpT = t >= 0 ? inputAt(c, t, sd, rnd) : { ax: 0, ay: 0 };
+    const evs = t >= 0 ? (c.ev || []).filter(e => e.t >= t && e.t < t + Math.max(dt, DT)) : [];
+    // advance the sim by dt (in whole ticks; a frozen frame holds it)
+    if (!frozen) {
+      const n = Math.max(1, Math.round(dt * 60));
+      for (let i = 0; i < n; i++) tick(C, p, { ...inpT, jump: i === 0 && evs.some(e => e.jump), dive: i === 0 && evs.some(e => e.dive) });
+    }
+    let row = rowOf(p);
+    for (const cr of c.corrupt || []) if (t >= cr.t && t < cr.t + (cr.len || DT)) {
+      if (cr.v === 'short') row = row.slice(0, cr.n || 17);
+      else if (cr.v === 'nan') row[cr.i] = NaN;
+      else if (cr.v === 'undef') row[cr.i] = undefined;
+      else if (cr.v === 'inf') row[cr.i] = Infinity;
+      else if (cr.v === 'null') row = null;
+    }
+    const split = (c.split || []).map(sp => t - sp).filter(u => u >= 0 && u < 0.4);
+    const ball = ballAt();
+    const f = { p: row || [], ball, dt, t: 100 + t, frozen, stroke: null, chargeKind: c.chargeKind || (p.ch >= 0 ? 'over' : null), prep: null, splitAgo: split.length ? split[0] : null, won: null, lost: null };
+    out.push({ t, dt, frozen, f, p: Object.assign({}, p), row, ball, inp: inpT });
+    t += DT;
+  }
+  return out;
+}
+const WARM = 0.6;
+
 export async function run(ctx, o) {
   const { THREE, players, feet, scene, camera, renderer, shuttle } = ctx;
   const C = simC();
@@ -109,7 +155,8 @@ export async function run(ctx, o) {
   return { results, sheets };
 }
 
-function resetAthlete(A) {
+export function resetAthlete(A) {
+  if (A.reset) { A.reset(); return; }
   A.fw = null; A.speed = 0; A.land = 0; A.lungeW = 0; A.diveW = 0; A.jumpW = 0; A.legW = 1; A.track = 0; A.prepW = 0; A.strokeRamp = 0; A.hop = 0;
   const h = A.h; h.filt = null; if (h.env) h.env.length = 0; h.groundY = 0; h.phase = 0;
   h.group.quaternion.identity(); h.group.position.set(0, 0, 0);
@@ -122,15 +169,7 @@ function runCase(ctx, C, c, shotTimes) {
   other.root.visible = false; A.root.visible = true;
   if (feet) { feet[1 - slot].visible = false; feet[slot].visible = true; }
   resetAthlete(A);
-  let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const st = c.start || [4.2, 0];
-  const p = { x: -sd * st[0], y: sd * st[1], vx: 0, vy: 0, fx: sd, fy: 0, z: 0, vz: 0, squat: 0, landT: 0, diveT: 0, floorT: 0, ch: -1, sprint: false, recover: 0 };
   const netYaw = sd > 0 ? Math.PI / 2 : -Math.PI / 2;
-  const ballAt = () => {
-    if (Array.isArray(c.ball)) return [-sd * c.ball[0], sd * c.ball[1], c.ball[2], 0, 0, 0];
-    if (c.ball === 'near') return [p.x + sd * 0.6, p.y + sd * 0.5, 2.6, 0, 0, 0];
-    return [sd * 3.5, 0, 2.8, 0, 0, 0]; // high over the opponent's half
-  };
   // the head's forward axis in its own frame, from the reference pose (the model faces +z)
   const hr = h.ref[boneIndexOf(h, 'Head')][0];
   const headLocalFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(hr.C.clone().multiply(hr.L).invert());
@@ -144,41 +183,17 @@ function runCase(ctx, C, c, shotTimes) {
   const stance = { L: null, R: null };
   const shots = []; let nextShot = 0;
   const sheet = shotTimes ? { tiles: [] } : null;
-  const warm = 0.6;
-  let t = -warm, prevYaw = null, prevPelvis = null, frame = 0, simT = 0;
-  const dur = c.dur || 2;
+  let prevYaw = null, prevPelvis = null, frame = 0;
   const DT = 1 / 60;
   const expect = (c.expect || []).map(e => ({ ...e, n: 0, ok: 0 }));
   let lastInp = { ax: 0, ay: 0 };
-  while (t < dur) {
-    // this frame's dt
-    let dt = DT, frozen = false;
-    for (const s of c.spikes || []) if (Math.abs(t - s[0]) < DT / 2) dt = s[1];
-    for (const fz of c.frozen || []) if (t >= fz[0] && t < fz[1]) frozen = true;
-    const inpT = t >= 0 ? inputAt(c, t, sd, rnd) : { ax: 0, ay: 0 };
-    const evs = t >= 0 ? (c.ev || []).filter(e => e.t >= t && e.t < t + Math.max(dt, DT)) : [];
-    // advance the sim by dt (in whole ticks; a frozen frame holds it)
-    if (!frozen) {
-      const n = Math.max(1, Math.round(dt * 60));
-      for (let i = 0; i < n; i++) tick(C, p, { ...inpT, jump: i === 0 && evs.some(e => e.jump), dive: i === 0 && evs.some(e => e.dive) });
-    }
-    simT += frozen ? 0 : dt;
-    let row = rowOf(p);
-    for (const cr of c.corrupt || []) if (t >= cr.t && t < cr.t + (cr.len || DT)) {
-      if (cr.v === 'short') row = row.slice(0, cr.n || 17);
-      else if (cr.v === 'nan') row[cr.i] = NaN;
-      else if (cr.v === 'undef') row[cr.i] = undefined;
-      else if (cr.v === 'inf') row[cr.i] = Infinity;
-      else if (cr.v === 'null') row = null;
-    }
-    const split = (c.split || []).map(s => t - s).filter(u => u >= 0 && u < 0.4);
-    const ball = ballAt();
-    const f = { p: row || [], ball, dt: frozen ? dt : dt, t: 100 + t, frozen, stroke: null, chargeKind: c.chargeKind || (p.ch >= 0 ? 'over' : null), prep: null, splitAgo: split.length ? split[0] : null, won: null, lost: null };
+  for (const fr of motionFrames(c)) {
+    const { t, dt, frozen, f, p, row, ball, inp: inpT } = fr;
     let threw = null;
     try { A.update(f); } catch (e) { threw = e; }
     if (threw) { m.error = String(threw && threw.stack || threw).slice(0, 400); break; }
     frame++;
-    if (t < 0) { t += DT; continue; }
+    if (t < 0) continue;
     // ---------------- measurements
     m.frames++;
     const mode = A.gait || '?';
@@ -192,7 +207,7 @@ function runCase(ctx, C, c, shotTimes) {
       m.nan++;
       if (!m.nanAt) { const bad = []; for (const n in B) { const qq = B[n].quaternion; if (!Number.isFinite(qq.x + qq.y + qq.z + qq.w)) bad.push(n); }
         m.nanAt = { t: +t.toFixed(3), mode, yaw: A.yaw, bad: bad.slice(0, 6), pel: B.pelvis.position.toArray(), row: (row || []).map(v => typeof v === 'number' ? +v.toFixed(3) : String(v)), fw: A.fw && { th: A.fw.theta, drop: A.fw.drop, ikW: A.fw.ikW, lift: A.fw.dive.lift, tilt: A.fw.dive.tilt, gpos: h.group.position.toArray() } }; }
-      t += DT; continue;
+      continue;
     }
     const floorMode = mode === 'dive' || mode === 'slide' || mode === 'getup';
     const onGround = !floorMode && mode !== 'jump' && p.z < 0.02;
@@ -292,7 +307,6 @@ function runCase(ctx, C, c, shotTimes) {
       nextShot++;
     }
     lastInp = inpT;
-    t += DT;
   }
   m.headErr = m.headN ? m.headErr / m.headN : 0;
   m.windows = expect.map(e => ({ t0: e.t0, t1: e.t1, allow: e.allow, theta: e.theta, frac: e.n ? e.ok / e.n : 1, need: e.frac || 0.6 }));

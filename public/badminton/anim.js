@@ -518,6 +518,19 @@ export class Athlete {
     this.hop = 0; this.land = 0; this.lungeW = 0; this.lungeSide = 1; this.diveW = 0; this.jumpW = 0;
     this.stroke = null; this.whoosh = [];
     this.tmp = [0, 0, 0];
+    // what reset() returns to: the fields a fresh athlete has, and their plain values
+    this._freshKeys = new Set([...Object.keys(this), '_freshKeys', '_freshVals']);
+    this._freshVals = Object.fromEntries(Object.entries(this).filter(([, v]) => v === null || typeof v !== 'object'));
+  }
+  // Back to exactly how a fresh athlete starts (the animation player replays a case from frame 0;
+  // the checks start every case clean): every per-frame memory the layers keep is dropped.
+  reset() {
+    for (const k of Object.keys(this)) if (!this._freshKeys.has(k)) delete this[k];
+    Object.assign(this, this._freshVals);
+    this.whoosh.length = 0;
+    const h = this.h;
+    h.filt = null; h.spw = null; h.mixQ = null; if (h.env) h.env.length = 0; h.groundY = 0; h.phase = 0; h._elbAb = null; h._clearA = 0;
+    h.group.quaternion.identity(); h.group.position.set(0, 0, 0);
   }
   _rtKey(st) { const c = st.contact; return c ? st.name + '|' + c.x.toFixed(2) + ',' + c.y.toFixed(2) + ',' + c.z.toFixed(2) : st.name; }
   // Solve the stroke's CONTACT key onto this shuttle: pose the upper body at the key (forward

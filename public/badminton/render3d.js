@@ -1043,6 +1043,9 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       lab = true;
       try { return await m.run({ THREE, players, feet, scene, camera, renderer, shuttle }, o || {}); } finally { if (!(o && o.hold)) lab = null; }
     },
+    // the animation player (animplayer.js, /badminton/anim): it owns the athletes, the camera and the
+    // drawing while held (the game's own frame stands aside, as for the motion lab)
+    labCtx: on => { lab = on ? true : null; return { THREE, players, feet, scene, camera, renderer, shuttle, strokeFor }; },
     // the reaction test harness (tools/reaction_test.js): the athletes, the real per-frame input
     // builder, and a synchronous render of the current scene
     debugAthletes: () => players,
