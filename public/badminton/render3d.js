@@ -885,6 +885,7 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       const bc = coming ? 0xe4ff3c : 0x9fd4ff;
       beaconGlow.material.color.setHex(bc); beaconRing.material.color.setHex(bc);
       beaconGlow.material.opacity = live ? 0.55 : 0.25; beaconRing.material.opacity = live ? 0.85 : 0.35;
+      beaconRing.visible = !rv.oneRing; // (keyboard controls: the timing ring is the only ring)
       const dp = dropGeo.attributes.position;
       dp.setXYZ(0, b[0], b[2], b[1]); dp.setXYZ(1, b[0], 0.02, b[1]); dp.needsUpdate = true;
       dropLine.visible = live && b[2] > 0.35;
@@ -918,7 +919,8 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       }
       ribGeo.attributes.position.needsUpdate = true; ribGeo.attributes.alpha.needsUpdate = true;
       trail.visible = trailN > 1;
-      if (live && rv.pred && rv.pred.land && b[2] > 0.15) {
+      // (keyboard controls: one ring only, the timing ring at the contact point, drawn by the client)
+      if (live && rv.pred && rv.pred.land && b[2] > 0.15 && !rv.oneRing) {
         const toMe = my >= 0 && Math.sign(rv.pred.land.x || 1) === (my ? 1 : -1);
         marker.visible = true;
         marker.position.set(rv.pred.land.x, 0.014, rv.pred.land.y);
@@ -936,7 +938,7 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       if (mp && live) {
         const K = CT, me = mp, pz = me[14] || 0, d = Math.hypot(b[0] - me[0], b[1] - me[1]);
         const hittable = coming && d < K.REACH && b[2] >= pz && b[2] <= pz + K.MAX_Z && Math.sign(b[0] || 1) === (my ? 1 : -1);
-        reachRing.visible = true;
+        reachRing.visible = !rv.oneRing;
         reachRing.position.set(me[0], 0.018, me[1]);
         reachRing.scale.setScalar(K.REACH);
         const near = coming ? clamp(1 - (d - K.REACH) / 2.5, 0, 1) : 0;

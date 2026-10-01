@@ -37,6 +37,15 @@ room you get the practice bot.
   your run (bent toward a shuttle coming down just off the line) that strikes whatever it reaches, soft,
   and leaves you on the floor for two thirds of a second. Sprints, dives, jumps and smashes cost stamina.
 - **Controls** (Menu > Controls): **Swipe** (the default) or **Keyboard**.
+- **Keyboard** controls are arcade, move plus two buttons: **WASD** or arrows move (head toward the shuttle and
+  you lock onto the spot to hit it from), **J** (or Space) is **A: hit**, **K** is **B: soft**. Press as the ring
+  closes on the shuttle: **PERFECT**, GREAT or GOOD (±35 / 70 / 120 ms); early or late is weak, way off is a
+  whiff that locks the racket for 0.3 s. The height you meet it picks the shot: A overhead smashes, at the tape
+  kills, waist high drives, low clears; B overhead drops, low or at the net plays a net shot. Against a smash A
+  counters (perfect: parry) and B blocks. The direction held as you press aims it (left/right the line,
+  forward deep, back short). A perfect A overhead is a **jump smash**; a press with the shuttle just out of
+  reach is a **dive**. No sprint (one running speed), and stamina is hidden: it only slows a smash a little
+  after a run of them. A serves high, B short (`tools/keys_test.js`).
 - **Swipe** controls (prototype): **WASD** or arrows move; head roughly toward the shuttle and your player
   locks onto the spot where it is best met. Every shot is a **two-finger swipe up the trackpad**, timed as a
   ring closes on the shuttle: **PERFECT**, GREAT or GOOD (early or late is weak, way off misses). Gentle is

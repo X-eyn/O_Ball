@@ -1,7 +1,7 @@
 'use strict';
 // Office Badminton — live browser check. Boots /badminton in headless Chrome/Edge, waits for the
-// room and a bot match, plays a few rallies on keyboard controls (move, charge, release, dash,
-// lift), then switches to swipe controls and plays on with two-finger swipes timed against the
+// room and a bot match, plays a few rallies on keyboard (arcade) controls (move; J hits and K plays
+// soft, timed against the ring), then switches to swipe controls and plays on with two-finger swipes timed against the
 // ring (one through Chrome's real input pipeline, the rest timed in the page), captures
 // screenshots and reports every console error/warning the page produced.
 //   node tools/badminton_check.js [url]
@@ -212,16 +212,16 @@ class CDP {
       if (lat.draw == null || (lat.srv != null && lat.draw > lat.srv + 20)) cdp.logs.push(`assert: own player is not predicted (drawn ${lat.draw} ms vs server ${lat.srv} ms)`);
       if (lat.gap > 0.25) cdp.logs.push(`assert: prediction drifted ${lat.gap} m from the server`);
     }
-    // the jump: F leaves the floor (the snapshot's height rises) and comes back down
+    // keyboard (arcade) controls have no jump key: F must leave the player on the floor
     {
       await cdp.key('KeyF', 70, true); await sleep(60); await cdp.key('KeyF', 70, false);
       let top = 0;
       for (let k = 0; k < 14; k++) { await sleep(50); const z = await cdp.ev(`(() => { const s = window.__ob.state(); return s && s.p ? s.p[window.__ob.slot()][14] || 0 : 0; })()`); top = Math.max(top, z); }
       await sleep(400);
       const zEnd = await cdp.ev(`(() => { const s = window.__ob.state(); return s && s.p ? s.p[window.__ob.slot()][14] || 0 : 0; })()`);
-      console.log(`jump: peak ${top.toFixed(2)} m, back down at ${zEnd.toFixed(2)} m`);
-      if (!(top > 0.3)) cdp.logs.push(`assert: F did not jump (peak ${top})`);
-      if (zEnd > 0.01) cdp.logs.push(`assert: the player did not land (z ${zEnd})`);
+      console.log(`F on keyboard controls: peak ${top.toFixed(2)} m (no jump key)`);
+      if (top > 0.05) cdp.logs.push(`assert: F jumped on keyboard controls (peak ${top})`);
+      void zEnd;
     }
     const keys = [['KeyD', 68, 900], ['KeyW', 87, 500], ['KeyA', 65, 700], ['KeyS', 83, 500], ['KeyD', 68, 600], ['KeyA', 65, 800]];
     for (const [code, vk, ms] of keys) {
@@ -232,9 +232,9 @@ class CDP {
     for (let i = 0; i < 40 && !served; i++) {
       const st = await cdp.ev(`(() => { const s = window.__ob.state(); return s ? { ph: s.ph, sv: s.sv, slot: window.__ob.slot() } : null; })()`);
       if (st && st.ph === 'serve' && st.sv === st.slot) {
-        await cdp.key('Space', 32, true); await sleep(350);
-        await cdp.shot('charge.png');
-        await cdp.key('Space', 32, false);
+        await cdp.key('KeyJ', 74, true); await sleep(60);
+        await cdp.key('KeyJ', 74, false);
+        await cdp.shot('serve.png');
         // software rendering can stall for seconds; the playback clock then needs a moment to catch
         // up to the tick the hit event belongs to, so poll rather than read once
         let hits = 0;
@@ -247,15 +247,69 @@ class CDP {
     }
     if (!served) cdp.logs.push('assert: the human serve never connected');
     await sample();
-    // dash and a lift shot
-    await cdp.key('ShiftLeft', 16, true); await sleep(60); await cdp.key('ShiftLeft', 16, false); await sleep(500);
-    await cdp.key('KeyE', 69, true); await cdp.key('Space', 32, true); await sleep(300); await cdp.key('Space', 32, false); await cdp.key('KeyE', 69, false);
-    await sleep(1500);
-    await sample();
-    await cdp.shot('play.png');
-
-    // let the bot serve a few times so a rally happens
-    for (let i = 0; i < 14; i++) { await sleep(900); await sample(); }
+    // the arcade player, in the page: steers toward the contact spot (the magnet does the rest) and
+    // presses J or K as the ring closes, with a human's scatter. Presses must be graded, reach the
+    // server and become hits; a whiff must lock the racket.
+    {
+      const hits0 = await cdp.ev(`window.__ob.myHits`);
+      await cdp.ev(`(() => {
+        const T = window.__kbt = { n: 0, grades: [0, 0, 0, 0, 0], lastKey: '', keys: new Set(), ring: {} };
+        const press = (code, down) => dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code, bubbles: true }));
+        T.timer = setInterval(() => {
+          const s = window.__ob.state(), sw = window.__ob.swipe(), ms = window.__ob.slot();
+          if (!s || ms < 0 || !s.p) return;
+          const me = s.p[ms], b = s.b, want = new Set();
+          const tg = window.BM.meetTarget({ tick: s.k, phase: s.ph, serveHold: !!s.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: s.lh } }, { i: ms, x: me[0], y: me[1] });
+          if (tg) {
+            const dx = tg.x - me[0], dy = tg.y - me[1], d = Math.hypot(dx, dy), side = ms === 1 ? 1 : -1;
+            const fwd = dx * -side, right = dy * -side;
+            if (d > 0.3) { if (fwd > 0.38 * d) want.add('KeyW'); if (fwd < -0.38 * d) want.add('KeyS'); if (right > 0.38 * d) want.add('KeyD'); if (right < -0.38 * d) want.add('KeyA'); }
+          }
+          for (const k of T.keys) if (!want.has(k)) { press(k, false); T.keys.delete(k); }
+          for (const k of want) if (!T.keys.has(k)) { press(k, true); T.keys.add(k); }
+          // the ring, per incoming shot: did it show, and did it ever blink off and back on before contact
+          if (s.ph === 'rally' && s.lh >= 0 && s.lh !== ms) {
+            const sk = s.lh + ':' + s.rc + ':' + s.sc.join('');
+            const R = T.ring[sk] || (T.ring[sk] = { on: false, blinks: 0, prev: null });
+            const has = sw.ideal != null && sw.ideal - performance.now() > 0;
+            if (has) R.on = true;
+            if (R.prev === false && has && R.on) R.blinks++;
+            R.prev = has ? true : (R.on ? false : null);
+          }
+          const key = s.lh + ':' + s.rc + ':' + s.ph + ':' + s.sc.join('');
+          if (key === T.lastKey) return;
+          const serving = s.ph === 'serve' && s.sv === ms && s.hold;
+          const tap = code => { press(code, true); press(code, false); const lp = window.__ob.lastPress; if (lp && !serving) T.grades[lp.g]++; };
+          if (serving) { T.lastKey = key; setTimeout(() => tap(Math.random() < 0.5 ? 'KeyJ' : 'KeyK'), 300); return; }
+          if (sw.ideal == null || s.lh === ms) return;
+          const lead = sw.ideal - performance.now();
+          if (lead > 120 || lead < -40) return;
+          T.lastKey = key; T.n++;
+          setTimeout(() => tap(Math.random() < 0.6 ? 'KeyJ' : 'KeyK'), Math.max(0, lead + (Math.random() * 2 - 1) * 40));
+        }, 8);
+        return true; })()`);
+      const t0 = Date.now();
+      let shot = false;
+      let midShot = false, hitShot = false;
+      while (Date.now() - t0 < 30000) {
+        await sleep(midShot && hitShot ? 500 : 15);
+        if (!shot && (await cdp.ev(`window.__kbt.n`)) >= 3) { await cdp.shot('play.png'); shot = true; }
+        // the timing ring, mid-approach and on the moment
+        if (!midShot || !hitShot) {
+          const lead = await cdp.ev(`(() => { const i = window.__ob.swipe().ideal; return i == null ? null : i - performance.now(); })()`);
+          if (lead != null && !midShot && lead > 200 && lead < 400) { await cdp.shot('ring_mid.png'); midShot = true; }
+          else if (lead != null && !hitShot && lead > -40 && lead < 40) { await cdp.shot('ring_hit.png'); hitShot = true; }
+        }
+      }
+      const T = await cdp.ev(`(() => { const T = window.__kbt; clearInterval(T.timer); for (const k of T.keys) dispatchEvent(new KeyboardEvent('keyup', { code: k, bubbles: true })); const rs = Object.values(T.ring); return { n: T.n, grades: T.grades, shots: rs.length, shown: rs.filter(r => r.on).length, blinky: rs.filter(r => r.blinks > 0).length }; })()`);
+      const hits = (await cdp.ev(`window.__ob.myHits`)) - hits0;
+      console.log(`keyboard: ${T.n} timed presses · grades perfect ${T.grades[0]}, great ${T.grades[1]}, good ${T.grades[2]}, early/late ${T.grades[3]}, miss ${T.grades[4]} -> ${hits} own hits`);
+      console.log(`keyboard ring: ${T.shown}/${T.shots} incoming shots showed it · ${T.blinky} blinked`);
+      if (T.blinky > 0) cdp.logs.push(`assert: the timing ring blinked on ${T.blinky} shots`);
+      if (!(T.n >= 3 && hits >= 3)) cdp.logs.push(`assert: timed key presses did not become hits (${T.n} presses, ${hits} hits)`);
+      if (T.grades[0] + T.grades[1] + T.grades[2] < Math.ceil(T.n * 0.5)) cdp.logs.push(`assert: well-timed presses were not graded well (${JSON.stringify(T.grades)})`);
+      await sample();
+    }
 
     // swipe controls: picked in the menu. First a serve swiped through Chrome's real input pipeline
     // (scroll events as a trackpad sends them); then a player in the page who swipes as the ring
@@ -308,7 +362,7 @@ class CDP {
           T.d.ticks++; if (tg) T.d.tg++; if (want.size) T.d.keys++; if (sw.ideal != null) { T.d.ideal++; T.d.minLead = Math.min(T.d.minLead, Math.abs(sw.ideal - performance.now())); }
           for (const k of T.keys) if (!want.has(k)) { press(k, false); T.keys.delete(k); }
           for (const k of want) if (!T.keys.has(k)) { press(k, true); T.keys.add(k); }
-          const key = s.lh + ':' + s.rc + ':' + s.ph;
+          const key = s.lh + ':' + s.rc + ':' + s.ph + ':' + s.sc.join('');
           if (key === T.lastKey) return;
           const serving = s.ph === 'serve' && s.sv === ms && s.hold;
           if (serving) { T.lastKey = key; setTimeout(() => fire([60, 200, 300, 200, 60, 0], false), 300); return; }

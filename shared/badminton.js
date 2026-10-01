@@ -52,6 +52,10 @@
     CHARGE_FULL: 42, PERF_END: 58, COUNTER_CT: 14,
     REC_SMASH: 20, REC_CLEAR: 15, REC_SHOT: 10, SWING_T: 5,
     HOLD_Z: 0.95,
+    // arcade controls (keyboard: move + A hit + B soft): one running speed, no sprint; a whiffed
+    // press locks the racket for ARC_LOCK ticks; a press with the shuttle out of reach but coming
+    // down within ARC_DIVE_R metres in ARC_DIVE_T ticks dives for it
+    ARC_TOP: 9.0, ARC_LOCK: 18, ARC_DIVE_R: 4.0, ARC_DIVE_T: 40,
     POINTS: 7, PRE_T: 210, POINT_T: 110, OVER_T: 60 * 8, PAUSE_T: 60 * 12,
   };
   // Shot table. min/max: metres past the net the shot is aimed to land (court-scaled); ang: the
@@ -94,6 +98,7 @@
       sprint: false, diveT: 0, diveCd: 0, floorT: 0, stun: 0, recover: 0,
       squat: 0, landT: 0, airSmash: false,
       stamina: C.ST_MAX, hitCd: 0, lastKp: 0, lastDv: 0, lastKn: 0, lastJp: 0, lastSw: 0, init: false, ai: false, ez: false, aim: null, swPerfect: null,
+      arc: false, lock: 0, dep: null,
       st: { hits: 0, smashes: 0, perfects: 0, winners: 0, aces: 0, dives: 0, maxRally: 0, errors: 0, jumps: 0, counters: 0, kills: 0 },
     };
   }
@@ -280,8 +285,12 @@
     // near the net with the shuttle floating above the tape: put it away
     const atTape = Math.abs(b.x) < 1.1 * S && Math.abs(p.x) < 1.8 * S;
     if (!lob && atTape && b.z > netAt(b.y) + 0.25 && pct >= 0.8) return 'kill';
-    if (rz >= C.HIGH_Z) return lob ? 'clear' : pct >= 0.8 ? (air ? 'jsmash' : 'smash') : pct >= 0.35 ? 'drive' : 'drop';
-    if (rz >= C.MID_Z) return lob ? 'lift' : 'drive';
+    // arcade controls: B (soft) at the tape is a net shot, at waist height a drop; a perfect A
+    // (hit) on a shuttle overhead is a jump smash, the leap played from the ground (see shoot)
+    const soft = p.arc && pct < 0.35;
+    if (soft && atTape) return 'net';
+    if (rz >= C.HIGH_Z) return lob ? 'clear' : pct >= 0.8 ? (air || (p.arc && p.swPerfect) ? 'jsmash' : 'smash') : pct >= 0.35 ? 'drive' : 'drop';
+    if (rz >= C.MID_Z) return lob ? 'lift' : soft ? 'drop' : 'drive';
     return lob ? 'lift' : pct >= 0.75 ? 'clear' : 'net';
   }
 
@@ -292,7 +301,8 @@
     const incoming = Math.hypot(b.vx, b.vy, b.vz);
     let kind = shotKind(s, p, ct, lob);
     // no legs, no smash; a scuffed counter pops up instead
-    if ((kind === 'smash' || kind === 'jsmash') && (q < 0.55 || p.stamina < C.SMASH_COST)) kind = 'drop';
+    // (on arcade controls stamina is hidden: it never takes a smash away, it only slows it; see below)
+    if ((kind === 'smash' || kind === 'jsmash') && (q < 0.55 || (!p.arc && p.stamina < C.SMASH_COST))) kind = 'drop';
     if (kind === 'counter' && q < 0.5) kind = 'lift';
     // a parry: a counter met cleanly the instant the button came up (not a buffered late swing)
     const parry = kind === 'counter' && onTime && q >= 0.8 && !p.ez;
@@ -317,6 +327,8 @@
       const sh = SHOTS[k];
       let depth = sh.min + (sh.max - sh.min) * clamp(q * 0.5 + pct * 0.5, 0, 1);
       if (k === 'smash' || k === 'jsmash' || k === 'kill') depth = sh.min + (sh.max - sh.min) * clamp(pct, 0, 1);
+      // arcade controls: the stick sets the length (forward deep, back short, nothing: the middle)
+      if (p.dep != null && !serving && k !== 'block') depth = sh.min + (sh.max - sh.min) * clamp(0.55 + 0.45 * p.dep, 0, 1);
       if (q < 0.6 && (k === 'clear' || k === 'drive' || k === 'lift')) depth *= 0.58 + 0.42 * q; // mishits fall short
       if (k === 'net' || k === 'drop') depth = Math.max(depth, (Math.abs(p.x) - 0.35) * 0.5); // from deep, a soft shot lands mid-court at best
       if (serving) depth = sh.min + (sh.max - sh.min) * clamp(pct, 0, 1);
@@ -333,15 +345,21 @@
     const lift = clamp((b.z - 2.6) / 0.9, 0, 1);
     let speedMul = (0.82 + 0.18 * q) * (perfect ? 1.07 : 1) * (over ? 0.92 : 1);
     if (kind === 'jsmash') speedMul *= 1 + 0.12 * lift;
+    // hidden stamina: smash after smash, each comes off a little slower (up to 10%)
+    if (p.arc && (kind === 'smash' || kind === 'jsmash')) speedMul *= 0.9 + 0.1 * clamp(p.stamina / C.ST_MAX, 0, 1);
     if (kind === 'counter') speedMul *= clamp(0.55 + incoming / (SHOTS.jsmash.cap * 1.6), 0.7, 1) * (parry ? 1.15 : 1); // it borrows the smash's pace
     let { tx, ty } = plan(kind);
     let lv = null, res = null;
+    // (an arcade jump smash from the ground is met at the top of the leap it makes: higher)
+    if (kind === 'jsmash' && !airborne(p)) b.z += 0.35;
     const from = { x: b.x, y: b.y, z: b.z };
     // attack shots are a racket speed, not a placement: the steepest clean line for the aim
     // (a counter is placed like a drive, on the flattest line the solver finds: the fastest one)
-    const steep = { smash: [-42, -10], jsmash: [-55, -12], kill: [-62, -14] }[kind];
-    if (steep) {
-      const a = launchAngle(from, tx, ty, SHOTS[kind].cap * speedMul, steep[0], steep[1]);
+    const STEEP = { smash: [-42, -10], jsmash: [-55, -12], kill: [-62, -14] };
+    if (STEEP[kind]) {
+      let a = launchAngle(from, tx, ty, SHOTS[kind].cap * speedMul, STEEP[kind][0], STEEP[kind][1]);
+      // a jump smash with no line at its pace is still a smash
+      if (!a && kind === 'jsmash') { kind = 'smash'; ({ tx, ty } = plan(kind)); a = launchAngle(from, tx, ty, SHOTS.smash.cap * speedMul, STEEP.smash[0], STEEP.smash[1]); }
       if (a) { lv = a.lv; res = a.res; }
       else kind = 'drop'; // no clean line from here: it comes off soft
     }
@@ -377,6 +395,8 @@
       p.stamina = Math.max(0, p.stamina - (kind === 'jsmash' ? C.JSMASH_COST : C.SMASH_COST));
       p.st.smashes++;
       if (kind === 'jsmash') p.airSmash = true; // a heavier landing
+      // arcade controls: a perfect hit overhead from the ground leaps into it as it strikes
+      if (kind === 'jsmash' && !airborne(p)) { p.vz = C.JUMP_V * 0.8; p.z = 0.001; p.squat = 0; p.st.jumps++; ev(s, 'jump', { p: p.i, x: r2(p.x), y: r2(p.y), leap: 0 }); }
     }
     if (kind === 'counter') p.st.counters++;
     if (kind === 'kill') p.st.kills++;
@@ -455,6 +475,28 @@
     return { x: ex / dist * mag, y: ey / dist * mag };
   }
 
+  // the dive: a launch low along (dx, dy), a unit vector
+  function startDive(s, p, dx, dy) {
+    p.vx = dx * C.DIVE_V; p.vy = dy * C.DIVE_V; p.fx = dx; p.fy = dy;
+    p.diveT = C.DIVE_T; p.diveCd = C.DIVE_CD; p.stamina = Math.max(0, p.stamina - C.DIVE_COST); p.sprint = false;
+    p.st.dives++;
+    ev(s, 'dive', { p: p.i, x: r2(p.x), y: r2(p.y), dx: r2(dx), dy: r2(dy) });
+  }
+  // Arcade controls: a press with the shuttle out of reach, but coming down near enough soon enough,
+  // is a dive at it (the dive then strikes whatever it meets, soft). Returns whether it dove.
+  function arcDive(s, p) {
+    const b = s.ball;
+    if (airborne(p) || p.stun || p.diveT || p.floorT || p.squat || p.diveCd) return false;
+    if (s.phase !== 'rally' || s.serveHold || b.last < 0 || b.last === p.i) return false;
+    if (!s._pred || s._predT !== s.tick) { s._pred = predict(s); s._predT = s.tick; }
+    const t = s._pred.land;
+    if (!t || Math.sign(t.x || 1) !== sideOf(p) || t.t * 60 > C.ARC_DIVE_T) return false;
+    const dx = t.x - p.x, dy = t.y - p.y, d = Math.hypot(dx, dy);
+    if (d < C.REACH * 0.8 || d > C.ARC_DIVE_R) return false;
+    startDive(s, p, dx / d, dy / d);
+    return true;
+  }
+
   // ---------- player step ----------
   function stepPlayer(s, p, inp) {
     if (!p.init) { p.lastKp = inp.kp; p.lastDv = inp.dv | 0; p.lastKn = inp.kn; p.lastJp = inp.jp | 0; p.lastSw = inp.sw | 0; p.init = true; }
@@ -464,9 +506,11 @@
     if (p.recover > 0) p.recover--;
     const air = airborne(p);
     p.swm = !!inp.swm; // on swipe controls (see SWIPE.LAND_GRACE)
+    p.arc = !!inp.arc && !p.ai; // on arcade controls (move, A, B)
+    if (p.lock > 0) p.lock--;
     // sprint: held, on the ground, legs free and breath left (it runs out, and picks up again once
-    // there is a little stamina back)
-    p.sprint = !!inp.sp && !air && p.stun === 0 && p.diveT === 0 && p.floorT === 0 && p.squat === 0
+    // there is a little stamina back). Not on arcade controls: one running speed
+    p.sprint = !!inp.sp && !p.arc && !air && p.stun === 0 && p.diveT === 0 && p.floorT === 0 && p.squat === 0
       && p.stamina > (p.sprint ? 0.5 : C.SPRINT_MIN);
     const moving = Math.hypot(p.vx, p.vy) > 3;
     if (p.sprint && moving) p.stamina = Math.max(0, p.stamina - C.SPRINT_COST);
@@ -512,10 +556,7 @@
             }
           }
         }
-        p.vx = dx * C.DIVE_V; p.vy = dy * C.DIVE_V; p.fx = dx; p.fy = dy;
-        p.diveT = C.DIVE_T; p.diveCd = C.DIVE_CD; p.stamina -= C.DIVE_COST; p.sprint = false;
-        p.st.dives++;
-        ev(s, 'dive', { p: p.i, x: r2(p.x), y: r2(p.y), dx: r2(dx), dy: r2(dy) });
+        startDive(s, p, dx, dy);
       }
     }
 
@@ -568,7 +609,7 @@
       const top = C.TOP * tired;
       if (m > 0.05) { p.vx += (ax * top - p.vx) * C.AIR_ACCEL; p.vy += (ay * top - p.vy) * C.AIR_ACCEL; }
     } else {
-      const top = (p.sprint ? C.SPRINT_V : C.TOP) * tired * (p.ch ? 0.6 : 1) * (p.recover > 0 ? 0.5 : 1) * (p.landT > 0 ? 0.35 : 1);
+      const top = (p.sprint ? C.SPRINT_V : p.arc ? C.ARC_TOP : C.TOP) * tired * (p.ch ? 0.6 : 1) * (p.recover > 0 ? 0.5 : 1) * (p.landT > 0 ? 0.35 : 1);
       // nothing held: the placement assist may steer the last metre or two (see assistDir)
       if (m <= 0.05 && inp.as && !p.ai) { const a = assistDir(s, p); if (a) { ax = a.x; ay = a.y; m = Math.hypot(ax, ay); if (m > 0.12) { p.fx = ax / m; p.fy = ay / m; } } }
       else if (m > 0.05 && inp.mg && !p.ai) { const g = magnetDir(s, p, ax, ay, m); if (g) { ax = g.x; ay = g.y; m = Math.hypot(ax, ay); if (m > 0.12) { p.fx = ax / m; p.fy = ay / m; } } }
@@ -923,8 +964,15 @@
   }
   function swipeShot(s, p, inp) {
     if (p.stun > 0 || p.floorT > 0 || p.diveT > 0 || p.ai) return;
+    if (p.arc && p.lock > 0) return; // arcade controls: the racket is still coming back from a whiff
     const g = clamp(inp.sg | 0, 0, 4), si = clamp(+inp.si || 0, 0, 1), lob = !!inp.sd, sl = clamp(+inp.sl || 0, -1, 1);
     const d = sideOf(p);
+    // arcade controls: a press that meets nothing dives for it if it can, else whiffs and locks
+    const miss = () => {
+      if (p.arc && arcDive(s, p)) return;
+      ev(s, 'swing', { p: p.i, whiff: p.arc ? 1 : 0 });
+      if (p.arc && s.phase === 'rally') p.lock = C.ARC_LOCK;
+    };
     p.anim = 8;
     // the serve: no timing (the shuttle is in hand); gentle is low, fierce is high
     if (s.phase === 'serve' && s.server === p.i && s.lastHitter === -1) {
@@ -933,7 +981,8 @@
       p.swGrade = null; p.swPerfect = null;
       return;
     }
-    if (g === 4 || (s.phase !== 'rally' && s.phase !== 'serve')) { ev(s, 'swing', { p: p.i }); return; }
+    if (s.phase !== 'rally' && s.phase !== 'serve') { ev(s, 'swing', { p: p.i }); return; }
+    if (g === 4) { miss(); return; }
     // the line: straight on from where the player stands, angled across the court by sl
     const aim = { x: -d * C.L * 0.75, y: clamp(p.y + sl * 2.6 * S, -(C.W - 0.25), C.W - 0.25) };
     const ct = swipeCt(si);
@@ -942,8 +991,9 @@
       const fx = aim.x - p.x, fy = aim.y - p.y, fl = Math.hypot(fx, fy) || 1;
       const ofx = p.fx, ofy = p.fy;
       p.fx = fx / fl; p.fy = fy / fl; p.aim = aim; p.swGrade = g; p.swPerfect = g === 0; p.swQ = SWIPE.Q[g];
+      p.dep = p.arc ? clamp(+inp.sz || 0, -1, 1) : null;
       const ok = tryHit(s, p, ct, lob, 1);
-      p.swGrade = null; p.swPerfect = null; p.swQ = null; p.aim = null;
+      p.swGrade = null; p.swPerfect = null; p.swQ = null; p.aim = null; p.dep = null;
       if (!ok) { p.fx = ofx; p.fy = ofy; }
       return ok;
     };
@@ -961,10 +1011,10 @@
         return;
       }
       Object.assign(s.ball, now);
-      ev(s, 'swing', { p: p.i }); // (nothing in reach when the player swiped: a swing at air)
+      miss(); // (nothing in reach when the player swiped: a swing at air)
       return;
     }
-    if (!strike()) ev(s, 'swing', { p: p.i }); // (no history yet, as at a serve: judged on now)
+    if (!strike()) miss(); // (no history yet, as at a serve: judged on now)
   }
   // When the incoming shuttle is best met from where p stands: flies it forward tick by tick (the
   // sim's own flight) and scores each tick it is in reach as quality() would. Returns { k: ticks
@@ -989,6 +1039,28 @@
     }
     return best;
   }
+  // The timing ring (keyboard and swipe controls): where, and on which sim tick, the incoming
+  // shuttle is met. It is fixed once per shot (key: one per shot, e.g. last hitter + rally count)
+  // from the spot the player is steered to (meetTarget), not from where they stand, so it shows
+  // the moment the shot is struck, does not wait for the player to arrive, and does not move as
+  // they run. It is fixed again only if the flight itself changes (off the net cord).
+  // s: { tick, phase, serveHold, hitstop, ball: { x, y, z, vx, vy, vz, last } }; p: { i, x, y, z }.
+  // Returns { key, tick, x, y, z, sx, sy } (sx, sy: the standing spot) or null.
+  function ringPlan(s, p, key, prev) {
+    const same = prev && prev.key === key;
+    if (same) {
+      if (s.tick >= prev.tick - 3) return prev; // (at or past the contact: nothing left to check)
+      const q = contactPlan(s.ball, { i: p.i, x: prev.sx, y: prev.sy, z: 0 });
+      if (!q || Math.hypot(q.x - prev.x, q.y - prev.y, q.z - prev.z) < 0.3) return prev;
+    }
+    const t = meetTarget(s, p);
+    let spot = t ? { x: t.x, y: t.y } : null;
+    let c = spot ? contactPlan(s.ball, { i: p.i, x: spot.x, y: spot.y, z: 0 }) : null;
+    if (!c) { spot = { x: p.x, y: p.y }; c = contactPlan(s.ball, { i: p.i, x: p.x, y: p.y, z: p.z || 0 }); }
+    if (!c) return same ? prev : null;
+    return { key, tick: s.tick + (s.hitstop || 0) + c.k, x: c.x, y: c.y, z: c.z, sx: spot.x, sy: spot.y };
+  }
+
   // the shuttle and the players as they were this tick, for swipes played a moment in the past
   function recordHistory(s) {
     const b = s.ball;
@@ -1157,5 +1229,5 @@
     };
   }
 
-  return { C, SHOTS, KIND_CODE, BOT_LEVELS, EZ, SWIPE, swipeCt, contactPlan, meetTarget, magnetDir, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
+  return { C, SHOTS, KIND_CODE, BOT_LEVELS, EZ, SWIPE, swipeCt, contactPlan, ringPlan, meetTarget, magnetDir, arcDive, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
 });

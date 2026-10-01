@@ -116,6 +116,9 @@ export const Sound = {
     game(won) { if (won) { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.3, 'triangle', 0.15, i * 0.12)); } else { [392, 330, 262].forEach((f, i) => tone(f, 0.3, 'triangle', 0.13, i * 0.14)); } },
     whistle() { tone(2100, 0.12, 'square', 0.07, 0, 300); tone(2300, 0.14, 'square', 0.05, 0.08, -200); },
     beep(go) { tone(go ? 880 : 440, 0.12, 'square', 0.1); },
+    // the keyboard count-in for an incoming shuttle: tick, tick, TOCK (the TOCK is the moment to
+    // hit). `when`: seconds from now, so each beat lands on its moment, not on the frame
+    count(last, when = 0) { tone(last ? 1175 : 587, last ? 0.09 : 0.05, 'sine', last ? 0.15 : 0.09, Math.max(0, when)); },
     rally(n) { tone(660 + Math.min(400, n * 12), 0.09, 'square', 0.08); },
     join() { tone(587, 0.1, 'triangle', 0.1); tone(880, 0.12, 'triangle', 0.1, 0.08); },
     toast() { tone(740, 0.08, 'sine', 0.08); },

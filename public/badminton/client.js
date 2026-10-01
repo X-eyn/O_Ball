@@ -150,7 +150,9 @@ function slotName(i) { const id = room ? room.slots[i] : null; return id == null
 // One control scheme at a time, the one picked in Menu > Controls. The game never changes scheme on
 // its own: a nudge of the mouse, a controller on the desk or a tap on a touchscreen laptop must not
 // take a player off the controls they are using mid-rally.
-//   keyboard  WASD / arrows move; Space shot, E lift, Shift sprint (double-tap: dive), F jump
+//   keyboard  arcade: WASD / arrows move, A (J or Space) hits, B (K) plays soft. Each press is timed
+//             against the ring as a swipe is (see arcPress); the height met picks the shot, the
+//             direction held aims it. Jump smash, dive and running are the sim's (p.arc)
 //   mouse     the player runs to the pointer; click shot, shift+click / middle lift, right button
 //             sprint (double-click it: dive), thumb button jump; the action keys work too
 //   swipe     WASD / arrows move (steered onto the shuttle when heading its way); every shot is a
@@ -163,6 +165,8 @@ function slotName(i) { const id = room ? room.slots[i] : null; return id == null
 //   touch     the on-screen stick and buttons
 const KEYMAP = { KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r', Space: 'kick', KeyJ: 'kick', KeyE: 'lob', KeyL: 'lob', ShiftLeft: 'sprint', ShiftRight: 'sprint', KeyK: 'sprint', KeyF: 'jump', KeyI: 'jump' };
 const MOVE = new Set(['u', 'd', 'l', 'r']);
+// keyboard (arcade) controls: the two buttons
+const ARC_KEYS = { KeyJ: 'a', Space: 'a', KeyK: 'b' };
 // (only Swipe and Keyboard are offered; the other schemes' code stays until the swipe design settles)
 const CTRLS = ['swipe', 'keyboard'];
 const CTRL_NAME = { swipe: 'Swipe', keyboard: 'Keyboard' };
@@ -192,10 +196,12 @@ function sendInput(force) {
     t: 'i',
     u: +(kb && (held.has('KeyW') || held.has('ArrowUp'))), d: +(kb && (held.has('KeyS') || held.has('ArrowDown'))),
     l: +(kb && (held.has('KeyA') || held.has('ArrowLeft'))), r: +(kb && (held.has('KeyD') || held.has('ArrowRight'))),
-    k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dv: inp.dv, sp: sprintSources.size ? 1 : 0, jp: inp.jp, kn: inp.kn, lob: !!inp.lob, as: assistOn ? 1 : 0,
+    k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dv: inp.dv, sp: sprintSources.size && ctrl !== 'keyboard' ? 1 : 0, jp: inp.jp, kn: inp.kn, lob: !!inp.lob, as: assistOn ? 1 : 0,
     ax: Math.round(inp.ax * 50) / 50, ay: Math.round(inp.ay * 50) / 50,
     // magnetic steering, and the last swipe (see the swipe section)
-    mg: 1, swm: ctrl === 'swipe' ? 1 : 0, sw: swp.n, sg: swp.g, si: swp.si, sd: swp.sd ? 1 : 0, sl: swp.sl, svt: swp.vt,
+    mg: 1, swm: ctrl === 'swipe' || ctrl === 'keyboard' ? 1 : 0, sw: swp.n, sg: swp.g, si: swp.si, sd: swp.sd ? 1 : 0, sl: swp.sl, svt: swp.vt,
+    // keyboard (arcade) controls, and the length the last press asked for
+    arc: ctrl === 'keyboard' ? 1 : 0, sz: swp.sz,
   };
   const s = JSON.stringify(msg);
   lastInput = msg;
@@ -263,7 +269,7 @@ function releaseAll() {
 }
 const CTRL_TOAST = {
   swipe: 'Swipe controls: WASD moves, swipe two fingers up the trackpad to hit as the ring closes (down to lift)',
-  keyboard: 'Keyboard controls: WASD moves, Space shoots, Shift sprints (double-tap to dive)',
+  keyboard: 'Keyboard: WASD moves. J hits, K plays soft. Press when the shuttle reaches the circle (tick, tick, TOCK)',
   mouse: 'Mouse controls: run to the pointer, click shoots, hold right button to sprint (double-click it to dive). On a trackpad? Try Trackpad',
   trackpad: 'Trackpad controls: your player runs on their own. Point at the far court, tap to play a shot there; two-finger tap lifts',
   gamepad: 'Controller: left stick moves, A shoots, X sprints (double-tap to dive)',
@@ -272,7 +278,7 @@ const CTRL_TOAST = {
 function updateCtrlUI() {
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.classList.toggle('on', b.dataset.c === ctrl));
   // (the shot guide is about holding and releasing: the trackpad help says it its own way)
-  const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl] + (ctrl === 'trackpad' || ctrl === 'swipe' ? CTRL_PAUSE : CTRL_SHOTS);
+  const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl] + (ctrl === 'trackpad' || ctrl === 'swipe' || ctrl === 'keyboard' ? CTRL_PAUSE : CTRL_SHOTS);
   $('view').classList.toggle('mouse-mode', ctrl === 'mouse');
   $('view').classList.toggle('trackpad-mode', ctrl === 'trackpad');
   $('touchui').classList.toggle('hidden', !(code && ctrl === 'touch'));
@@ -305,6 +311,8 @@ function setupInput() {
     if (e.repeat) return;
     if (/^Digit[1-6]$/.test(e.code)) { send({ t: 'emote', n: +e.code.slice(5) - 1 }); return; }
     if (e.code === 'KeyM') { Sound.toggle(); if (setupMenu.muteLabel) setupMenu.muteLabel(); return; }
+    // keyboard (arcade) controls: J / Space hit, K plays soft; only the move keys are held
+    if (ctrl === 'keyboard' && ARC_KEYS[e.code]) { e.preventDefault(); arcPress(ARC_KEYS[e.code], e.timeStamp); return; }
     if (!act) return;
     // trackpad controls: the shot keys tap (Space a shot, E a lift), F jumps; nothing is held
     if (ctrl === 'trackpad') {
@@ -316,7 +324,7 @@ function setupInput() {
     // the keys play on keyboard controls; on mouse controls the action keys still work (the pointer
     // steers); on a controller or touch they do nothing
     // (on swipe controls the keys move, sprint and jump: shots are the trackpad's)
-    if (!(ctrl === 'keyboard' || (ctrl === 'swipe' && act !== 'kick' && act !== 'lob') || (ctrl === 'mouse' && !MOVE.has(act)))) return;
+    if (!((ctrl === 'keyboard' && MOVE.has(act)) || (ctrl === 'swipe' && act !== 'kick' && act !== 'lob') || (ctrl === 'mouse' && !MOVE.has(act)))) return;
     held.add(e.code);
     if (act === 'kick') kickDown('key:' + e.code);
     if (act === 'lob') kickDown('lob:' + e.code);
@@ -609,7 +617,9 @@ function fireEvent(e) {
       else if (e.kind === 'counter') floatText(e.x, e.y, zt, 'COUNTER', '#7fd8ff', 34);
       else if (e.kind === 'kill') floatText(e.x, e.y, zt, 'KILL', '#ff5a5f', 38);
       else if (e.kind === 'block' && e.p === mine() ) floatText(e.x, e.y, zt, 'BLOCK', '#b8f0ff', 26);
-      else if (e.perfect) floatText(e.x, e.y, zt, `PERFECT ${e.kind.toUpperCase()}`, '#ffd34d', 40);
+      // (your own timed shot already showed its grade over your head on the press: name the shot only)
+      else if (e.perfect && !(isMine && e.g != null)) floatText(e.x, e.y, zt, `PERFECT ${e.kind.toUpperCase()}`, '#ffd34d', 40);
+      else if (e.perfect) floatText(e.x, e.y, zt, ({ net: 'NET SHOT', servel: 'SERVE', serveh: 'HIGH SERVE' }[e.kind] || e.kind.toUpperCase()), '#ffd34d', 30);
       else if (e.kind === 'smash' && e.kmh >= 170) floatText(e.x, e.y, zt, `${e.kmh} KM/H`, '#ff8f6b', 34);
       else if (mine()  === e.p) {
         const label = { smash: 'SMASH', clear: 'CLEAR', drive: 'DRIVE', drop: 'DROP', net: 'NET SHOT', lift: 'LIFT', servel: 'SERVE', serveh: 'HIGH SERVE' }[e.kind] || '';
@@ -679,11 +689,13 @@ const CTRL_HELP = {
   <span class="do">Serve</span><span class="how">Swipe: gentle for a low serve, fierce for a high one.</span>
   <span class="do">Sprint, jump</span><span class="how"><b>Shift</b> sprints (double-tap to dive), <b>F</b> jumps.</span>
   <span class="do">Direction</span><span class="how">If swiping up lifts instead of hitting, switch <b>Swipe direction</b> in Settings.</span>`,
-  keyboard: `<span class="do">Move</span><span class="how"><b>WASD</b> / arrows. A quick tap is a small step; hold to run. With no direction held, your player glides the last metre or two to where the shuttle is best met (Settings: Placement assist).</span>
-  <span class="do">Shot</span><span class="how">Hold <b>Space</b>, release. <b>E</b> instead lifts it high and deep.</span>
-  <span class="do">Sprint</span><span class="how">Hold <b>Shift</b>: a faster, longer stride that burns stamina.</span>
-  <span class="do">Dive</span><span class="how">Double-tap <b>Shift</b>: a last-ditch launch along your run, the racket stretched out at the shuttle. It gets there when running will not, but you are on the floor for a moment after.</span>
-  <span class="do">Jump</span><span class="how"><b>F</b>. Out of a sprint it is a long leap.</span>`,
+  keyboard: `<span class="do">Move</span><span class="how"><b>WASD</b> or arrows. Head toward the shuttle and your player locks onto the spot to hit it from.</span>
+  <span class="do">A: Hit</span><span class="how"><b>J</b> (or Space). Overhead: <b>smash</b>. Over the tape: <b>kill</b>. Waist high: drive. Low: <b>clear</b>, high and deep.</span>
+  <span class="do">B: Soft</span><span class="how"><b>K</b>. Overhead: drop. Low or at the net: <b>net shot</b>.</span>
+  <span class="do">Timing</span><span class="how">A circle marks where you will meet the shuttle. Press as the shuttle reaches it: the closing ring lands on the circle at that moment, and you hear <b>tick, tick, TOCK</b> (press on the TOCK). <b>PERFECT</b>, GREAT or GOOD, and whether you were early or late. Way off is a whiff, and the racket needs a moment to come back.</span>
+  <span class="do">Aim</span><span class="how">Hold a direction as you press: left or right angles it, forward goes deep, back goes short.</span>
+  <span class="do">Big moments</span><span class="how">A <b>perfect A</b> overhead is a <b>jump smash</b>. Against a smash, A <b>counters</b> (perfect: a <b>parry</b>) and B <b>blocks</b> it dead. Press with the shuttle just out of reach and you <b>dive</b> for it.</span>
+  <span class="do">Serve</span><span class="how">A serves high and deep, B short.</span>`,
   trackpad: `<span class="do">Move</span><span class="how">Automatic: your player reads each shot and runs to meet it, then back to the middle.</span>
   <span class="do">Aim</span><span class="how">Point at the far court: the ring is where your shot goes. Near the net (the ring reads <b>SOFT</b>): a drop, net shot or block. Deeper (<b>POWER</b>): a smash, clear, kill or counter.</span>
   <span class="do">Shot</span><span class="how"><b>Tap</b> (or click, or Space). Any time: once the shuttle is coming your way is fine; the swing is timed for you. Tap early against a smash to counter it.</span>
@@ -854,8 +866,8 @@ function selfStep(K, fresh, sp) {
   if (!fresh.hs) {
     const tired = sp[9] < K.TIRED ? 0.86 : 1;
     // (sprinting as the server has it, or about to: held with the breath for it)
-    const sprinting = m0.sp && (sp[19] || sp[9] > K.SPRINT_MIN);
-    const top = (sprinting ? K.SPRINT_V : K.TOP) * tired * (inp.kickDownAt !== null ? 0.6 : 1) * (sp[11] ? 0.5 : 1) * (sp[17] > 0 ? 0.35 : 1);
+    const sprinting = m0.sp && ctrl !== 'keyboard' && (sp[19] || sp[9] > K.SPRINT_MIN);
+    const top = (sprinting ? K.SPRINT_V : ctrl === 'keyboard' ? K.ARC_TOP : K.TOP) * tired * (inp.kickDownAt !== null ? 0.6 : 1) * (sp[11] ? 0.5 : 1) * (sp[17] > 0 ? 0.35 : 1);
     // the same placement assist the server applies when nothing is held
     const simOf = () => { const b = fresh.b; return { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } }; };
     if (m <= 0.05 && m0.as) {
@@ -966,7 +978,8 @@ function frame(now) {
     } else if (s.rc < lastRc) lastRc = s.rc;
     // stamina + charge (own player)
     const dashEl = $('dash'), chargeEl = $('charge');
-    if (ms >= 0 && s.p && s.p[ms] && s.rp !== 'prematch') {
+    // (stamina is hidden on keyboard controls: the sim keeps it, the player never manages it)
+    if (ms >= 0 && s.p && s.p[ms] && s.rp !== 'prematch' && ctrl !== 'keyboard') {
       dashEl.classList.remove('hidden');
       const st = clamp(s.p[ms][9], 0, 100);
       $('stamFill').style.width = st + '%';
@@ -1041,15 +1054,19 @@ function frame(now) {
   if (world && ms >= 0 && ctrl !== 'trackpad') world.players[ms] = predictSelf(world.players[ms], dtMs, ms, now);
   else own.on = false;
   drawAim(live, ms, fresh, now);
-  drawSwipeRing(now, planFrame(now, s, world, ms, live), live);
+  const ringNow = planFrame(now, s, world, ms, live);
   lastWorld = world;
   const hype = s ? clamp(s.rc / 20, 0, 1) + (s.hs > 0 ? 0.3 : 0) : 0;
   const rv = {
     world, live, mySlot: ms, names: [slotName(0), slotName(1)], pred: lastPred,
     rally: s ? s.rc : 0, hype, tick: lastRenderTick, strokes, pointAt, hitstop: !!(s && (s.hs > 0 || s.up)),
     lh: s ? s.lh : -1, predAge: fresh && fresh._at ? (now - fresh._at) / 1000 : 0,
+    // keyboard controls show one ring only, the timing ring at the contact point (drawSwipeRing)
+    oneRing: ctrl === 'keyboard',
   };
   if (R) R.frame(rv, now);
+  // (after the frame: projected through this frame's camera, so it sits on the scene, not a frame behind)
+  drawSwipeRing(now, ringNow, live);
   Sound.crowd(hype);
 
   // name tags
@@ -1062,7 +1079,8 @@ function frame(now) {
     for (let i = 0; i < 2; i++) {
       const p = world.players[i], pr = R.project(p[0], p[1], 2.05);
       const el = els[i];
-      el.style.display = pr.ok ? '' : 'none';
+      // (your own tag steps aside while the keyboard timing ring is up: it would sit across the target)
+      el.style.display = pr.ok && !(i === ms && ctrl === 'keyboard' && ringNow && ringNow.k * 1000 / 60 <= ARC.LEAD + 150) ? '' : 'none';
       el.style.transform = `translate3d(${pr.x.toFixed(1)}px,${pr.y.toFixed(1)}px,0) translate(-50%,-100%)`;
       // (a player on trackpad controls is marked, so the other side knows the legs are assisted)
       const html = esc((i === ms ? 'YOU · ' : '') + slotName(i)) + (p[21] ? '<span class="ez"> · ASSIST</span>' : '');
@@ -1075,7 +1093,7 @@ function frame(now) {
 
   // footer
   let foot = '';
-  if (s && s.rp === 'match' && ms >= 0 && s.ph === 'serve' && s.sv === ms) foot = ctrl === 'swipe' ? 'Your serve · swipe: gentle = low serve, fierce = high serve' : ctrl === 'trackpad' ? 'Your serve · tap: aimed short = low serve, deep = high serve' : 'Your serve · shoot: soft = low serve, full = high serve';
+  if (s && s.rp === 'match' && ms >= 0 && s.ph === 'serve' && s.sv === ms) foot = ctrl === 'swipe' ? 'Your serve · swipe: gentle = low serve, fierce = high serve' : ctrl === 'keyboard' ? 'Your serve · J: high and deep · K: short' : ctrl === 'trackpad' ? 'Your serve · tap: aimed short = low serve, deep = high serve' : 'Your serve · shoot: soft = low serve, full = high serve';
   else if (s && s.rp === 'match' && ms >= 0 && s.ph === 'serve') foot = 'Receiving';
   if (s && s.rp === 'match' && ms < 0 && room) {
     const me = room.members.find(m => m.id === myId), qi = room.queue.indexOf(myId);
@@ -1125,7 +1143,7 @@ const SWP = {
   GAP: 110,               // ms: a pause this long ends a swipe (and a fade)
   WIN: [25, 60, 110, 220], // ms either side: perfect, great, good, early/late (beyond: a miss)
 };
-const swp = { n: 0, g: 4, si: 0, sd: false, sl: 0, vt: null };
+const swp = { n: 0, g: 4, si: 0, sd: false, sl: 0, vt: null, sz: 0 };
 // the fingers' direction is the scroll's times swDir: natural scrolling (the default) is -1
 let swDir = (() => { try { return localStorage.getItem('obm_swdir') === 'rev' ? 1 : -1; } catch { return -1; } })();
 const swState = { wg: null, coast: null, win: [] };
@@ -1194,22 +1212,78 @@ function fireSwipe(w) {
   if (!serving) gradeFx(g, off, ms);
   if (window.__ob) window.__ob.lastSwipe = { g, off, si: swp.si, sd: swp.sd, sl: swp.sl, vt: swp.vt, deg: Math.round(deg) };
 }
+// ---------------------------------------------------------------- keyboard (arcade) controls
+// A press is a swipe of a fixed intensity: A hard, B soft. Its timing is judged here against the
+// ring (the same contactPlan record the swipe uses: the key's own timestamp, no swipe bias), and
+// the direction held at that moment aims it: left/right is the line, forward/back the length.
+// A whiff locks the racket for ARC.LOCK ms (the sim enforces it too, see C.ARC_LOCK).
+const ARC = {
+  WIN: [50, 90, 140, 240], // ms either side: perfect, great, good, early/late (beyond: a whiff)
+  LEAD: 600,                // ms the approach ring takes to close onto the target: the same every shot
+  BEATS: [500, 250, 0],     // the count-in, ms before the moment: tick, tick, TOCK
+  SI: { a: 0.92, b: 0.15 }, // the swipe intensity each button stands for
+  LOCK: 300,
+};
+let arcLockUntil = 0;
+function arcPress(btn, t) {
+  const ms = mySlot(), st = hist[hist.length - 1];
+  if (ms < 0 || !st || t < arcLockUntil) return;
+  let rec = null;
+  for (let i = frames.length - 1; i >= 0; i--) if (frames[i].t <= t) { rec = frames[i]; break; }
+  if (!rec) rec = frames[0] || { t, vt: lastRenderTick, ideal: null };
+  const serving = st.ph === 'serve' && st.sv === ms && st.hold;
+  let g = 4, off = null;
+  if (serving) g = 1;
+  else if (rec.ideal != null) { off = t - rec.ideal; const a = Math.abs(off); g = ARC.WIN.findIndex(x => a <= x); if (g < 0) g = 4; }
+  const side = ms === 1 ? 1 : -1; // screen right is court y * -side (see keyAxes)
+  const dKey = (held.has('KeyD') || held.has('ArrowRight') ? 1 : 0) - (held.has('KeyA') || held.has('ArrowLeft') ? 1 : 0);
+  const wKey = (held.has('KeyW') || held.has('ArrowUp') ? 1 : 0) - (held.has('KeyS') || held.has('ArrowDown') ? 1 : 0);
+  swp.n++; swp.g = g; swp.si = ARC.SI[btn]; swp.sd = false; swp.sl = dKey * 0.85 * -side; swp.sz = wKey;
+  swp.vt = Math.round((rec.vt + (t - rec.t) * TPMS) * 10) / 10;
+  sendInput(true);
+  if (window.__ob) window.__ob.lastPress = { btn, g, off, sl: swp.sl, sz: swp.sz, vt: swp.vt };
+  if (serving) return;
+  // nothing to time against while the shuttle is on its way to you: the sim may dive for it
+  const coming = st.ph === 'rally' && st.lh >= 0 && st.lh !== ms;
+  if (g === 4 && rec.ideal == null && coming) return;
+  gradeFx(g, off, ms);
+  if (g === 4 && st.ph === 'rally') arcLockUntil = t + ARC.LOCK;
+}
 // the grade, at once, over the player's head
 function gradeFx(g, off, ms) {
   const w = lastWorld, me = w && w.players[ms];
   if (!me) return;
-  const [txt, col, size] = g === 0 ? ['PERFECT', '#ffd34d', 46] : g === 1 ? ['GREAT', '#e4ff3c', 34] : g === 2 ? ['GOOD', '#7fd8ff', 28]
+  const side = off == null ? '' : off < 0 ? ' · EARLY' : ' · LATE'; // (which way it was off, to learn from)
+  const [txt, col, size] = g === 0 ? ['PERFECT', '#ffd34d', 46] : g === 1 ? ['GREAT' + side, '#e4ff3c', 34] : g === 2 ? ['GOOD' + side, '#7fd8ff', 28]
     : g === 3 ? [off < 0 ? 'EARLY' : 'LATE', '#ff8f6b', 26] : [off == null ? 'SWING' : off < 0 ? 'TOO EARLY' : 'TOO LATE', '#8b93a4', 22];
-  floatText(me[0], me[1], (me[14] || 0) + 2.5, txt, col, size);
+  floatText(me[0], me[1], (me[14] || 0) + 3.3, txt, col, size); // (above the shot's callout, not on it)
   if (g === 0) flash('#ffd34d', 0.18);
 }
-// each frame on swipe controls: when the incoming shuttle is best met from where the player is now
+// each frame on swipe and keyboard controls: when (and where) the incoming shuttle is met. Fixed
+// once per shot from the freshest snapshot (ringPlan in shared/badminton.js: from the spot the
+// player is steered to, so it shows as soon as the shot is struck and does not move or blink as
+// they run), as a sim tick; the moment on screen is when the playback clock reaches that tick.
+const ringLock = { k: -1, c: null };
 function planFrame(now, s, world, ms, live) {
   let ideal = null, plan = null;
-  if (ctrl === 'swipe' && live && world && ms >= 0 && s && s.ph === 'rally' && s.lh >= 0 && s.lh !== ms && window.BM && window.BM.contactPlan) {
-    const b = world.ball, me = world.players[ms];
-    plan = window.BM.contactPlan({ x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5] }, { i: ms, x: me[0], y: me[1], z: me[14] || 0 });
-    if (plan) ideal = now + plan.k * 1000 / 60;
+  const fresh = hist[hist.length - 1];
+  const on = (ctrl === 'swipe' || ctrl === 'keyboard') && live && world && ms >= 0 && fresh && fresh.ph === 'rally' && fresh.lh >= 0 && fresh.lh !== ms && window.BM && window.BM.ringPlan;
+  if (!on) { ringLock.c = null; ringLock.k = -1; }
+  else {
+    if (fresh.k !== ringLock.k) {
+      ringLock.k = fresh.k;
+      const b = fresh.b, me = world.players[ms];
+      const sim = { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, hitstop: fresh.hs || 0, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } };
+      // (one key per shot: the hitter, the rally count and the point)
+      const key = fresh.lh + ':' + fresh.rc + ':' + (fresh.sc[0] + fresh.sc[1]);
+      ringLock.c = window.BM.ringPlan(sim, { i: ms, x: me[0], y: me[1], z: me[14] || 0 }, key, ringLock.c);
+    }
+    const c = ringLock.c;
+    if (c) {
+      const k = c.tick - lastRenderTick, ms2 = k / TPMS / (slowK || 1);
+      if (ms2 > -ARC.WIN[3]) ideal = now + ms2;                       // (a late press is still graded)
+      if (ms2 > -ARC.WIN[1]) plan = { k: ms2 * 60 / 1000, x: c.x, y: c.y, z: c.z, key: c.key }; // (drawn until just after)
+    }
   }
   frames.push({ t: now, vt: lastRenderTick, ideal });
   while (frames.length > 150) frames.shift();
@@ -1222,8 +1296,9 @@ function drawSwipeRing(now, plan, live) {
   if (cv.width !== Math.round(r.width * dpr) || cv.height !== Math.round(r.height * dpr)) { cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); }
   const x = cv.getContext('2d');
   x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, r.width, r.height);
-  if (!plan || !live || ctrl !== 'swipe' || !R) return;
+  if (!plan || !live || (ctrl !== 'swipe' && ctrl !== 'keyboard') || !R) return;
   const dt = plan.k * 1000 / 60;
+  if (ctrl === 'keyboard') { drawKeyRing(x, plan, dt); return; }
   if (dt > 1000) return;
   const pr = R.project(plan.x, plan.y, plan.z);
   if (!pr.ok) return;
@@ -1234,6 +1309,39 @@ function drawSwipeRing(now, plan, live) {
   if (close) { x.shadowColor = '#ffd34d'; x.shadowBlur = 18; }
   x.beginPath(); x.arc(pr.x, pr.y, rad, 0, Math.PI * 2); x.stroke();
   x.globalAlpha = 1; x.shadowBlur = 0;
+}
+
+// The keyboard ring. A target circle sits where the shuttle will be met: the shuttle flies into
+// it at the perfect moment ("hit when the shuttle reaches the circle"). An approach ring closes
+// onto it at the same speed every shot (ARC.LEAD), so the two meet on the moment; both turn gold
+// inside the perfect window. A count-in sounds with it: tick, tick, TOCK on the moment.
+const keyRing = { key: null, beats: 0 };
+function drawKeyRing(x, plan, dt) {
+  if (keyRing.key !== plan.key) { keyRing.key = plan.key; keyRing.beats = 0; }
+  // the count-in: each beat is scheduled on the audio clock for its exact moment, a frame ahead
+  for (let i = keyRing.beats; i < ARC.BEATS.length; i++) {
+    const b = ARC.BEATS[i];
+    if (dt > b + 40) break;
+    keyRing.beats = i + 1;
+    if (dt > b - 60) Sound.fx.count(i === ARC.BEATS.length - 1, (dt - b) / 1000); // (a beat already gone is skipped)
+  }
+  if (dt > ARC.LEAD + 150) return;
+  const pr = R.project(plan.x, plan.y, plan.z);
+  if (!pr.ok) return;
+  const R0 = 22, u = clamp(dt / ARC.LEAD, 0, 1), gold = Math.abs(dt) <= ARC.WIN[0];
+  const fade = clamp((ARC.LEAD + 150 - dt) / 150, 0, 1) * (dt < 0 ? clamp(1 + dt / ARC.WIN[1], 0, 1) : 1);
+  x.globalAlpha = fade;
+  // the target
+  x.lineWidth = gold ? 4 : 2.5; x.strokeStyle = gold ? '#ffd34d' : 'rgba(255,255,255,.9)';
+  if (gold) { x.shadowColor = '#ffd34d'; x.shadowBlur = 20; }
+  x.beginPath(); x.arc(pr.x, pr.y, R0, 0, Math.PI * 2); x.stroke();
+  x.shadowBlur = 0;
+  // the approach ring: from four times the target down onto it
+  if (dt > 0) {
+    x.lineWidth = 3.5; x.strokeStyle = gold ? '#ffd34d' : '#e4ff3c';
+    x.beginPath(); x.arc(pr.x, pr.y, R0 * (1 + 3 * u), 0, Math.PI * 2); x.stroke();
+  }
+  x.globalAlpha = 1;
 }
 
 // read-only hooks for debugging and automated checks

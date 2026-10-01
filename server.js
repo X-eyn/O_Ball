@@ -179,7 +179,9 @@ class Room {
           // badminton trackpad controls: the sim runs the legs and the swing; tx/ty is the aimed spot
           ez: !!msg.ez, am: !!msg.am, tx: m2(msg.tx), ty: m2(msg.ty),
           // badminton swipe controls: a swipe counter, its grade, intensity, lift, line and the tick seen; magnetic steering
-          sw: n(msg.sw), sg: n(msg.sg), si: f(msg.si), sd: !!msg.sd, sl: f(msg.sl), svt: Number.isFinite(msg.svt) ? +msg.svt : null, swm: !!msg.swm, mg: !!msg.mg };
+          sw: n(msg.sw), sg: n(msg.sg), si: f(msg.si), sd: !!msg.sd, sl: f(msg.sl), svt: Number.isFinite(msg.svt) ? +msg.svt : null, swm: !!msg.swm, mg: !!msg.mg,
+          // badminton arcade (keyboard) controls: on them, and the length a press asked for (stick back..forward)
+          arc: !!msg.arc, sz: f(msg.sz) };
         break;
       }
       case 'emote': {
