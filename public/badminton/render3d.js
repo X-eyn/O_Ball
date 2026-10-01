@@ -744,6 +744,41 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       f.ball = [wx, wy, rz + (o.z || 0), 0, 0, 0];
     } else f.stroke = null;
   }
+  // The incoming shuttle stepped forward with the sim's own flight model (1/60 s, up to 1.6 s) to
+  // the first point where player i could meet it (in reach, at a hittable height, on their side),
+  // from where they stand now. null when it is not coming to them or never comes into reach.
+  function intercept(i, p, b) {
+    if (!CT) return null;
+    const dir = i ? 1 : -1; // player i's half is x * dir > 0
+    if (!(b[3] * dir > 0.3)) return null; // only a shuttle travelling toward this player's half
+    let x = b[0], y = b[1], z = b[2], vx = b[3], vy = b[4], vz = b[5];
+    const pz = p[14] || 0, reach = CT.REACH * 1.02, k = CT.DRAG, g = CT.G, h = 1 / 60;
+    // of the stretch of flight inside reach, the point at the most natural reach (~0.75 m out):
+    // a shuttle crossing in front is played in front, not where it first came into reach
+    let best = null, inside = false;
+    for (let t = 0; t < 1.6; t += h) {
+      if (x * dir > -0.2) {
+        const d = Math.hypot(x - p[0], y - p[1]), rz = z - pz;
+        if (d < reach && rz < CT.MAX_Z && rz > 0.05) {
+          const sc = Math.abs(d - 0.75);
+          if (!best || sc < best.sc - 0.02) best = { sc, t, x, y, z, vx, vy, vz, out: false };
+          // (one that comes into reach high is taken high, overhead, as soon as it can be)
+          if (!inside && rz >= 1.75) { inside = true; break; }
+          inside = true;
+        } else if (inside) break;
+      }
+      const sp = Math.hypot(vx, vy, vz), dec = 1 / (1 + k * sp * h);
+      vx *= dec; vy *= dec; vz = vz * dec - g * h;
+      x += vx * h; y += vy * h; z += vz * h;
+      if (z <= 0) break;
+    }
+    if (!best) return null;
+    // and where it would land if left: a player leaves one going clearly out
+    ({ x, y, z, vx, vy, vz } = best);
+    for (let s = 0; s < 240 && z > 0; s++) { const sp = Math.hypot(vx, vy, vz), dec = 1 / (1 + k * sp * h); vx *= dec; vy *= dec; vz = vz * dec - g * h; x += vx * h; y += vy * h; z += vz * h; }
+    best.out = Math.abs(x) > CT.L + 0.3 || Math.abs(y) > CT.W + 0.3;
+    return best;
+  }
   // One athlete's frame: the stroke it is in (timed from the server's hit tick), what a charge is
   // loading, the split-step cue and the end-of-point reaction.
   function athleteFrame(i, p, b, rv, dt, now) {
@@ -753,30 +788,46 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
     if (rec) {
       const u = (tick - rec.tick) / 60;
       if (u > -0.6 && u < 0.7) {
-        const dx = rec.x - p[0], dy = rec.y - p[1], cs = Math.cos(A.yaw), sn = Math.sin(A.yaw);
-        const side = -(dx * cs - dy * sn), rz = rec.z - (rec.pz || 0);
+        // (forehand / backhand side measured square to the net, not to the body's momentary turn:
+        // the body turns into a backhand, and the side it is judged by must not turn with it)
+        const ny = i ? -Math.PI / 2 : Math.PI / 2, dx = rec.x - p[0], dy = rec.y - p[1], cs = Math.cos(ny), sn = Math.sin(ny);
+        const side = -(dx * cs - dy * sn), fwd = dx * sn + dy * cs, rz = rec.z - (rec.pz || 0);
         const name = strokeFor(rec.kind, side, rz);
-        stroke = { name, u, side, reach: Math.hypot(dx, dy), air: !!rec.air, charge: rec.kind === 'smash' || rec.kind === 'jsmash' || rec.kind === 'clear' || rec.kind === 'lift' ? 1 : 0.7,
+        stroke = { name, u, side, fwd, rz, reach: Math.hypot(dx, dy), air: !!rec.air, charge: rec.kind === 'smash' || rec.kind === 'jsmash' || rec.kind === 'clear' || rec.kind === 'lift' ? 1 : 0.7,
           contact: rec.kind ? new THREE.Vector3(rec.x, rec.z, rec.y) : null };
       }
     }
-    // what a charge is loading: overhead for a high shuttle, a brace when the opponent is winding
-    // up with it high on their side, otherwise by where it is coming (racket side or not, low)
-    let chargeKind = 'over';
-    if (p[6] >= 0) {
-      const mine = Math.sign(b[0] || 1) === (i ? 1 : -1) || (b[3] !== 0 && Math.sign(b[3]) === (i ? 1 : -1));
-      const cs = Math.cos(A.yaw), sn = Math.sin(A.yaw), dx = b[0] - p[0], dy = b[1] - p[1], side = -(dx * cs - dy * sn);
-      if (!mine) chargeKind = b[2] > 2 ? 'block' : 'fh';
-      else if (b[2] - (p[14] || 0) > 1.9 || (b[5] > 0 && b[2] > 1.2)) chargeKind = 'over';
-      else if (rv.pred && rv.pred.land && b[2] < 1.1) chargeKind = 'under';
-      else chargeKind = side < -0.15 ? 'bh' : 'fh';
-    }
     const other = rv.strokes && rv.strokes[1 - i];
+    // where the incoming shuttle will be met (the sim's flight stepped forward to the first point in
+    // reach), and the stroke a player readies for it: the charge loads that stroke, and before the
+    // charge the player already turns and lifts the racket toward it (prep, by time to contact)
+    let chargeKind = 'over', prep = null;
+    const icp = intercept(i, p, b);
+    if (icp) {
+      const ny = i ? -Math.PI / 2 : Math.PI / 2, cs = Math.cos(ny), sn = Math.sin(ny), dx = icp.x - p[0], dy = icp.y - p[1];
+      const side = -(dx * cs - dy * sn), fwd = dx * sn + dy * cs, rz = icp.z - (p[14] || 0);
+      let kind = rz >= 1.75 ? 'clear' : rz >= 0.85 ? 'drive' : 'lift';
+      try {
+        const BMs = BM();
+        const s = { phase: 'rally', lastHitter: 1 - i, lastKind: other && other.kind || '', ball: { x: icp.x, y: icp.y, z: icp.z, vx: icp.vx, vy: icp.vy, vz: icp.vz }, players: [], score: [0, 0] };
+        kind = BMs.shotKind(s, { i, x: p[0], y: p[1], z: p[14] || 0, vz: p[15] || 0, vx: p[2], vy: p[3], fx: p[4], fy: p[5] }, p[6] >= 0 ? p[6] : 20, false) || kind;
+      } catch (e) { /* the sim's shot table is advisory here */ }
+      let name = strokeFor(kind, side, rz);
+      // a player commits: the readied stroke changes only once the new call has held for 0.1 s
+      if (A._prepName && name !== A._prepName) { A._prepHold = (A._prepHold || 0) + 1; if (A._prepHold < 6) name = A._prepName; else A._prepHold = 0; } else A._prepHold = 0;
+      A._prepName = name;
+      chargeKind = name;
+      if (!icp.out || p[6] >= 0) prep = { name, eta: icp.t, side, fwd, rz, contact: new THREE.Vector3(icp.x, icp.z, icp.y) };
+    } else A._prepName = null;
+    if (!icp && p[6] >= 0) {
+      // nothing coming into reach: a brace if the opponent has it high, else the ready forehand
+      chargeKind = Math.sign(b[0] || 1) !== (i ? 1 : -1) && b[2] > 2 ? 'block' : 'fh';
+    }
     const splitAgo = other && other.kind ? (tick - other.tick) / 60 : null;
     const pt = rv.pointAt;
     const ago = pt ? (tick - pt.tick) / 60 : null;
     return {
-      p, ball: b, dt, t: now / 1000, frozen: !!rv.hitstop, stroke, chargeKind, splitAgo,
+      p, ball: b, dt, t: now / 1000, frozen: !!rv.hitstop, stroke, chargeKind, prep, splitAgo,
       won: pt && pt.p === i ? ago : null, lost: pt && pt.p !== i ? ago : null,
     };
   }
@@ -785,16 +836,24 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   let frameDt = 1 / 60;
   // a per-frame smoothing factor tuned at 60 fps, converted so it settles at the same rate at any fps
   const ease = k => 1 - Math.pow(1 - k, frameDt * 60);
+  let lab = null; // the motion lab (motionlab.js, tools/motion_test.js) owns the athletes while it runs
   function frame(rv, now) {
+    if (lab) { lastT = now; return; }
     const dtMs = now - lastT, dt = clamp(dtMs / 1000, 0, 0.1); lastT = now; frameDt = dt;
     adapt(dtMs, now);
     const world = rv.world, live = rv.live, my = rv.mySlot;
     if (rv.names) players.forEach((p, i) => p.setIdentity(rv.names[i], i));
     hall.update(dt);
     if (world) {
-      const b = world.ball;
+      // dbg.manual: a test harness drives that athlete itself (debugAthletes / debugAthleteFrame)
+      // and may hold the shuttle where its case puts it (dbg.ball) or hide the other player
+      const b = dbg && dbg.ball ? dbg.ball : world.ball;
       for (let i = 0; i < 2; i++) {
         const p = world.players[i];
+        if (dbg && dbg.manual) {
+          if (i === dbg.slot) { feet[i].position.set(players[i].root.position.x, 0.008, players[i].root.position.z); continue; }
+          if (dbg.hideOther) { players[i].root.visible = false; feet[i].visible = false; continue; }
+        }
         if (rv.hide && rv.hide[i]) { players[i].root.visible = false; feet[i].visible = false; continue; }
         players[i].root.visible = true; feet[i].visible = true;
         const tp = performance.now();
@@ -899,7 +958,15 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       } else aimGroup.visible = false;
       camera.position.sub(shakeOff); shakeOff.set(0, 0, 0);
       rigCamera(world, b, my, rv, dt);
-      if (dbg && dbg.cam) {
+      if (dbg && dbg.camPos) { camera.position.set(...dbg.camPos); camera.lookAt(...dbg.camLook); }
+      else if (dbg && dbg.cam === 'hand') {
+        // close-up on a hand (the grip): view = direction to the camera in the hand bone's own frame
+        // (+x back of the hand, -x palm, +y toward the fingers, +z thumb side), at = aim point there
+        const hb = players[dbg.slot].h.bone[dbg.left ? 'hand_l' : 'hand_r'], c = hb.localToWorld(new THREE.Vector3(...(dbg.at || [-0.02, 0.07, 0.01])));
+        const v = new THREE.Vector3(...(dbg.view || [1, 0, 0])).normalize().applyQuaternion(hb.getWorldQuaternion(new THREE.Quaternion()));
+        camera.position.copy(c).addScaledVector(v, dbg.dist || 0.3); camera.lookAt(c);
+      }
+      else if (dbg && dbg.cam) {
         const A = players[dbg.slot], r = A.root.position, yw = A.yaw;
         const off = { side: [-3.2, 0], front: [0, 3.4], back: [0, -3.4], right: [3.2, 0], diag: [-2.4, 2.4] }[dbg.cam] || [-3.2, 0];
         // local offset (x: the player's left, z: ahead) turned into the world
@@ -965,9 +1032,20 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   }
 
   return {
-    frame, resize, project, pickGround, _dbg: () => ({ renderer, scene, camera, rig, pts, scale: () => scale, avgMs: () => avgMs }),
+    frame, resize, project, pickGround, _dbg: () => ({ renderer, scene, camera, rig, pts, players, scale: () => scale, avgMs: () => avgMs }),
     fx: { hit: fxHit, net: fxNet, shake: fxShake, dust: fxDust, slam: fxSlam, point: slot => hall.point(slot) },
     debugPose: o => { dbg = o ? Object.assign({ slot: 0 }, o) : null; },
+    // scripted motion tests: __ob.R().motionLab({ cases, shots }) (see motionlab.js)
+    motionLab: async o => {
+      const m = await import('./motionlab.js');
+      lab = true;
+      try { return await m.run({ THREE, players, feet, scene, camera, renderer, shuttle }, o || {}); } finally { if (!(o && o.hold)) lab = null; }
+    },
+    // the reaction test harness (tools/reaction_test.js): the athletes, the real per-frame input
+    // builder, and a synchronous render of the current scene
+    debugAthletes: () => players,
+    debugAthleteFrame: (i, p, b, rv, dt, now) => athleteFrame(i, p, b, rv, dt, now),
+    debugRender: () => { if (dbg && dbg.camPos) { camera.position.set(...dbg.camPos); camera.lookAt(...dbg.camLook); } if (dbg && dbg.ball) { shuttle.position.set(...W2(dbg.ball[0], dbg.ball[1], dbg.ball[2])); shuttle.scale.setScalar(SH_SCALE); } const hid = [halo, beaconGlow, beaconRing, dropLine, marker, countRing].map(o => [o, o.visible]); if (dbg && dbg.ball) hid.forEach(([o]) => { o.visible = false; }); renderer.render(scene, camera); hid.forEach(([o, v]) => { o.visible = v; }); },
     strokes: STROKES,
     setSafeBottom: v => { safeBottom = v; },
     debugCam: () => ({ pos: camera.position.toArray(), target: camTarget.toArray() }),

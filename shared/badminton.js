@@ -5,7 +5,7 @@
 // to move, more space to hit into); the shuttle's flight is scaled with it exactly (see C.G and
 // C.DRAG), so every trajectory keeps its real shape and timing. Every shot is solved backwards
 // from a target, so flights are predictable and the skill lives in positioning, timing and
-// contact. Players run, dash, dive and jump; the shot you get follows from where and how you meet
+// contact. Players run, sprint, dive and jump; the shot you get follows from where and how you meet
 // the shuttle (height, charge, whether you are airborne, and what it was when it came to you).
 // Inputs are the same shape football uses (see shared/game.js), so the room/netcode layer is shared.
 (function (root, factory) {
@@ -29,7 +29,7 @@
     // (t' = t/T, v' = S·T·v) maps it exactly onto k' = k/S, g' = g·S·T². So every flight keeps its
     // real shape, covers S times the ground and takes 1/T as long (terminal velocity 6.7·S·T m/s).
     G: 9.81 * S * T * T, DRAG: 0.2185 / S,
-    // players: fast and arcade-y, with a burst dash, a desperation dive, a jump and light stamina
+    // players: fast and arcade-y, with a sprint, a desperation dive, a jump and light stamina
     TOP: 8.2, AIR_ACCEL: 0.035,
     // running (m/s²): speeding up along your line, cutting or reversing (the planted foot pushes
     // harder), and braking when you let go. The last TAPER m/s of any change eases in rather than
@@ -39,12 +39,16 @@
     // spot where the incoming shuttle is best met (any direction input takes over at once)
     ASSIST_R: 2.4, ASSIST_V: 0.8,
     REACH: 1.45, SWEET: 0.55, SWEET_Z: 2.25, MAX_Z: 2.9, HIGH_Z: 1.75, MID_Z: 0.85,
-    DASH_V: 12.5, DASH_T: 10, DASH_CD: 46, LUNGE_V: 6.8,
-    DIVE_V: 13.5, DIVE_T: 20, DIVE_CD: 80, DIVE_R: 2.9, DIVE_REACH: 1.45,
+    // sprint (hold Shift): a longer, faster stride that burns stamina while it lasts (~3 s from full)
+    SPRINT_V: 10.2, SPRINT_COST: 0.55, SPRINT_MIN: 6,
+    // the dive (double-tap Shift): a last-ditch launch low along the run, the racket stretched out.
+    // It covers ~2 m in the air, reaches half as far again as a stand, and hits whatever it meets
+    // soft; then the player is on the floor for DIVE_REC ticks getting up, out of the rally
+    DIVE_V: 13.5, DIVE_T: 20, DIVE_CD: 80, DIVE_REACH: 1.45, DIVE_REC: 40, DIVE_AIM: 0.6,
     // jumping: a 4-tick crouch, then takeoff. Player gravity is a touch stronger than real (snappier
     // hang): apex JUMP_V²/2PG = 0.76 m after 0.33 s, 0.66 s in the air
     PG: 14, JUMP_V: 4.6, JUMP_SQUAT: 4, JUMP_COST: 10, LAND_T: 6, LAND_SMASH_T: 13, LEAP_V: 9.4,
-    ST_MAX: 100, ST_REGEN: 0.245, DASH_COST: 18, DIVE_COST: 30, SMASH_COST: 12, JSMASH_COST: 8, PERF_REGEN: 9, TIRED: 22,
+    ST_MAX: 100, ST_REGEN: 0.245, DIVE_COST: 30, SMASH_COST: 12, JSMASH_COST: 8, PERF_REGEN: 9, TIRED: 22,
     CHARGE_FULL: 42, PERF_END: 58, COUNTER_CT: 14,
     REC_SMASH: 20, REC_CLEAR: 15, REC_SHOT: 10, SWING_T: 5,
     HOLD_Z: 0.95,
@@ -87,13 +91,17 @@
     return {
       i, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, fx: i ? -1 : 1, fy: 0,
       ch: false, ct: 0, pk: null, anim: 0, swing: '',
-      dashT: 0, dashCd: 0, diveT: 0, diveCd: 0, stun: 0, recover: 0,
+      sprint: false, diveT: 0, diveCd: 0, floorT: 0, stun: 0, recover: 0,
       squat: 0, landT: 0, airSmash: false,
-      stamina: C.ST_MAX, hitCd: 0, lastKp: 0, lastDc: 0, lastKn: 0, lastJp: 0, init: false, ai: false,
+      stamina: C.ST_MAX, hitCd: 0, lastKp: 0, lastDv: 0, lastKn: 0, lastJp: 0, init: false, ai: false,
       st: { hits: 0, smashes: 0, perfects: 0, winners: 0, aces: 0, dives: 0, maxRally: 0, errors: 0, jumps: 0, counters: 0, kills: 0 },
     };
   }
 
+  // Practice-bot difficulty: the skill (0..1) every bot decision scales with: how fast it reads a
+  // shot, how well it judges where to meet it, how cleanly it strikes, how often it errs, how fast
+  // it runs, and how willing it is to smash, counter, jump and dive.
+  const BOT_LEVELS = { easy: 0.3, normal: 0.62, hard: 0.84, pro: 0.97 };
   // opts.botSkill: 0..1 (practice opponent).
   function createSim(tick, opts = {}) {
     const s = {
@@ -103,7 +111,7 @@
       phase: 'prematch', pt: 0, ps: tick, rally: 0, lastHitter: -1, lastKind: '',
       hitstop: 0, winner: -1, events: [], ready: [false, false],
       skill: opts.botSkill != null ? opts.botSkill : 0.62,
-      bot: [0, 1].map(() => ({ ch: 0, want: 0, ct: 0, kp: 0, dc: 0, kn: 0, jp: 0, t: 0, pred: null, predT: -99, plan: '', jumpAt: -1 })),
+      bot: [0, 1].map(() => ({ ch: 0, want: 0, ct: 0, kp: 0, dv: 0, kn: 0, jp: 0, t: 0, pred: null, predT: -99, plan: '', jumpAt: -1 })),
     };
     if (opts.ai) s.players.forEach(p => { p.ai = Array.isArray(opts.ai) ? !!opts.ai[p.i] : !!opts.ai; });
     setupServe(s);
@@ -121,7 +129,7 @@
     const sy = (even ? 1 : -1) * 1.05 * S;           // right service court on even points
     const ry = -sy;                                  // the receiver stands diagonally opposite
     const sa = s.players[sv], ra = s.players[opp(sv)];
-    const reset = { vx: 0, vy: 0, z: 0, vz: 0, ch: false, ct: 0, pk: null, anim: 0, stun: 0, dashT: 0, diveT: 0, recover: 0, hitCd: 0, squat: 0, landT: 0, airSmash: false };
+    const reset = { vx: 0, vy: 0, z: 0, vz: 0, ch: false, ct: 0, pk: null, anim: 0, stun: 0, sprint: false, diveT: 0, floorT: 0, recover: 0, hitCd: 0, squat: 0, landT: 0, airSmash: false };
     Object.assign(sa, reset, { x: d * 2.45 * S, y: sy, fx: -d, fy: 0 });
     Object.assign(ra, reset, { x: -d * 2.55 * S, y: ry, fx: d, fy: 0 });
     for (const p of s.players) p.stamina = Math.max(p.stamina, 62);
@@ -134,7 +142,7 @@
   function syncInputs(s, inputs) {
     s.players.forEach((p, i) => {
       const inp = inputs[i];
-      p.lastKp = inp.kp; p.lastDc = inp.dc; p.lastKn = inp.kn; p.lastJp = inp.jp | 0; p.init = true;
+      p.lastKp = inp.kp; p.lastDv = inp.dv | 0; p.lastKn = inp.kn; p.lastJp = inp.jp | 0; p.init = true;
       if (s.phase !== 'serve' && s.phase !== 'rally') { p.ch = false; p.ct = 0; p.pk = null; }
     });
   }
@@ -418,50 +426,64 @@
 
   // ---------- player step ----------
   function stepPlayer(s, p, inp) {
-    if (!p.init) { p.lastKp = inp.kp; p.lastDc = inp.dc; p.lastKn = inp.kn; p.lastJp = inp.jp | 0; p.init = true; }
-    if (p.dashCd > 0) p.dashCd--;
-    if (p.diveCd > 0) p.diveCd--;
+    if (!p.init) { p.lastKp = inp.kp; p.lastDv = inp.dv | 0; p.lastKn = inp.kn; p.lastJp = inp.jp | 0; p.init = true; }
+        if (p.diveCd > 0) p.diveCd--;
     if (p.hitCd > 0) p.hitCd--;
     if (p.anim > 0) p.anim--;
     if (p.recover > 0) p.recover--;
-    p.stamina = Math.min(C.ST_MAX, p.stamina + C.ST_REGEN);
     const air = airborne(p);
+    // sprint: held, on the ground, legs free and breath left (it runs out, and picks up again once
+    // there is a little stamina back)
+    p.sprint = !!inp.sp && !air && p.stun === 0 && p.diveT === 0 && p.floorT === 0 && p.squat === 0
+      && p.stamina > (p.sprint ? 0.5 : C.SPRINT_MIN);
+    const moving = Math.hypot(p.vx, p.vy) > 3;
+    if (p.sprint && moving) p.stamina = Math.max(0, p.stamina - C.SPRINT_COST);
+    else p.stamina = Math.min(C.ST_MAX, p.stamina + C.ST_REGEN);
 
     let ax = 0, ay = 0, m = 0;
     if (inp.ax || inp.ay) { ax = inp.ax || 0; ay = inp.ay || 0; }
     else { ax = (inp.r ? 1 : 0) - (inp.l ? 1 : 0); ay = (inp.d ? 1 : 0) - (inp.u ? 1 : 0); }
     m = Math.hypot(ax, ay);
     if (m > 1) { ax /= m; ay /= m; m = 1; }
-    if (m > 0.12 && p.stun <= 0 && p.diveT <= 0) { p.fx = ax / m; p.fy = ay / m; }
+    if (m > 0.12 && p.stun <= 0 && p.diveT <= 0 && p.floorT <= 0) { p.fx = ax / m; p.fy = ay / m; }
 
     // jump: a short crouch, then takeoff (see below). Not from a dive, a stun or mid-air.
     const jp = inp.jp | 0;
     if (jp !== p.lastJp) {
       p.lastJp = jp;
-      if (!air && p.squat === 0 && p.stun === 0 && p.diveT === 0 && p.landT <= 2 && p.stamina >= C.JUMP_COST) {
+      if (!air && p.squat === 0 && p.stun === 0 && p.diveT === 0 && p.floorT === 0 && p.landT <= 2 && p.stamina >= C.JUMP_COST) {
         p.squat = C.JUMP_SQUAT; p.stamina -= C.JUMP_COST; p.st.jumps++;
-        ev(s, 'jump', { p: p.i, x: r2(p.x), y: r2(p.y), leap: p.dashT > 0 ? 1 : 0 });
+        ev(s, 'jump', { p: p.i, x: r2(p.x), y: r2(p.y), leap: p.sprint ? 1 : 0 });
       }
     }
 
-    // dash / dive: one button. Close to a dying shuttle it becomes a diving save instead
-    if (inp.dc !== p.lastDc) {
-      p.lastDc = inp.dc;
-      if (p.stun === 0 && p.diveT === 0 && !air && p.squat === 0) {
-        const bd = Math.hypot(s.ball.x - p.x, s.ball.y - p.y);
-        if (s.ball.z < 1.4 && bd < C.DIVE_R && p.diveCd === 0 && p.stamina >= C.DIVE_COST && s.ball.last !== p.i) {
-          const dx = (s.ball.x - p.x) / (bd || 1), dy = (s.ball.y - p.y) / (bd || 1);
-          p.vx = dx * C.DIVE_V; p.vy = dy * C.DIVE_V;
-          p.diveT = C.DIVE_T; p.diveCd = C.DIVE_CD; p.stamina -= C.DIVE_COST;
-          p.st.dives++;
-          ev(s, 'dive', { p: p.i, x: r2(p.x), y: r2(p.y), dx: r2(dx), dy: r2(dy) });
-        } else if (p.dashCd === 0 && m > 0.12) {
-          const sp = p.stamina >= C.DASH_COST ? C.DASH_V : C.LUNGE_V;
-          p.vx = ax * sp; p.vy = ay * sp;
-          p.dashT = C.DASH_T; p.dashCd = C.DASH_CD;
-          if (p.stamina >= C.DASH_COST) p.stamina -= C.DASH_COST; else p.stun = Math.max(p.stun, 10);
-          ev(s, 'dash', { p: p.i, x: r2(p.x), y: r2(p.y) });
+    // dive: a double tap of the sprint button. Along the direction held (or toward the shuttle when
+    // nothing is), bent part of the way toward where the shuttle is coming down if that is close to
+    // the line: a real player dives at the shuttle, not past it. Needs legs under you and the breath.
+    const dv = inp.dv | 0;
+    if (dv !== p.lastDv) {
+      p.lastDv = dv;
+      if (p.stun === 0 && p.diveT === 0 && p.floorT === 0 && !air && p.squat === 0 && p.diveCd === 0 && p.stamina >= C.DIVE_COST) {
+        const b = s.ball;
+        let dx = m > 0.12 ? ax / m : b.x - p.x, dy = m > 0.12 ? ay / m : b.y - p.y;
+        let dl = Math.hypot(dx, dy); if (dl < 1e-6) { dx = p.fx; dy = p.fy; dl = Math.hypot(dx, dy) || 1; }
+        dx /= dl; dy /= dl;
+        const live = (s.phase === 'rally' || s.phase === 'serve') && !s.serveHold && b.last >= 0 && b.last !== p.i;
+        if (live) {
+          if (!s._pred || s._predT !== s.tick) { s._pred = predict(s); s._predT = s.tick; }
+          const t = s._pred.land;
+          if (t && Math.sign(t.x || 1) === sideOf(p)) {
+            const tx = t.x - p.x, ty = t.y - p.y, td = Math.hypot(tx, ty);
+            if (td > 0.3 && td < 4.5 && (tx * dx + ty * dy) / td > Math.cos(0.6)) {
+              dx += (tx / td - dx) * C.DIVE_AIM; dy += (ty / td - dy) * C.DIVE_AIM;
+              const l = Math.hypot(dx, dy); dx /= l; dy /= l;
+            }
+          }
         }
+        p.vx = dx * C.DIVE_V; p.vy = dy * C.DIVE_V; p.fx = dx; p.fy = dy;
+        p.diveT = C.DIVE_T; p.diveCd = C.DIVE_CD; p.stamina -= C.DIVE_COST; p.sprint = false;
+        p.st.dives++;
+        ev(s, 'dive', { p: p.i, x: r2(p.x), y: r2(p.y), dx: r2(dx), dy: r2(dy) });
       }
     }
 
@@ -470,13 +492,17 @@
     const pressedNew = inp.kp !== p.lastKp;
     const tapped = pressedNew && !inp.k && !p.ch;
     p.lastKp = inp.kp;
-    if (p.stun > 0) { p.ch = false; p.ct = 0; p.pk = null; }
-    else if (p.pk) {
+    if (p.stun > 0 || p.floorT > 0) { p.ch = false; p.ct = 0; p.pk = null; }
+    else if (p.diveT > 0 && !p.pk) {
+      // in the dive the racket is stretched out at the shuttle: whatever it meets is struck (a held
+      // charge and Lift still shape it), a desperate soft retrieve
+      if (tryHit(s, p, p.ch ? p.ct : 10, !!inp.lob, 1)) { p.ch = false; p.ct = 0; }
+    } else if (p.pk) {
       if (pressedNew) p.pk = null;
       else if (tryHit(s, p, p.pk.ct, p.pk.lob, p.pk.late)) p.pk = null;
       else if (--p.pk.t <= 0) { if (p.pk.ct > 12) ev(s, 'whiff', { p: p.i, x: r2(p.x), y: r2(p.y) }); p.pk = null; }
     }
-    if (p.stun === 0 && !p.pk) {
+    if (p.stun === 0 && p.floorT === 0 && !p.pk && p.diveT === 0) {
       if (inp.k) { if (!p.ch) { p.ch = true; p.ct = 0; } p.ct++; }
       else if (p.ch || tapped) {
         // the client reports how long the button was actually held; trust it within a tolerance
@@ -491,10 +517,13 @@
 
     if (p.stun > 0) { p.stun--; ax = ay = 0; m = 0; }
     const tired = (p.stamina < C.TIRED ? 0.86 : 1) * (p.ai ? 0.78 + 0.2 * s.skill : 1);
-    if (p.dashT > 0) { p.dashT--; p.vx *= 0.94; p.vy *= 0.94; if (p.dashT === 0 && !air) p.recover = Math.max(p.recover, 6); }
-    else if (p.diveT > 0) {
+    if (p.diveT > 0) {
       p.diveT--; p.vx *= 0.9; p.vy *= 0.9;
-      if (p.diveT === 0) p.stun = 26;
+      if (p.diveT === 0) { p.floorT = C.DIVE_REC; p.vx *= 0.3; p.vy *= 0.3; }
+    } else if (p.floorT > 0) {
+      // on the floor after a dive: a short slide out, then back up onto the feet
+      p.floorT--; p.vx *= 0.8; p.vy *= 0.8;
+      if (p.floorT === 0) p.recover = Math.max(p.recover, 8);
     } else if (p.squat > 0) {
       p.vx *= 0.86; p.vy *= 0.86; // loading the legs: the feet plant
     } else if (air) {
@@ -502,18 +531,17 @@
       const top = C.TOP * tired;
       if (m > 0.05) { p.vx += (ax * top - p.vx) * C.AIR_ACCEL; p.vy += (ay * top - p.vy) * C.AIR_ACCEL; }
     } else {
-      const top = C.TOP * tired * (p.ch ? 0.6 : 1) * (p.recover > 0 ? 0.5 : 1) * (p.landT > 0 ? 0.35 : 1);
+      const top = (p.sprint ? C.SPRINT_V : C.TOP) * tired * (p.ch ? 0.6 : 1) * (p.recover > 0 ? 0.5 : 1) * (p.landT > 0 ? 0.35 : 1);
       // nothing held: the placement assist may steer the last metre or two (see assistDir)
       if (m <= 0.05 && inp.as && !p.ai) { const a = assistDir(s, p); if (a) { ax = a.x; ay = a.y; m = Math.hypot(ax, ay); if (m > 0.12) { p.fx = ax / m; p.fy = ay / m; } } }
       run(p, ax, ay, m, top);
     }
     if (p.landT > 0) p.landT--;
-    // vertical: the crouch ends in takeoff (out of a dash it is a long leap: the run carries on)
+    // vertical: the crouch ends in takeoff (out of a sprint it is a long leap: the run carries on)
     if (p.squat > 0 && --p.squat === 0) {
       p.vz = C.JUMP_V; p.z = 0.001;
-      const h = Math.hypot(p.vx, p.vy), cap = p.dashT > 0 ? C.LEAP_V : C.TOP;
+      const h = Math.hypot(p.vx, p.vy), cap = p.sprint ? C.LEAP_V : C.TOP;
       if (h > cap) { p.vx *= cap / h; p.vy *= cap / h; }
-      p.dashT = 0;
     }
     if (p.z > 0 || p.vz > 0) {
       const vz0 = p.vz;
@@ -703,7 +731,7 @@
 
   function botInput(s, i) {
     const p = s.players[i], o = s.players[1 - i], b = s.ball, B = s.bot[i];
-    const inp = { u: 0, d: 0, l: 0, r: 0, k: false, kp: B.kp, kc: null, dc: B.dc, jp: B.jp, ax: 0, ay: 0, lob: false, sh: false, kn: B.kn, rb: 0 };
+    const inp = { u: 0, d: 0, l: 0, r: 0, k: false, kp: B.kp, kc: null, dc: 0, dv: B.dv, sp: false, jp: B.jp, ax: 0, ay: 0, lob: false, sh: false, kn: B.kn, rb: 0 };
     if (s.phase !== 'rally' && s.phase !== 'serve') { B.ch = 0; B.jumpAt = -1; return inp; }
     const d = sideOf(p);
     if (s.phase === 'serve' && i !== s.server) return inp;
@@ -735,7 +763,7 @@
     }
     const fast = FAST[s.lastKind] && b.last !== i;
     // (a smash is read no faster than a person reads one: about a fifth of a second)
-    const blind = s.tick - B.seeAt < (1 - s.skill) * (fast ? 30 : 55);
+    const blind = s.tick - B.seeAt < Math.max(fast ? 6 : 9, (1 - s.skill) * (fast ? 30 : 55));
     const pred = B.pred;
     const mine = Math.sign(b.x || 1) === d;
     let tx = d * 3.1 * S, ty = clamp(-o.y * 0.45, -1.6 * S, 1.6 * S), urgent = 0, eta = 999, overhead = false, inAir = false;
@@ -761,7 +789,16 @@
     }
     const mx = tx - p.x, my = ty - p.y, md = Math.hypot(mx, my);
     if (md > 0.12) { inp.ax = clamp(mx / md, -1, 1); inp.ay = clamp(my / md, -1, 1); }
-    if (urgent > 30 && md > 1.1 && p.dashCd === 0 && p.stamina > C.DASH_COST + 6 && !airborne(p)) inp.dc = ++B.dc;
+    // late to it: sprint, and when even that will not get there, a better player dives for it
+    if (urgent > 18 && md > 1.0 && p.stamina > 20 + 20 * (1 - s.skill)) inp.sp = true;
+    // (a dive is the last resort: only when the shuttle is coming down where running will not get
+    // the racket to it in time, but a launch will)
+    const runReach = C.REACH + (Math.hypot(p.vx, p.vy) * 0.7 + C.TOP * 0.3) * eta / 60;
+    if (!blind && eta < 14 && eta > 3 && md > runReach && md < runReach + 1.9 && !airborne(p) && p.diveCd === 0
+      && p.stamina >= C.DIVE_COST && pred && pred.land && !overhead && !inAir && B.diveFor !== B.seeAt) {
+      B.diveFor = B.seeAt;
+      if (Math.random() < 0.08 + 0.3 * s.skill) { inp.dv = ++B.dv; inp.ax = clamp(mx / md, -1, 1); inp.ay = clamp(my / md, -1, 1); }
+    }
 
     const bd = Math.hypot(b.x - p.x, b.y - p.y);
     // bracing: a smash is too quick to react to, so it is read from the wind-up. When the opponent
@@ -819,16 +856,17 @@
       sc: s.score, sv: s.server, sy: s.serveY, sl: s.serveLive, hold: s.serveHold ? 1 : 0,
       rd: s.ready.map(Number), hs: s.hitstop, w: s.winner,
       b: [r2(b.x), r2(b.y), r2(b.z), r2(b.vx), r2(b.vy), r2(b.vz)],
-      // 0 x, 1 y, 2 vx, 3 vy, 4 fx, 5 fy, 6 charge (-1 idle), 7 dashing, 8 diving, 9 stamina,
-      // 10 stunned, 11 recovering, 12 swing timer, 13 hit cooldown, 14 z, 15 vz, 16 crouching to
-      // jump (ticks left), 17 landing (ticks left), 18 last shot kind (KIND_CODE index)
+      // 0 x, 1 y, 2 vx, 3 vy, 4 fx, 5 fy (aim / intent: not the body's facing), 6 charge (-1 idle),
+      // 7 (unused, was the dash), 8 diving, 9 stamina, 10 stunned, 11 recovering, 12 swing timer,
+      // 13 hit cooldown, 14 z, 15 vz, 16 crouching to jump (ticks left), 17 landing (ticks left),
+      // 18 last shot kind (KIND_CODE index), 19 sprinting, 20 on the floor after a dive (ticks left)
       p: s.players.map(p => [r2(p.x), r2(p.y), r2(p.vx), r2(p.vy), r2(p.fx), r2(p.fy),
-        p.ch ? Math.min(p.ct, 90) : -1, p.dashT > 0 ? 1 : 0, p.diveT > 0 ? 1 : 0, Math.round(p.stamina),
+        p.ch ? Math.min(p.ct, 90) : -1, 0, p.diveT > 0 ? 1 : 0, Math.round(p.stamina),
         p.stun > 0 ? 1 : 0, p.recover > 0 ? 1 : 0, p.anim, p.hitCd > 0 ? 1 : 0,
-        r2(p.z), r2(p.vz), p.squat, p.landT, Math.max(0, KIND_CODE.indexOf(p.swing))]),
+        r2(p.z), r2(p.vz), p.squat, p.landT, Math.max(0, KIND_CODE.indexOf(p.swing)), p.sprint ? 1 : 0, p.floorT]),
       st: s.players.map(p => [p.st.hits, p.st.smashes, p.st.perfects, p.st.winners, p.st.aces, p.st.dives, p.st.maxRally]),
     };
   }
 
-  return { C, SHOTS, KIND_CODE, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
+  return { C, SHOTS, KIND_CODE, BOT_LEVELS, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
 });

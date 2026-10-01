@@ -11,7 +11,7 @@ const os = require('os');
 const WebSocket = require('ws');
 
 const PORT = 9334;
-const URL = process.argv[2] || 'http://127.0.0.1:3100/badminton/r/CHK1';
+const URL = process.argv[2] || 'http://127.0.0.1:3000/badminton/r/CHK1';
 const OUT = path.join(os.tmpdir(), 'office-badminton-check');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

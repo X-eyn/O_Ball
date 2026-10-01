@@ -90,10 +90,13 @@ const clean = n => String(n || '').replace(/[\u0000-\u001f<>]/g, '').trim().slic
 // ---------------- rooms ----------------
 const rooms = new Map();
 let nextId = 0;
-const blankInput = () => ({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, jp: 0, rb: 0, sh: false, kn: 0, ax: 0, ay: 0, lob: false });
+const blankInput = () => ({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, dv: 0, sp: false, jp: 0, rb: 0, sh: false, kn: 0, ax: 0, ay: 0, lob: false });
 // non-human slots: 'bot' (practice opponent) and 'none' (solo practice, no opponent)
 const isAI = id => id === 'bot' || id === 'none';
 const sportOf = v => (v === 'badminton' ? 'badminton' : 'football');
+// badminton practice-bot difficulty, chosen by each player (Settings)
+const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard', pro: 'Pro' };
+const levelOf = v => (Object.prototype.hasOwnProperty.call(LEVEL_NAMES, v) ? v : 'normal');
 
 function newCode() {
   const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -138,10 +141,10 @@ class Room {
     const name = clean(hello.name);
     if (m) {
       if (m.ws && m.ws !== ws) { try { m.ws.close(4000, 'replaced'); } catch { } }
-      Object.assign(m, { ws, connected: true, goneT: 0, name, needSync: true, practice: hello.practice === 'solo' ? 'solo' : 'bot' });
+      Object.assign(m, { ws, connected: true, goneT: 0, name, needSync: true, practice: hello.practice === 'solo' ? 'solo' : 'bot', level: levelOf(hello.level) });
       this.toast(`${m.name} is back`);
     } else {
-      m = { id: ++nextId, token: String(hello.token || crypto.randomUUID()).slice(0, 64), name, ws, connected: true, sitting: false, input: blankInput(), goneT: 0, emoteAt: 0, practice: hello.practice === 'solo' ? 'solo' : 'bot' };
+      m = { id: ++nextId, token: String(hello.token || crypto.randomUUID()).slice(0, 64), name, ws, connected: true, sitting: false, input: blankInput(), goneT: 0, emoteAt: 0, practice: hello.practice === 'solo' ? 'solo' : 'bot', level: levelOf(hello.level) };
       this.members.set(m.id, m);
       this.toast(`${m.name} joined`);
     }
@@ -156,7 +159,7 @@ class Room {
   leave(m) {
     if (!m.connected) return;
     m.connected = false; m.ws = null; m.goneT = 0;
-    m.input = Object.assign(blankInput(), { kp: m.input.kp, dc: m.input.dc, jp: m.input.jp });
+    m.input = Object.assign(blankInput(), { kp: m.input.kp, dc: m.input.dc, dv: m.input.dv, jp: m.input.jp });
     this.dirty = true;
     const si = this.slots.indexOf(m.id);
     if (si >= 0 && !this.botMatch && this.phase === 'match') {
@@ -171,7 +174,7 @@ class Room {
         const n = v => (Number.isFinite(v) ? v | 0 : 0);
         if (m.needSync) { m.needSync = false; const si = this.slots.indexOf(m.id); if (si >= 0 && this.sim) this.sim.players[si].init = false; }
         const f = v => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
-        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), jp: n(msg.jp), as: !!msg.as, ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn) };
+        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), dv: n(msg.dv), sp: !!msg.sp, jp: n(msg.jp), as: !!msg.as, ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn) };
         break;
       }
       case 'emote': {
@@ -185,6 +188,22 @@ class Room {
         m.sitting = !!msg.v; this.dirty = true;
         this.toast(m.sitting ? `${m.name} is sitting out` : `${m.name} joined the line`);
         break;
+      case 'level': {
+        if (this.sport !== 'badminton') break;
+        // the practice bot's difficulty: kept per player, and applied to a bot match in play at once
+        m.level = levelOf(msg.v);
+        if (this.botMatch && this.slots.includes(m.id) && this.sim) { this.applyLevel(m.level); this.toast(`Bot difficulty: ${LEVEL_NAMES[m.level]}`); }
+        break;
+      }
+      case 'pause': {
+        // Esc in a bot match: the whole match holds (nobody else is waiting on it). A real match is
+        // never paused by one side.
+        if (this.sport !== 'badminton' || !this.botMatch || !this.slots.includes(m.id) || !this.sim) break;
+        if (msg.v && !this.userPause && (this.phase === 'match' || this.phase === 'prematch')) {
+          this.userPause = { from: this.phase, t: this.phaseT }; this.phase = 'paused'; this.dirty = true;
+        } else if (!msg.v && this.userPause) this.resumeUser();
+        break;
+      }
       case 'practice': {
         m.practice = msg.v === 'solo' ? 'solo' : 'bot';
         // switching while alone: restart the practice session in the new mode right away
@@ -210,6 +229,25 @@ class Room {
   }
 
   inputs() { return this.slots.map((id, i) => id === 'bot' ? OB.botInput(this.sim, i) : id === 'none' ? blankInput() : ((this.members.get(id) || {}).input || blankInput())); }
+
+  // badminton only: the difficulty the human in a bot match asked for, Esc pausing a bot match
+  humanLevel() { const id = this.slots.find(x => x !== null && !isAI(x)); return levelOf((this.members.get(id) || {}).level); }
+  applyLevel(level) {
+    this.sim.skill = BM.BOT_LEVELS[levelOf(level)];
+    if (this.matchInfo) { this.matchInfo.level = levelOf(level); this.send(this.matchInfo); }
+  }
+  // back from an Esc pause: where it was, with a beat to get the hands back on the keys
+  resumeUser() {
+    const u = this.userPause; if (!u) return;
+    this.userPause = null; this.phase = u.from; this.phaseT = u.t; this.dirty = true;
+  }
+  // an Esc pause holds until it is lifted, unless the bot match itself has to end
+  heldByUser() {
+    if (!this.userPause) return false;
+    if (this.humansAvailable() >= 2) { this.userPause = null; this.abort('A challenger appeared. Real match!'); }
+    else if (!this.available(this.slots.find(id => !isAI(id)))) { this.userPause = null; this.abort(); }
+    return true;
+  }
 
   tryStart() {
     for (let i = 0; i < 2; i++) if (!this.available(this.slots[i])) this.slots[i] = null;
@@ -294,7 +332,7 @@ class Room {
   }
 
   abort(msg) {
-    this.sim = null; this.result = null; this.matchInfo = null;
+    this.sim = null; this.result = null; this.matchInfo = null; this.userPause = null;
     this.slots = this.slots.map(id => isAI(id) ? null : id);
     this.phase = 'waiting';
     if (msg) this.toast(msg);
@@ -373,12 +411,13 @@ class BadmintonRoom extends Room {
 
   startMatch(bot) {
     const names = this.slots.map(id => this.nameOf(id));
-    this.sim = BM.createSim(this.tick, { botSkill: 0.62, ai: this.slots.map(id => isAI(id)) });
-    this.botMatch = bot; this.solo = false; this.result = null;
+    this.sim = BM.createSim(this.tick, { botSkill: BM.BOT_LEVELS[this.humanLevel()], ai: this.slots.map(id => isAI(id)) });
+    this.botMatch = bot; this.solo = false; this.result = null; this.userPause = null;
     this.phase = 'prematch'; this.phaseT = BM.C.PRE_T; // the sim's own countdown: ready, then serve
     const sameName = nkey(names[0]) === nkey(names[1]);
     this.matchInfo = {
       t: 'match', bot, solo: false, slots: this.slots.slice(), names,
+      level: bot ? this.humanLevel() : null,
       ratings: this.slots.map((id, i) => isAI(id) ? null : Math.round(ratingOf('badminton', names[i]))),
       h2h: bot || sameName ? null : h2hGet('badminton', names[0], names[1]),
       streak: this.slots.includes(this.streak.id) && this.streak.n >= 1 ? { slot: this.slots.indexOf(this.streak.id), n: this.streak.n } : null,
@@ -450,6 +489,7 @@ class BadmintonRoom extends Room {
         if (this.sim.phase === 'over') this.finish(this.sim.winner, false);
         break;
       case 'paused':
+        if (this.heldByUser()) break;
         if (humanSlotsOk()) { this.phase = 'match'; this.toast('Resuming…'); break; }
         if (--this.phaseT <= 0) {
           const i = this.slots.findIndex(id => (this.members.get(id) || {}).connected);
@@ -480,6 +520,7 @@ class BadmintonRoom extends Room {
     if (!this.sim) { if (this.tick % 6 === 0) this.send({ t: 's', k: this.tick, rp: this.phase }); return; }
     const st = BM.netState(this.sim);
     st.t = 's'; st.k = this.tick; st.rp = this.phase; st.rt = this.phaseT;
+    if (this.userPause) st.up = 1;
     if (this.sim.events.length) { st.ev = this.sim.events; this.sim.events = []; }
     this.sendRaw(JSON.stringify(st));
   }

@@ -22,7 +22,7 @@ room you get the practice bot.
   perfect strike.
 - **Jump** (F / B / mouse thumb button): a short crouch, then up. A full-charge overhead met in the air is
   a **jump smash**: faster the higher you meet it, steeper, best at the top of the jump, and it lands you
-  heavy. Jump out of a dash for a long leap.
+  heavy. Jump out of a sprint for a long leap.
 - **Defending a smash**: it is too fast to react to, so read the wind-up. Hold Shot to **brace** and
   release as it arrives to **counter** it flat into the open court (clean and on time: a **parry**); a late
   tap **blocks** it dead over the net; Lift sends it high.
@@ -32,8 +32,15 @@ room you get the practice bot.
   With nothing held, **placement assist** glides you the last metre or two to where the incoming shuttle
   is best met (any input takes over; turn it off under Menu > Settings). The camera frames you, the
   shuttle, where it is landing and your opponent, widening as the shuttle climbs.
-- **Lift** (E / Y / Shift+click) sends it high; **dash** (Shift / X) bursts to the shuttle and
-  becomes a **diving save** when you are stretched. Dashes, jumps and smashes cost stamina.
+- **Lift** (E / Y / Shift+click) sends it high. Hold **sprint** (Shift / X / right mouse button) for a
+  faster stride that burns stamina; **double-tap** it to **dive**: a last-ditch launch of about 2 m along
+  your run (bent toward a shuttle coming down just off the line) that strikes whatever it reaches, soft,
+  and leaves you on the floor for two thirds of a second. Sprints, dives, jumps and smashes cost stamina.
+- **Controls**: pick Keyboard, Mouse, Controller or Touch under Menu > Controls. The game never changes
+  scheme by itself (a nudge of the mouse or a controller on the desk does nothing until you pick it).
+- **Esc** opens the menu, and against the practice bot the match pauses until you close it.
+- **Bot difficulty** (Menu > Settings): Easy, Normal, Hard or Pro. It is kept per player and applies
+  to a practice match in play at once.
 - The code is `shared/badminton.js` (rules and physics, server-side), `public/badminton/`
   (client, 3D hall, `anim.js` for the athletes, sounds) and `tools/badminton_test.js` (headless checks).
 

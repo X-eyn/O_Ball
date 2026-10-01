@@ -141,6 +141,8 @@
       </div>
       <div class="pane" data-pane="controls">
         <h3>Controls</h3>
+        <p class="muted small">Pick how you play. The game only changes scheme when you pick one here.</p>
+        <div class="seg" id="ctrlSeg"><button data-c="keyboard">Keyboard</button><button data-c="mouse">Mouse</button><button data-c="gamepad">Controller</button><button data-c="touch">Touch</button></div>
         <div id="ctrlHelp" class="ctrl-help"></div>
       </div>
       <div class="pane" data-pane="table">
@@ -151,6 +153,8 @@
         <h3>Settings</h3>
         <div class="set-row"><span>Name</span><button id="renameBtn" class="btn">Change name</button></div>
         <div class="set-row"><span>Sound</span><button id="muteBtn" class="btn">On</button></div>
+        <div class="set-row"><label for="levelSel">Bot difficulty</label><select id="levelSel" class="sel"></select></div>
+        <p id="levelDesc" class="muted small set-desc"></p>
         <div class="set-row"><span>Placement assist</span><button id="assistBtn" class="btn">On</button></div>
         <p class="muted small set-desc">With no direction held, your player glides the last metre or two to where the shuttle is best met. Any movement input takes over.</p>
         <div class="set-row"><label for="qualitySel">Graphics</label><select id="qualitySel" class="sel"></select></div>
@@ -169,7 +173,7 @@
   <div id="stickZone"><div id="stick"><i id="knob"></i></div></div>
   <div id="touchBtns">
     <button id="tLift">Lift</button>
-    <button id="tDash">Dash</button>
+    <button id="tDash">Sprint</button>
     <button id="tJump">Jump</button>
     <button id="tShoot">Shoot</button>
   </div>

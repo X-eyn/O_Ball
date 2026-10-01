@@ -1,6 +1,6 @@
 'use strict';
 // Office Badminton — headless sim harness. Asserts the flight model and its court scaling, the
-// shot model (every shot kind, serves, the net, contact quality), the movement kit (dash, dive,
+// shot model (every shot kind, serves, the net, contact quality), the movement kit (sprint, dive,
 // jump, stamina), attack and defence (jump smash, net kill, block, counter, parry, hit-stop),
 // rally rules, and that bot matches use the whole kit and finish in a sane state.
 //   node tools/badminton_test.js
@@ -9,7 +9,7 @@ let seed = 12345;
 Math.random = () => ((seed = Math.imul(seed ^ (seed >>> 15), 2246822507) ^ Math.imul(seed ^ (seed >>> 13), 3266489909)) >>> 0) / 4294967296;
 const BM = require('../shared/badminton.js');
 const C = BM.C, S = C.S;
-const I = o => Object.assign({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, jp: 0, ax: 0, ay: 0, lob: false, sh: false, kn: 0, rb: 0 }, o);
+const I = o => Object.assign({ u: 0, d: 0, l: 0, r: 0, k: false, kp: 0, kc: null, dc: 0, dv: 0, sp: false, jp: 0, ax: 0, ay: 0, lob: false, sh: false, kn: 0, rb: 0 }, o);
 const step = (s, a, b) => BM.stepSim(s, [I(a), I(b)]);
 let fails = 0, passes = 0;
 const ok = (cond, msg) => { if (cond) { passes++; console.log('  ok   ' + msg); } else { fails++; console.log('  FAIL ' + msg); } };
@@ -220,21 +220,55 @@ console.log('\n7. rally rules');
 
 console.log('\n8. movement kit');
 {
+  // holding sprint: a faster top speed, paid for in stamina; it stops when the breath runs out
   const s = fresh();
   const p = s.players[0];
-  p.x = -5 * S; p.y = 0; s.ball.x = 0; s.ball.y = 0; s.ball.z = 2;
-  step(s, { ax: 1, dc: 1 });
-  ok(Math.hypot(p.vx, p.vy) > C.TOP * 1.2, `dash is a burst (${Math.hypot(p.vx, p.vy).toFixed(1)} m/s)`);
-  ok(p.stamina < C.ST_MAX, `dash spends stamina (${Math.round(p.stamina)})`);
+  p.x = -6 * S; p.y = -2;
+  for (let t = 0; t < 40; t++) step(s, { ay: 1, sp: true });
+  const v = Math.hypot(p.vx, p.vy);
+  ok(p.sprint && v > C.TOP * 1.15, `sprint is faster than a run (${v.toFixed(1)} vs ${C.TOP} m/s)`);
+  ok(p.stamina < C.ST_MAX - 10, `sprinting spends stamina (${Math.round(p.stamina)})`);
+  p.stamina = 1; p.y = -2;
+  for (let t = 0; t < 10; t++) step(s, { ay: 1, sp: true });
+  ok(!p.sprint, 'an empty tank ends the sprint');
 }
 {
+  // a double tap of sprint is a dive, along the direction held
   const s = fresh();
   const p = s.players[0];
   p.x = -3 * S; p.y = 0; p.fx = 1;
-  const b = s.ball; b.x = p.x - 1.5; b.y = 0; b.z = 0.3; b.vz = -0.2; b.last = -1;
-  step(s, { dc: 1 });
-  ok(p.diveT > 0 && p.diveCd > 0, 'a dash beside a dying shuttle becomes a dive');
+  step(s, { ay: 1, dv: 1 });
+  ok(p.diveT > 0 && p.diveCd > 0, 'a double tap is a dive');
+  ok(p.vy > C.TOP, `the dive launches along the stick (vy ${p.vy.toFixed(1)})`);
   ok(s.events.some(e => e.type === 'dive'), 'the dive is announced for the renderer');
+  const y0 = p.y;
+  let t = 0; while (p.diveT > 0 && t++ < 60) step(s, { ay: 1, dv: 1 });
+  ok(p.floorT > 0, 'the dive ends on the floor');
+  ok(p.y - y0 > 1.5 && p.y - y0 < 2.6, `a dive covers a measured ~2 m (${(p.y - y0).toFixed(2)} m)`);
+  const yF = p.y;
+  for (let k = 0; k < 10; k++) step(s, { ay: 1, dv: 1, k: true });
+  ok(p.y - yF < 0.4 && !p.ch, 'on the floor you can neither run nor wind up');
+  t = 0; while (p.floorT > 0 && t++ < 90) step(s, { ay: 1, dv: 1 });
+  ok(t >= C.DIVE_REC - 12 && p.floorT === 0, `getting up takes ~${(C.DIVE_REC / 60).toFixed(2)} s`);
+  step(s, { ay: 1, dv: 2 });
+  ok(p.diveT === 0, 'no second dive until the cooldown is over');
+}
+{
+  // the dive bends toward a shuttle coming down just off the line, and strikes it on the way
+  const s = fresh();
+  const p = s.players[0];
+  p.x = -3 * S; p.y = 0;
+  const b = s.ball; Object.assign(b, { x: p.x + 0.6, y: 2.4, z: 0.9, vx: 0, vy: 0, vz: -1, last: 1 }); s.lastHitter = 1;
+  step(s, { ay: 1, dv: 1 });
+  ok(p.diveT > 0 && p.vx > 0.5, `the dive leans toward the shuttle (vx ${p.vx.toFixed(2)})`);
+  let hit = null;
+  for (let t = 0; t < 20 && !hit; t++) { step(s, { ay: 1, dv: 1 }); hit = s.events.find(e => e.type === 'hit'); }
+  ok(hit && hit.q < 0.5, `a diving retrieve reaches it, soft (${hit ? hit.kind + ' q ' + hit.q : 'no hit'})`);
+}
+{
+  // difficulty levels span a real range
+  const L = BM.BOT_LEVELS;
+  ok(L && L.easy < L.normal && L.normal < L.hard && L.hard < L.pro && L.pro <= 1, 'bot levels run easy < normal < hard < pro');
 }
 {
   const s = fresh();
@@ -246,8 +280,8 @@ console.log('\n8. movement kit');
 }
 {
   const s = fresh();
-  for (let i = 0; i < 8; i++) { step(s, { ax: 1, dc: 1 + i }); for (let t = 0; t < 30; t++) step(s, { dc: 1 + i }); }
-  ok(s.players[0].stamina > 20, `stamina survives a burst-heavy rally (${Math.round(s.players[0].stamina)})`);
+  for (let i = 0; i < 8; i++) { for (let t = 0; t < 20; t++) step(s, { ax: i % 2 ? -1 : 1, sp: true }); for (let t = 0; t < 30; t++) step(s, {}); }
+  ok(s.players[0].stamina > 20, `stamina survives a sprint-heavy rally (${Math.round(s.players[0].stamina)})`);
 }
 
 console.log('\n8b. running feel');
@@ -342,15 +376,15 @@ console.log('\n9. the jump');
   ok(p.z > 0 && Math.abs(p.vy) < C.TOP * 0.35, `mid-air steering is small (vy ${p.vy.toFixed(2)} after reversing the stick; ran in at ${vIn.toFixed(1)})`);
 }
 {
-  // out of a dash it is a long leap
+  // out of a sprint it is a long leap
   const s = fresh();
   const p = s.players[0];
-  p.x = -5 * S; p.y = -2;
-  step(s, { ay: 1, dc: 1 });
-  step(s, { ay: 1, dc: 1, jp: 1 });
+  p.x = -5 * S; p.y = -2.6 * S;
+  for (let t = 0; t < 30; t++) step(s, { ay: 1, sp: true });
+  step(s, { ay: 1, sp: true, jp: 1 });
   const x0 = p.y;
-  let t = 0; while (t++ < 90 && !(p.z === 0 && t > 8)) step(s, { ay: 1, dc: 1, jp: 1 });
-  ok(p.y - x0 > 4, `a dash-leap covers ground (${(p.y - x0).toFixed(1)} m)`);
+  let t = 0; while (t++ < 90 && !(p.z === 0 && t > 8)) step(s, { ay: 1, sp: true, jp: 1 });
+  ok(p.y - x0 > 4, `a sprint-leap covers ground (${(p.y - x0).toFixed(1)} m)`);
 }
 {
   // cannot jump mid-dive, mid-air or without legs
@@ -463,7 +497,7 @@ console.log('\n15. random-input stress');
     const mk = () => I({
       u: rnd() < 0.25, d: rnd() < 0.25, l: rnd() < 0.25, r: rnd() < 0.25,
       k: rnd() < 0.5, kp: rnd() < 0.2 ? ((t / 3) | 0) : 0, kc: rnd() < 0.2 ? (rnd() * 90) | 0 : null,
-      dc: rnd() < 0.05 ? t : 0, jp: rnd() < 0.05 ? t : 0, kn: rnd() < 0.05 ? t : 0, lob: rnd() < 0.3,
+      dv: rnd() < 0.03 ? t : 0, sp: rnd() < 0.3, jp: rnd() < 0.05 ? t : 0, kn: rnd() < 0.05 ? t : 0, lob: rnd() < 0.3,
       ax: rnd() < 0.4 ? rnd() * 2 - 1 : 0, ay: rnd() < 0.4 ? rnd() * 2 - 1 : 0,
     });
     BM.stepSim(s, [mk(), mk()]);
@@ -479,11 +513,11 @@ console.log('\n16. snapshot shape');
 {
   const s = BM.createSim(0, {});
   const st = BM.netState(s);
-  ok(st.p.every(a => a.length === 19 && a.every(finite)), 'player entries are complete and finite');
+  ok(st.p.every(a => a.length === 21 && a.every(finite)), 'player entries are complete and finite');
   ok(st.b.every(finite) && st.b.length === 6, 'shuttle entry is position + velocity');
   JSON.stringify(st);
   const bi = BM.botInput(s, 0);
-  ok('dc' in bi && 'jp' in bi && 'kn' in bi && 'lob' in bi, 'bot inputs carry the shared input shape');
+  ok('dv' in bi && 'sp' in bi && 'jp' in bi && 'kn' in bi && 'lob' in bi, 'bot inputs carry the shared input shape');
 }
 
 console.log(`\n${passes} passed, ${fails} failed\n`);

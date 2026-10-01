@@ -20,6 +20,7 @@ let everConnected = false, retry = 0, pingMs = null;
 const token = (() => { try { let t = localStorage.getItem('obm_token'); if (!t) { t = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, '0')).join(''); localStorage.setItem('obm_token', t); } return t; } catch { return String(Math.random()).slice(2); } })();
 const myName = () => { try { return (localStorage.getItem('obm_name') || '').slice(0, 16); } catch { return ''; } };
 const setName = n => { try { localStorage.setItem('obm_name', n); } catch { } };
+const myLevel = () => { try { const v = localStorage.getItem('obm_level'); return ['easy', 'normal', 'hard', 'pro'].includes(v) ? v : 'normal'; } catch { return 'normal'; } };
 
 // ---------------------------------------------------------------- snapshot buffer + playback clock
 const hist = [];
@@ -111,7 +112,7 @@ function connect() {
   sock.onopen = () => {
     if (ws !== sock) return;
     retry = 0; everConnected = true;
-    sock.send(JSON.stringify({ t: 'hello', name: myName(), token, practice: 'bot' }));
+    sock.send(JSON.stringify({ t: 'hello', name: myName(), token, practice: 'bot', level: myLevel() }));
     $('conn').classList.add('hidden');
     lastSent = ''; sendInput();
   };
@@ -146,21 +147,34 @@ function memberName(id) { if (id === 'bot') return 'BOT'; if (id === 'none') ret
 function slotName(i) { const id = room ? room.slots[i] : null; return id == null ? (i ? 'BLUE' : 'RED') : memberName(id); }
 
 // ---------------------------------------------------------------- input
-const KEYMAP = { KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r', Space: 'kick', KeyJ: 'kick', KeyE: 'lob', KeyL: 'lob', ShiftLeft: 'dash', ShiftRight: 'dash', KeyK: 'dash', KeyF: 'jump', KeyI: 'jump' };
+// One control scheme at a time, the one picked in Menu > Controls. The game never changes scheme on
+// its own: a nudge of the mouse, a controller on the desk or a tap on a touchscreen laptop must not
+// take a player off the controls they are using mid-rally.
+//   keyboard  WASD / arrows move; Space shot, E lift, Shift sprint (double-tap: dive), F jump
+//   mouse     the player runs to the pointer; click shot, shift+click / middle lift, right button
+//             sprint (double-click it: dive), thumb button jump; the action keys work too
+//   gamepad   left stick / D-pad; A shot, Y lift, X / LB sprint (double-tap: dive), B / RB jump
+//   touch     the on-screen stick and buttons
+const KEYMAP = { KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r', Space: 'kick', KeyJ: 'kick', KeyE: 'lob', KeyL: 'lob', ShiftLeft: 'sprint', ShiftRight: 'sprint', KeyK: 'sprint', KeyF: 'jump', KeyI: 'jump' };
 const MOVE = new Set(['u', 'd', 'l', 'r']);
+const CTRLS = ['keyboard', 'mouse', 'gamepad', 'touch'];
+const CTRL_NAME = { keyboard: 'Keyboard', mouse: 'Mouse', gamepad: 'Controller', touch: 'Touch' };
+const DOUBLE_TAP = 280; // ms between two presses of sprint that make a dive
 const held = new Set();
-const kickSources = new Set();
-const inp = { kp: 0, dc: 0, jp: 0, kn: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, lob: false, lobArm: false };
-const mouse = { x: 0, y: 0, has: false, at: 0 };
-let touchMode = matchMedia('(hover: none) and (pointer: coarse)').matches;
+const kickSources = new Set(), sprintSources = new Set();
+const inp = { kp: 0, dv: 0, jp: 0, kn: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, lob: false, lobArm: false, sprintTapAt: -1e9 };
+const mouse = { x: 0, y: 0, has: false };
+const touchDevice = matchMedia('(hover: none) and (pointer: coarse)').matches;
+let ctrl = (() => { try { const v = localStorage.getItem('obm_ctrl'); if (CTRLS.includes(v)) return v; } catch { } return touchDevice ? 'touch' : 'keyboard'; })();
 let lastSent = '';
-function typing(e) { const t = e.target; return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'); }
+function typing(e) { const t = e.target; return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'); }
 function sendInput(force) {
+  const kb = ctrl === 'keyboard';
   const msg = {
     t: 'i',
-    u: +(held.has('KeyW') || held.has('ArrowUp')), d: +(held.has('KeyS') || held.has('ArrowDown')),
-    l: +(held.has('KeyA') || held.has('ArrowLeft')), r: +(held.has('KeyD') || held.has('ArrowRight')),
-    k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dc: inp.dc, jp: inp.jp, kn: inp.kn, lob: !!inp.lob, as: assistOn ? 1 : 0,
+    u: +(kb && (held.has('KeyW') || held.has('ArrowUp'))), d: +(kb && (held.has('KeyS') || held.has('ArrowDown'))),
+    l: +(kb && (held.has('KeyA') || held.has('ArrowLeft'))), r: +(kb && (held.has('KeyD') || held.has('ArrowRight'))),
+    k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dv: inp.dv, sp: sprintSources.size ? 1 : 0, jp: inp.jp, kn: inp.kn, lob: !!inp.lob, as: assistOn ? 1 : 0,
     ax: Math.round(inp.ax * 50) / 50, ay: Math.round(inp.ay * 50) / 50,
   };
   const s = JSON.stringify(msg);
@@ -172,7 +186,7 @@ function sendInput(force) {
 // mapping (player 0 lives at x<0, player 1 at x>0). Called on every key event as well as per frame,
 // so a key reaches the server with its direction at once, not on the next drawn frame.
 function keyAxes() {
-  if (touchMode || padSeen) return;
+  if (ctrl !== 'keyboard') return;
   const side = mySlot() === 1 ? 1 : -1;
   const fwd = -side, rightY = -side;
   const wKey = (held.has('KeyW') || held.has('ArrowUp') ? 1 : 0) - (held.has('KeyS') || held.has('ArrowDown') ? 1 : 0);
@@ -203,9 +217,43 @@ function kickUp(src) {
   }
   sendInput();
 }
-function dashPress() { inp.dc++; sendInput(); }
+// sprint is held; a second press close behind the first is the dive
+function sprintDown(src) {
+  if (!sprintSources.size) {
+    const now = performance.now();
+    if (now - inp.sprintTapAt < DOUBLE_TAP) { inp.dv++; inp.sprintTapAt = -1e9; } else inp.sprintTapAt = now;
+  }
+  sprintSources.add(src); sendInput();
+}
+function sprintUp(src) { if (sprintSources.delete(src)) sendInput(); }
 function jumpPress() { inp.jp++; sendInput(); }
-function releaseAll() { held.clear(); for (const s of [...kickSources]) kickUp(s); inp.ax = inp.ay = 0; sendInput(); }
+function releaseAll() {
+  held.clear(); keyHeldSince = null;
+  for (const s of [...kickSources]) kickUp(s);
+  sprintSources.clear(); padPrev = { kick: false, sprint: false, lob: false, jump: false };
+  if (touchStick) { touchStick = null; $('stick').classList.remove('on'); $('knob').style.transform = ''; }
+  inp.ax = inp.ay = 0; sendInput();
+}
+const CTRL_TOAST = {
+  keyboard: 'Keyboard controls: WASD moves, Space shoots, Shift sprints (double-tap to dive)',
+  mouse: 'Mouse controls: run to the pointer, click shoots, hold right button to sprint (double-click it to dive)',
+  gamepad: 'Controller: left stick moves, A shoots, X sprints (double-tap to dive)',
+  touch: 'Touch controls: left thumb moves, right thumb shoots, Sprint (double-tap to dive)',
+};
+function updateCtrlUI() {
+  document.querySelectorAll('#ctrlSeg button').forEach(b => b.classList.toggle('on', b.dataset.c === ctrl));
+  const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl] + CTRL_SHOTS;
+  $('view').classList.toggle('mouse-mode', ctrl === 'mouse');
+  $('touchui').classList.toggle('hidden', !(code && ctrl === 'touch'));
+}
+function setCtrl(mode, announce = true) {
+  if (!CTRLS.includes(mode) || mode === ctrl) return;
+  releaseAll();
+  ctrl = mode; try { localStorage.setItem('obm_ctrl', mode); } catch { }
+  updateCtrlUI();
+  if (announce) toast(CTRL_TOAST[mode], 4000);
+  sendInput(true);
+}
 function setupInput() {
   addEventListener('keydown', e => {
     if (!code || typing(e) || menuOpen()) { if (e.code === 'Escape' && code && !typing(e)) { menuOpen() ? closeMenu() : openMenu('room'); e.preventDefault(); } return; }
@@ -216,83 +264,91 @@ function setupInput() {
     if (/^Digit[1-6]$/.test(e.code)) { send({ t: 'emote', n: +e.code.slice(5) - 1 }); return; }
     if (e.code === 'KeyM') { Sound.toggle(); if (setupMenu.muteLabel) setupMenu.muteLabel(); return; }
     if (!act) return;
+    // the keys play on keyboard controls; on mouse controls the action keys still work (the pointer
+    // steers); on a controller or touch they do nothing
+    if (!(ctrl === 'keyboard' || (ctrl === 'mouse' && !MOVE.has(act)))) return;
     held.add(e.code);
     if (act === 'kick') kickDown('key:' + e.code);
     if (act === 'lob') kickDown('lob:' + e.code);
-    if (act === 'dash') dashPress();
+    if (act === 'sprint') sprintDown('key:' + e.code);
     if (act === 'jump') jumpPress();
-    if (MOVE.has(act) && !(mouse.has && performance.now() - mouse.at < 2000)) keyAxes();
+    if (MOVE.has(act)) keyAxes();
     sendInput();
   });
   addEventListener('keyup', e => {
     if (!held.has(e.code)) return;
     held.delete(e.code);
-    if (KEYMAP[e.code] === 'kick') kickUp('key:' + e.code);
-    if (KEYMAP[e.code] === 'lob') kickUp('lob:' + e.code);
-    if (MOVE.has(KEYMAP[e.code]) && !(mouse.has && performance.now() - mouse.at < 2000)) keyAxes();
+    const act = KEYMAP[e.code];
+    if (act === 'kick') kickUp('key:' + e.code);
+    if (act === 'lob') kickUp('lob:' + e.code);
+    if (act === 'sprint') sprintUp('key:' + e.code);
+    if (MOVE.has(act)) keyAxes();
     sendInput();
   });
   const view = $('view');
-  view.addEventListener('pointermove', e => {
-    const r = view.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true; mouse.at = performance.now();
+  const at = e => { const r = view.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true; };
+  view.addEventListener('pointermove', e => { if (e.pointerType !== 'touch') at(e); });
+  view.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') mouse.has = false; });
+  // mouse buttons (mousedown fires for every button, even pressed together): mouse controls only
+  view.addEventListener('mousedown', e => {
+    if (!code || ctrl !== 'mouse' || e.target.closest('button, input, a, select, .interactive')) return;
+    at(e);
+    if (e.button === 0 && e.shiftKey) kickDown('lob:mouse');
+    else if (e.button === 0) kickDown('mouse');
+    else if (e.button === 1) kickDown('lob:mouse');
+    else if (e.button === 2) sprintDown('mouse');
+    else if (e.button === 3 || e.button === 4) jumpPress(); // the thumb buttons
+    else return;
+    e.preventDefault();
   });
-  view.addEventListener('pointerdown', e => {
-    if (!code || e.target.closest('button, input, a, .interactive')) return;
-    const r = view.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.has = true; mouse.at = performance.now();
-    if (e.pointerType === 'touch') { touchMode = true; return; }
-    if (e.button === 0 && e.shiftKey) { kickDown('lob:mouse'); e.preventDefault(); }
-    else if (e.button === 0) { kickDown('mouse'); e.preventDefault(); }
-    else if (e.button === 1) { kickDown('lob:mouse'); e.preventDefault(); }
-    else if (e.button === 2) { dashPress(); e.preventDefault(); }
-    else if (e.button === 3 || e.button === 4) { jumpPress(); e.preventDefault(); } // the thumb buttons
-  });
-  addEventListener('pointerup', e => {
+  addEventListener('mouseup', e => {
     if (e.button === 0) { kickUp('mouse'); kickUp('lob:mouse'); }
     if (e.button === 1) kickUp('lob:mouse');
+    if (e.button === 2) sprintUp('mouse');
   });
   view.addEventListener('contextmenu', e => e.preventDefault());
   addEventListener('blur', releaseAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
-  addEventListener('gamepadconnected', () => toast('Controller detected. Move the stick to use it', 3000));
+  addEventListener('gamepadconnected', () => { if (ctrl !== 'gamepad') toast('Controller detected. To play with it, pick Controller in Menu > Controls', 4000); });
+  document.querySelectorAll('#ctrlSeg button').forEach(b => b.onclick = e => { setCtrl(b.dataset.c); e.currentTarget.blur(); });
   setInterval(() => sendInput(true), 250);
   setupTouch();
+  updateCtrlUI();
 }
-let padPrev = { kick: false, dash: false, lob: false, jump: false }, padSeen = false;
+let padPrev = { kick: false, sprint: false, lob: false, jump: false };
 function pollGamepad() {
-  if (touchMode) return;
+  if (ctrl !== 'gamepad' || !code) return;
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   let gp = null; for (const p of pads) if (p && p.connected) { gp = p; break; }
-  if (!gp) return;
+  if (!gp) { if (inp.ax || inp.ay) { inp.ax = inp.ay = 0; sendInput(); } return; }
   const b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
   let x = gp.axes[0] || 0, y = gp.axes[1] || 0;
   if (b(14)) x = -1; if (b(15)) x = 1; if (b(12)) y = -1; if (b(13)) y = 1;
   const m = Math.hypot(x, y);
-  if (m > 0.25 || b(0) || b(2) || b(3)) padSeen = true;
-  if (!padSeen) return;
   // stick is screen-relative, like WASD: push up to run at the net, right to move screen-right
   const side = mySlot() === 1 ? 1 : -1;
-  if (m < 0.2) { inp.ax = inp.ay = 0; } else {
+  if (m < 0.2 || menuOpen()) { inp.ax = inp.ay = 0; } else {
     const mm = Math.min(1, (m - 0.2) / 0.65), nx = x / m * mm, ny = y / m * mm;
     inp.ax = -ny * -side; inp.ay = nx * -side;
   }
-  const kick = b(0) || b(7), lobB = b(3), dsh = b(2) || b(4), jmp = b(1) || b(5);
+  const open = menuOpen();
+  const kick = !open && (b(0) || b(7)), lobB = !open && b(3), spr = !open && (b(2) || b(4)), jmp = !open && (b(1) || b(5));
   if (kick && !padPrev.kick) kickDown('pad');
   if (!kick && padPrev.kick) kickUp('pad');
   if (lobB && !padPrev.lob) kickDown('lob:pad');
   if (!lobB && padPrev.lob) kickUp('lob:pad');
-  if (dsh && !padPrev.dash) dashPress();
+  if (spr && !padPrev.sprint) sprintDown('pad');
+  if (!spr && padPrev.sprint) sprintUp('pad');
   if (jmp && !padPrev.jump) jumpPress();
-  padPrev.kick = kick; padPrev.lob = lobB; padPrev.dash = dsh; padPrev.jump = jmp;
+  padPrev.kick = kick; padPrev.lob = lobB; padPrev.sprint = spr; padPrev.jump = jmp;
   sendInput();
 }
-// touch: left half is a floating stick, right side is Shoot / Lift / Dash
+// touch: left half is a floating stick, right side is Shoot / Lift / Sprint / Jump
 let touchStick = null;
 function setupTouch() {
   const zone = $('stickZone'), stick = $('stick'), knob = $('knob');
-  const pos = (el, e) => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   zone.addEventListener('pointerdown', e => {
-    if (!touchMode) touchMode = true;
-    $('touchui').classList.remove('hidden');
+    if (ctrl !== 'touch') return;
     const r = zone.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
     touchStick = { id: e.pointerId, x, y };
     stick.style.left = x + 'px'; stick.style.top = y + 'px'; stick.classList.add('on');
@@ -316,16 +372,14 @@ function setupTouch() {
   });
   const end = e => { if (touchStick && e.pointerId === touchStick.id) { touchStick = null; stick.classList.remove('on'); knob.style.transform = ''; inp.ax = inp.ay = 0; sendInput(); } };
   zone.addEventListener('pointerup', end); zone.addEventListener('pointercancel', end);
-  const tShoot = $('tShoot');
-  tShoot.addEventListener('pointerdown', e => { touchMode = true; kickDown('touch'); e.preventDefault(); });
-  tShoot.addEventListener('pointerup', e => { kickUp('touch'); e.preventDefault(); });
-  tShoot.addEventListener('pointercancel', () => kickUp('touch'));
-  const tLift = $('tLift');
-  tLift.addEventListener('pointerdown', e => { kickDown('lob:touch'); e.preventDefault(); });
-  tLift.addEventListener('pointerup', e => { kickUp('lob:touch'); e.preventDefault(); });
-  tLift.addEventListener('pointercancel', () => kickUp('lob:touch'));
-  $('tDash').addEventListener('pointerdown', e => { dashPress(); e.preventDefault(); });
-  $('tJump').addEventListener('pointerdown', e => { jumpPress(); e.preventDefault(); });
+  const hold = (el, down, up) => {
+    el.addEventListener('pointerdown', e => { if (ctrl === 'touch') down(); e.preventDefault(); });
+    if (up) { el.addEventListener('pointerup', e => { up(); e.preventDefault(); }); el.addEventListener('pointercancel', () => up()); }
+  };
+  hold($('tShoot'), () => kickDown('touch'), () => kickUp('touch'));
+  hold($('tLift'), () => kickDown('lob:touch'), () => kickUp('lob:touch'));
+  hold($('tDash'), () => sprintDown('touch'), () => sprintUp('touch'));
+  hold($('tJump'), jumpPress);
 }
 
 // ---------------------------------------------------------------- HUD + screens
@@ -426,6 +480,8 @@ function renderScreens(s) {
       <div class="vs-info">${mi.h2h ? `Head to head ${mi.h2h[0]} – ${mi.h2h[1]}` : 'First meeting'} · first to ${C.POINTS}</div>
       <div class="vs-you">${ms >= 0 ? 'You defend the ' + (ms === 0 ? 'left' : 'right') + ' court' : 'Watching'}</div></div>`);
     const cn = $('cnt'); if (cn) cn.textContent = secs;
+  } else if (s.rp === 'paused' && s.up) {
+    setScreen('upaused' + menuOpen(), menuOpen() ? '' : `<div class="scrim"></div><div class="card"><div class="cap">Paused</div><h2>Match paused</h2><p>Press <b>Esc</b> to play on.</p></div>`);
   } else if (s.rp === 'paused') {
     const gone = room ? room.slots.map(id => room.members.find(m => m.id === id)).find(m => m && !m.connected) : null;
     setScreen('paused', `<div class="scrim"></div><div class="card"><div class="cap">Paused</div><h2>${esc(gone ? gone.name : 'Opponent')} dropped</h2><p>Waiting <b id="pz"></b>s for them to come back.</p></div>`);
@@ -527,8 +583,18 @@ function fireEvent(e) {
 
 // ---------------------------------------------------------------- menu + home
 function menuOpen() { return !$('menu').classList.contains('hidden'); }
-function openMenu(pane = 'room') { $('menu').classList.remove('hidden'); showPane(pane); releaseAll(); }
-function closeMenu() { $('menu').classList.add('hidden'); }
+// the menu is the pause screen: against the bot the match holds while it is open
+const botMatchMine = () => !!(matchInfo && matchInfo.bot && mySlot() >= 0);
+function openMenu(pane = 'room') {
+  const was = menuOpen();
+  $('menu').classList.remove('hidden'); showPane(pane); releaseAll();
+  if (!was && botMatchMine()) send({ t: 'pause', v: true });
+}
+function closeMenu() {
+  if (!menuOpen()) return;
+  $('menu').classList.add('hidden');
+  send({ t: 'pause', v: false });
+}
 function showPane(pane) {
   document.querySelectorAll('.menu-nav button').forEach(b => b.classList.toggle('on', b.dataset.pane === pane));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.dataset.pane === pane));
@@ -542,13 +608,34 @@ function copyText(v, btn) {
   if (navigator.clipboard) navigator.clipboard.writeText(v).then(done).catch(() => { });
   else { const i = $('shareLink'); i.select(); document.execCommand('copy'); done(); }
 }
-const CTRL_HELP = `<span class="do">Move</span><span class="how">WASD / arrows, or the pointer (your player runs to it). Left stick on a pad. A quick tap is a small step; hold to run. With no direction held, your player glides the last metre or two to where the shuttle is best met (Settings: Placement assist).</span>
-  <span class="do">Shot</span><span class="how">Hold <b>Space</b> / click / <b>A</b>, release. Where you meet it decides the shot: overhead full charge = <b>smash</b>, soft = <b>drop</b>; waist = <b>drive</b>; low full = <b>clear</b>, soft = <b>net shot</b>; full charge on a shuttle floating over the tape = <b>kill</b>. Release on gold for a perfect strike.</span>
-  <span class="do">Jump</span><span class="how"><b>F</b> / <b>B</b> / mouse thumb button. Crouch, then up: meet a high shuttle at the top of the jump with a full charge for a <b>jump smash</b> (faster, steeper, a heavier landing). Out of a dash it is a long leap.</span>
-  <span class="do">Defend a smash</span><span class="how">It is too fast to react to: read the wind-up. Hold Shot to <b>brace</b>, release as it arrives to <b>counter</b> it flat into the open court (clean and on time = <b>parry</b>). A late tap <b>blocks</b> it dead over the net; <b>Lift</b> sends it high.</span>
-  <span class="do">Lift</span><span class="how">Hold <b>E</b> / <b>Y</b> while shooting to send it high and deep</span>
-  <span class="do">Dash / dive</span><span class="how"><b>Shift</b> / <b>X</b> bursts toward the shuttle; beside a dying shuttle it becomes a diving save. Costs stamina.</span>
-  <span class="do">Serve</span><span class="how">When you're serving, stand still and shoot: soft is a low serve, full charge is a high deep serve</span>`;
+const CTRL_HELP = {
+  keyboard: `<span class="do">Move</span><span class="how"><b>WASD</b> / arrows. A quick tap is a small step; hold to run. With no direction held, your player glides the last metre or two to where the shuttle is best met (Settings: Placement assist).</span>
+  <span class="do">Shot</span><span class="how">Hold <b>Space</b>, release. <b>E</b> instead lifts it high and deep.</span>
+  <span class="do">Sprint</span><span class="how">Hold <b>Shift</b>: a faster, longer stride that burns stamina.</span>
+  <span class="do">Dive</span><span class="how">Double-tap <b>Shift</b>: a last-ditch launch along your run, the racket stretched out at the shuttle. It gets there when running will not, but you are on the floor for a moment after.</span>
+  <span class="do">Jump</span><span class="how"><b>F</b>. Out of a sprint it is a long leap.</span>`,
+  mouse: `<span class="do">Move</span><span class="how">Your player runs to the pointer. With it still, your player glides to where the shuttle is best met (Settings: Placement assist).</span>
+  <span class="do">Shot</span><span class="how">Hold click, release. Shift+click or middle-click lifts it high and deep.</span>
+  <span class="do">Sprint</span><span class="how">Hold the right button (or Shift).</span>
+  <span class="do">Dive</span><span class="how">Double-click the right button (or double-tap Shift): a last-ditch launch at the shuttle; you are on the floor for a moment after.</span>
+  <span class="do">Jump</span><span class="how">A mouse thumb button, or <b>F</b>.</span>`,
+  gamepad: `<span class="do">Move</span><span class="how">Left stick or D-pad</span>
+  <span class="do">Shot</span><span class="how">Hold <b>A</b> (or RT), release. <b>Y</b> lifts it high and deep.</span>
+  <span class="do">Sprint</span><span class="how">Hold <b>X</b> (or LB).</span>
+  <span class="do">Dive</span><span class="how">Double-tap <b>X</b>: a last-ditch launch at the shuttle; you are on the floor for a moment after.</span>
+  <span class="do">Jump</span><span class="how"><b>B</b> (or RB).</span>`,
+  touch: `<span class="do">Move</span><span class="how">Put your left thumb down anywhere on the left half and steer.</span>
+  <span class="do">Shot</span><span class="how">Hold <b>Shoot</b>, release. <b>Lift</b> sends it high and deep.</span>
+  <span class="do">Sprint</span><span class="how">Hold <b>Sprint</b>.</span>
+  <span class="do">Dive</span><span class="how">Double-tap <b>Sprint</b>: a last-ditch launch at the shuttle.</span>
+  <span class="do">Jump</span><span class="how"><b>Jump</b></span>`,
+};
+// how shots work, whatever the controls
+const CTRL_SHOTS = `
+  <span class="do">Which shot</span><span class="how">Where you meet it decides the shot: overhead full charge = <b>smash</b>, soft = <b>drop</b>; waist = <b>drive</b>; low full = <b>clear</b>, soft = <b>net shot</b>; full charge on a shuttle floating over the tape = <b>kill</b>. Release on gold for a perfect strike. In the air at the top of a jump, a full charge is a <b>jump smash</b>.</span>
+  <span class="do">Defend a smash</span><span class="how">It is too fast to react to: read the wind-up. Hold Shot to <b>brace</b>, release as it arrives to <b>counter</b> it flat into the open court (clean and on time = <b>parry</b>). A late tap <b>blocks</b> it dead over the net; Lift sends it high.</span>
+  <span class="do">Serve</span><span class="how">When you're serving, stand still and shoot: soft is a low serve, full charge is a high deep serve</span>
+  <span class="do">Pause</span><span class="how"><b>Esc</b> opens the menu. Against the bot the match waits for you.</span>`;
 function setupMenu() {
   document.querySelectorAll('.menu-nav button').forEach(b => b.onclick = () => {
     if (b.dataset.pane === 'leave') { leaveRoom(); closeMenu(); navigate('/badminton'); return; }
@@ -579,7 +666,22 @@ function setupMenu() {
   q.onchange = () => { try { localStorage.setItem('obm_graphics', q.value); } catch { } location.reload(); };
   $('fsBtn').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); };
   $('emoteBtn').onclick = () => send({ t: 'emote', n: (Math.random() * 6) | 0 });
-  $('ctrlHelp').innerHTML = CTRL_HELP;
+  updateCtrlUI();
+  const ls = $('levelSel');
+  if (ls) {
+    const names = { easy: 'Easy', normal: 'Normal', hard: 'Hard', pro: 'Pro' };
+    const desc = {
+      easy: 'Slow to read your shots, soft, and makes mistakes. Good for learning the strokes.',
+      normal: 'A steady club player: gets to most shuttles and punishes a loose lift.',
+      hard: 'Reads you early, smashes the high ones, counters, jumps and dives for the last-ditch saves.',
+      pro: 'Hardly ever errs. Every lift gets smashed; you have to move it around.',
+    };
+    ls.innerHTML = Object.keys(names).map(k => `<option value="${k}">${names[k]}</option>`).join('');
+    ls.value = myLevel();
+    const d = () => { $('levelDesc').textContent = desc[ls.value] || ''; };
+    d();
+    ls.onchange = () => { try { localStorage.setItem('obm_level', ls.value); } catch { } d(); send({ t: 'level', v: ls.value }); ls.blur(); };
+  }
 }
 function navigate(path) { if (location.pathname !== path) history.pushState(null, '', path); route(); }
 function setupHome() {
@@ -614,7 +716,7 @@ function enterRoom(c) {
   $('home').classList.add('hidden');
   $('hud').classList.remove('hidden');
   $('roomCode').textContent = c; $('roomCode2').textContent = c;
-  $('touchui').classList.toggle('hidden', !touchMode);
+  $('touchui').classList.toggle('hidden', ctrl !== 'touch');
   hist.length = 0; pendingEvents.length = 0; clock.reset();
   connect();
 }
@@ -667,7 +769,9 @@ function selfStep(K, fresh, sp) {
   if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; }
   if (!fresh.hs) {
     const tired = sp[9] < K.TIRED ? 0.86 : 1;
-    const top = K.TOP * tired * (inp.kickDownAt !== null ? 0.6 : 1) * (sp[11] ? 0.5 : 1) * (sp[17] > 0 ? 0.35 : 1);
+    // (sprinting as the server has it, or about to: held with the breath for it)
+    const sprinting = m0.sp && (sp[19] || sp[9] > K.SPRINT_MIN);
+    const top = (sprinting ? K.SPRINT_V : K.TOP) * tired * (inp.kickDownAt !== null ? 0.6 : 1) * (sp[11] ? 0.5 : 1) * (sp[17] > 0 ? 0.35 : 1);
     // the same placement assist the server applies when nothing is held
     if (m <= 0.05 && m0.as) {
       const b = fresh.b, sim = { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } };
@@ -684,7 +788,7 @@ function predictSelf(p, dtMs, ms, now) {
   if (!K || !sp) { own.on = false; return p; }
   // the server is moving the player itself: follow it (dash, dive, stun)
   // (drawn from the freshest snapshot, carried forward the same round trip the prediction runs ahead)
-  if (sp[7] || sp[8] || sp[10] || sp[14] > 0 || sp[16] > 0) {
+  if (sp[8] || sp[20] > 0 || sp[10] || sp[14] > 0 || sp[16] > 0) {
     selfReset(sp, ms); own.on = false;
     const lead = Math.min(0.15, (now - fresh._at + (pingMs != null ? pingMs : 30)) / 1000);
     const out = p.slice();
@@ -763,7 +867,7 @@ function frame(now) {
     const si = $('serveIcon');
     si.className = 'sb-serve ' + (s.sv === 0 ? 'l0' : 'l1');
     setText($('rallyBadge'), s.rc >= 4 && s.rp !== 'over' ? `Rally ${s.rc}` : '');
-    setHTML($('subbug'), matchInfo ? (matchInfo.bot ? 'Practice vs bot' : 'Ranked 1v1') + ' · first to ' + C.POINTS : 'Office Badminton');
+    setHTML($('subbug'), matchInfo ? (matchInfo.bot ? `Practice vs bot${matchInfo.level ? ' (' + matchInfo.level[0].toUpperCase() + matchInfo.level.slice(1) + ')' : ''}` : 'Ranked 1v1') + ' · first to ' + C.POINTS : 'Office Badminton');
     $('subbug').className = matchInfo && matchInfo.bot ? 'bot' : '';
     const q = room ? room.queue.length : 0;
     setHTML($('hudRight'), q ? `<b>${q}</b> in line` : '');
@@ -819,19 +923,19 @@ function frame(now) {
   // prediction for the landing mark: from the freshest snapshot
   const fresh = hist[hist.length - 1];
   lastPred = fresh && fresh.b && window.BM ? window.BM.predict({ ball: { x: fresh.b[0], y: fresh.b[1], z: fresh.b[2], vx: fresh.b[3], vy: fresh.b[4], vz: fresh.b[5] }, tick: 0 }) : null;
-  // steering: pointer if it moved recently, else keys (touch and gamepad set inp themselves)
+  // steering on the chosen controls: the pointer on mouse controls, the keys on keyboard controls
+  // (touch and gamepad set inp themselves)
   const live = !!(s && s.rp === 'match' && s.ph !== 'point' && s.ph !== 'over' && !menuOpen());
-  const mouseActive = !touchMode && mouse.has && now - mouse.at < 2000;
   if (live && ms >= 0 && world) {
-    if (mouseActive && R) {
+    if (ctrl === 'mouse' && R) {
       const me = world.players[ms];
-      const g = R.pickGround(mouse.x, mouse.y);
+      const g = mouse.has ? R.pickGround(mouse.x, mouse.y) : null;
       if (g) {
         const dx = g.x - me[0], dy = g.y - me[1], d = Math.hypot(dx, dy);
         if (d < 0.25) { inp.ax = 0; inp.ay = 0; } else { const mag = clamp((d - 0.25) / 3, 0.3, 1); inp.ax = dx / d * mag; inp.ay = dy / d * mag; }
       } else { inp.ax = 0; inp.ay = 0; }
       sendInput();
-    } else if (!touchMode && !padSeen) {
+    } else if (ctrl === 'keyboard') {
       // WASD is relative to the camera you are looking through: W always runs toward the net, D to
       // the right of the screen. The camera sits behind each player's own end, so the two ends
       // mirror the mapping (player 0 lives at x<0, player 1 at x>0).
@@ -845,7 +949,7 @@ function frame(now) {
   const hype = s ? clamp(s.rc / 20, 0, 1) + (s.hs > 0 ? 0.3 : 0) : 0;
   const rv = {
     world, live, mySlot: ms, names: [slotName(0), slotName(1)], pred: lastPred,
-    rally: s ? s.rc : 0, hype, tick: lastRenderTick, strokes, pointAt, hitstop: !!(s && s.hs > 0),
+    rally: s ? s.rc : 0, hype, tick: lastRenderTick, strokes, pointAt, hitstop: !!(s && (s.hs > 0 || s.up)),
     lh: s ? s.lh : -1, predAge: fresh && fresh._at ? (now - fresh._at) / 1000 : 0,
   };
   if (R) R.frame(rv, now);

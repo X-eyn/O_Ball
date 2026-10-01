@@ -504,6 +504,9 @@ export class Human {
     }
     // fingers: the pack's run/idle clench them into fists; hands are eased halfway back to open
     this.fingers = []; root.traverse(o => { if (o.isBone && FINGER.test(o.name)) this.fingers.push([o, o.quaternion.clone()]); });
+    // opt-in hand pose (badminton: the racket grip): [bone, local quaternion] pairs written over the
+    // eased mocap every frame. Football never sets it, so its hands are untouched.
+    this.fingerPose = null;
     this.buildReference();
     this.mixer = new THREE.AnimationMixer(root);
     this.act = {};
@@ -617,6 +620,9 @@ export class Human {
     // ball is the boot the player sees. Backpedalling keeps the local phase (the sim only walks it
     // forwards).
     if (add.serverPhase !== null && add.serverPhase !== undefined && Number.isFinite(add.serverPhase)) this.phase = ((add.serverPhase % 1) + 1) % 1;
+    // opt-in (badminton): the caller sets the cadence in cycles per second, matched to its stride so
+    // a planted foot stays planted; football never passes it
+    else if (Number.isFinite(add.cadence)) this.phase = (((this.phase + dt * add.cadence) % 1) + 1) % 1;
     else this.phase = (((this.phase + dir * dt * (wWalk * 0.95 + wJog * 1.35 + wSprint * 1.5)) % 1) + 1) % 1;
     const clipW = add.clips || {}; let other = 0; for (const k in clipW) other += clipW[k];
     const lk = Math.max(0, 1 - other);
@@ -632,6 +638,7 @@ export class Human {
     if (this.mixQ) this.touched.forEach((bn, i) => this.mixQ[i].copy(bn.quaternion)); else this.mixQ = this.touched.map(bn => bn.quaternion.clone());
     this.mixP.copy(pv.position);
     for (const [bone, open] of this.fingers) bone.quaternion.slerp(open, 0.5);
+    if (this.fingerPose) for (const [bone, q] of this.fingerPose) bone.quaternion.copy(q);
     // The pack's jog and sprint bounce the pelvis (and with it the head) 15-20 cm per stride; a real
     // footballer's runs 6-8 cm. Scale the vertical bounce about the blended gait's own cycle mean
     // (exact, so it adds no lag) down to BOB peak-to-peak; gaits already inside that are untouched.
@@ -727,7 +734,9 @@ export class Human {
     const env = this.env; env.push(this.clock, target);
     while (env.length > 2 && env[0] < this.clock - win) env.splice(0, 2);
     let need = -Infinity; for (let i = 1; i < env.length; i += 2) need = Math.max(need, env[i]);
-    this.groundY = need >= this.groundY ? need : this.groundY + (need - this.groundY) * (1 - Math.exp(-14 * dt));
+    // opt-in (badminton dive): only keep the soles out of the floor, never pull the body down to it
+    if (add.floorOnly) this.groundY = Math.max(0, target);
+    else this.groundY = need >= this.groundY ? need : this.groundY + (need - this.groundY) * (1 - Math.exp(-14 * dt));
     this.groundY = clamp(Number.isFinite(this.groundY) ? this.groundY : 0, -0.5, 0.5);
     // the pelvis moves in its parent's space; find world "up" there (the rig's root is rotated)
     const up = _v.set(0, 1, 0).applyQuaternion(b.pelvis.parent.getWorldQuaternion(_q).invert());
