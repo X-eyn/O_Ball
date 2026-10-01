@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#070b12">
+<title>Gesture Lab · Office Badminton</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23070b12'/><path d='M16 6l6 10-6 10-6-10z' fill='%23e4ff3c'/></svg>">
+<!--
+  Office Badminton — gesture lab. Reads a laptop trackpad the way the game will: one-finger flicks
+  (pointer captured, so the cursor never meets a screen edge), the pull-back-then-flick swing,
+  taps, two-finger taps, two-finger swipes and pinches; times them against a closing ring; checks
+  WASD and the trackpad work together; and sends what it learned back to the host
+  (data/diag.log, kind "gesturelab") so the game's thresholds are tuned to real fingers.
+  Open it at /badminton/lab.html on each laptop.
+-->
+<style>
+:root {
+  --bg: #070b12; --panel: #0d131d; --panel2: #121a27; --line: rgba(255, 255, 255, .09);
+  --text: #eef1f6; --dim: #8b93a4; --faint: #5c6475;
+  --lime: #e4ff3c; --gold: #ffd34d; --blue: #57b6ff; --red: #ff5a5f; --green: #6fe39a; --violet: #b99bff;
+  --cond: 'Barlow Condensed', 'Arial Narrow', 'Roboto Condensed', sans-serif;
+  --body: 'Barlow', 'Segoe UI', system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--body); font-size: 14px; overflow: hidden; }
+button { font: inherit; color: inherit; }
+.app { display: grid; grid-template-rows: auto auto 1fr; height: 100%; }
+header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-family: var(--cond); font-weight: 800; font-style: italic; font-size: 22px; letter-spacing: .02em; white-space: nowrap; }
+.brand i { color: var(--lime); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.chip { font-family: var(--cond); font-weight: 700; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; padding: 4px 8px; border-radius: 3px; background: var(--panel2); color: var(--dim); white-space: nowrap; }
+.chip b { color: var(--text); font-weight: 700; }
+.chip.ok b { color: var(--green); }
+.chip.warn b { color: var(--gold); }
+.chip.bad b { color: var(--red); }
+.btn { background: var(--panel2); border: 1px solid var(--line); padding: 7px 12px; border-radius: 4px; cursor: pointer; font-family: var(--cond); font-weight: 700; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.btn:hover { border-color: rgba(255, 255, 255, .25); }
+.btn.primary { background: var(--lime); color: #0b0f16; border-color: var(--lime); }
+.btn.small { padding: 4px 8px; font-size: 12px; }
+.btn.on { background: var(--lime); color: #0b0f16; border-color: var(--lime); }
+nav { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+nav button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; cursor: pointer; font-family: var(--cond); font-weight: 700; font-size: 14px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+nav button.on { color: var(--lime); border-bottom-color: var(--lime); }
+main { display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+.stage { display: grid; grid-template-rows: 1fr 96px; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+#pad { position: relative; min-height: 0; cursor: pointer; overflow: hidden; background: radial-gradient(ellipse at center, #0f1826 0%, #070b12 70%); }
+#pad canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#padHint { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; pointer-events: none; text-align: center; padding: 16px; }
+#padHint .big { font-family: var(--cond); font-weight: 800; font-size: 28px; letter-spacing: .04em; text-transform: uppercase; }
+#padHint .sub { color: var(--dim); max-width: 460px; line-height: 1.5; }
+#padHint.hidden { display: none; }
+#strip { position: relative; border-top: 1px solid var(--line); }
+#strip canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#strip .lbl { position: absolute; left: 10px; top: 6px; font-family: var(--cond); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); pointer-events: none; }
+aside { overflow-y: auto; padding: 14px 16px 24px; min-height: 0; }
+.pane { display: none; }
+.pane.on { display: block; }
+h3 { font-family: var(--cond); font-weight: 800; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 18px 0 8px; }
+h3:first-child { margin-top: 0; }
+p.note { color: var(--dim); line-height: 1.5; margin: 0 0 10px; font-size: 13px; }
+p.note b { color: var(--text); }
+.last { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-height: 96px; }
+.last .name { font-family: var(--cond); font-weight: 800; font-size: 26px; letter-spacing: .03em; text-transform: uppercase; line-height: 1.05; }
+.last .meta { color: var(--dim); font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.last .game { margin-top: 8px; font-size: 13px; color: var(--text); }
+.last .game span { font-family: var(--cond); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 11px; color: var(--faint); margin-right: 6px; }
+.counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 12px; font-size: 13px; }
+.counts div { display: flex; justify-content: space-between; color: var(--dim); }
+.counts div b { color: var(--text); font-variant-numeric: tabular-nums; }
+.log { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.log div { display: flex; gap: 8px; padding: 4px 6px; border-radius: 3px; background: var(--panel); }
+.log div .k { font-family: var(--cond); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; min-width: 112px; }
+.log div .v { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log div.dim { opacity: .45; }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 4px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+th { font-family: var(--cond); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); font-size: 11px; }
+td.best { color: var(--lime); }
+.windows { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 13px; }
+.windows b { font-family: var(--cond); letter-spacing: .08em; }
+.keys { display: grid; grid-template-columns: repeat(3, 44px); gap: 4px; margin: 4px 0 6px; }
+.key { height: 40px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); font-family: var(--cond); font-weight: 800; font-size: 16px; color: var(--dim); }
+.key.on { background: var(--lime); color: #0b0f16; border-color: var(--lime); }
+.key.blank { visibility: hidden; }
+.keyrow { display: flex; gap: 24px; align-items: flex-start; }
+.verdict { margin-top: 10px; padding: 10px 12px; border-radius: 5px; background: var(--panel); border-left: 3px solid var(--faint); line-height: 1.5; font-size: 13px; }
+.verdict.ok { border-left-color: var(--green); }
+.verdict.bad { border-left-color: var(--red); }
+.slider { display: grid; grid-template-columns: 1fr 70px; gap: 2px 8px; margin-bottom: 10px; }
+.slider label { font-size: 13px; }
+.slider output { text-align: right; font-variant-numeric: tabular-nums; color: var(--lime); font-size: 13px; }
+.slider input { grid-column: 1 / -1; width: 100%; accent-color: #e4ff3c; }
+.slider small { grid-column: 1 / -1; color: var(--faint); font-size: 12px; line-height: 1.4; }
+.toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+.toggle input { accent-color: #e4ff3c; width: 16px; height: 16px; }
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 5px; font-size: 13px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 10; max-width: calc(100vw - 32px); }
+#toast.on { opacity: 1; }
+@media (max-width: 900px) {
+  html, body { overflow: auto; }
+  .app { height: auto; }
+  main { grid-template-columns: 1fr; }
+  .stage { height: 70vh; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">GESTURE <i>LAB</i></div>
+    <div class="chips" id="chips"></div>
+    <button class="btn" id="copyBtn">Copy results</button>
+    <button class="btn primary" id="sendBtn">Send results to host</button>
+  </header>
+  <nav id="tabs">
+    <button data-tab="gestures" class="on">Gestures</button>
+    <button data-tab="timing">Timing</button>
+    <button data-tab="keys">Keys + trackpad</button>
+    <button data-tab="tune">Tuning</button>
+  </nav>
+  <main>
+    <div class="stage">
+      <div id="pad">
+        <canvas id="padCv"></canvas>
+        <div id="padHint">
+          <div class="big">Click here to start</div>
+          <div class="sub">The lab captures the pointer so flicks never hit the edge of the screen (the cursor disappears). Press <b>Esc</b> to let go.</div>
+        </div>
+      </div>
+      <div id="strip"><canvas id="stripCv"></canvas><div class="lbl">Finger speed (lime) · two-finger rate (blue) · lines: start / flick / hard</div></div>
+    </div>
+    <aside>
+      <!-- gestures -->
+      <section class="pane on" data-pane="gestures">
+        <div class="verdict bad hidden" id="calBanner" style="margin:0 0 12px">Two-finger directions are <b>not calibrated</b> yet, so they may read the wrong way round. <button class="btn small" id="calBtn2" style="margin-left:6px">Calibrate</button></div>
+        <h3>Last gesture</h3>
+        <div class="last" id="last"><div class="name" style="color:var(--faint)">Nothing yet</div><div class="meta">Try each one below.</div></div>
+        <h3>Try these</h3>
+        <p class="note">
+          <b>Flick</b>: one finger, a quick stroke forward (up the pad).<br>
+          <b>Swing</b>: pull back (a stroke down the pad), lift, then flick forward. The pause between is the wind-up.<br>
+          <b>Hard vs soft</b>: the faster the flick, the harder the shot.<br>
+          <b>Sideways flick</b>: angle the flick left or right.<br>
+          <b>Tap</b> and <b>double tap</b>: one finger.<br>
+          <b>Two-finger tap</b>: both fingers at once (a right click).<br>
+          <b>Two-finger swipe</b>: up, down, left, right.<br>
+          <b>Pinch</b>: in or out.
+        </p>
+        <h3>Seen so far</h3>
+        <div class="counts" id="counts"></div>
+        <h3>Log</h3>
+        <div class="log" id="log"></div>
+        <h3>Raw two-finger events (newest first)</h3>
+        <p class="note">Exactly what the trackpad sends for two-finger swipes and pinches.</p>
+        <div class="log" id="rawLog"><div class="dim"><span class="v">Nothing yet: swipe with two fingers on the captured pad.</span></div></div>
+      </section>
+
+      <!-- timing -->
+      <section class="pane" data-pane="timing">
+        <h3>Timing trainer</h3>
+        <p class="note">A ring closes on the target. Do the gesture <b>as it closes</b>. Each hit is graded against the windows below, and every way of measuring the moment of a flick (when it starts, its fastest point, when it ends) is recorded so we learn which one your fingers are most consistent with.</p>
+        <div class="seg" id="practiseSeg"></div>
+        <div style="display:flex;gap:6px;margin:10px 0 4px">
+          <button class="btn primary" id="timingGo">Start</button>
+          <button class="btn" id="timingReset">Reset stats</button>
+          <button class="btn" id="soundBtn">Sound: on</button>
+        </div>
+        <h3>Windows</h3>
+        <div class="windows" id="windowsLegend"></div>
+        <h3>Your results</h3>
+        <div id="timingStats"><p class="note">No hits yet.</p></div>
+      </section>
+
+      <!-- keys + trackpad -->
+      <section class="pane" data-pane="keys">
+        <h3>Keys and trackpad together</h3>
+        <p class="note">In the game your left hand runs on <b>WASD</b> while your right hand plays shots on the trackpad. Some laptops ignore the trackpad while a key is down (to stop palms causing clicks while typing). <b>Hold a movement key and flick, tap and swipe at the same time.</b></p>
+        <div class="keyrow">
+          <div>
+            <div class="keys"><div class="key blank"></div><div class="key" data-k="KeyW">W</div><div class="key blank"></div><div class="key" data-k="KeyA">A</div><div class="key" data-k="KeyS">S</div><div class="key" data-k="KeyD">D</div></div>
+          </div>
+          <div>
+            <div class="keys"><div class="key blank"></div><div class="key" data-k="ArrowUp">↑</div><div class="key blank"></div><div class="key" data-k="ArrowLeft">←</div><div class="key" data-k="ArrowDown">↓</div><div class="key" data-k="ArrowRight">→</div></div>
+          </div>
+        </div>
+        <div class="counts" id="keyCounts"></div>
+        <div class="verdict" id="keyVerdict">Hold a key and use the trackpad.</div>
+      </section>
+
+      <!-- tuning -->
+      <section class="pane" data-pane="tune">
+        <h3>Detection thresholds</h3>
+        <p class="note">Speeds are in pixels per second of pointer movement (your Windows pointer speed changes them). Changes apply at once and are remembered on this laptop.</p>
+        <label class="toggle"><input type="checkbox" id="rawToggle"> Raw movement (ignore Windows pointer acceleration)</label>
+        <div id="sliders"></div>
+        <h3>Two-finger direction</h3>
+        <p class="note" id="calNote"></p>
+        <button class="btn" id="calBtn">Calibrate two-finger direction</button>
+        <h3>Reset</h3>
+        <button class="btn" id="resetBtn">Reset thresholds</button>
+      </section>
+    </aside>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+// ------------------------------------------------------------------ settings
+const DEF = {
+  start: 250,    // a stroke starts once the finger moves this fast (px/s)
+  end: 110,      // and ends once it has been slower than this for 50 ms (or stopped)
+  gap: 45,       // no pointer movement for this long ends a stroke (ms)
+  flick: 1400,   // a stroke whose fastest point passes this is a flick (px/s)
+  hard: 22000,   // the fastest a flick is expected to go: power 1 (px/s; Windows pointer acceleration makes hard flicks very fast)
+  flickMs: 260,  // a flick is over within this long (ms); longer is a glide
+  backMin: 40,   // the shortest pull-back that counts as a wind-up (px)
+  combo: 800,    // a forward flick this soon after a pull-back makes a swing (ms)
+  wgap: 110,     // two-finger: a pause this long ends a swipe (ms)
+  wmin: 25,      // two-finger: the least scrolling that counts as a swipe (px)
+  tap: 320,      // a press released within this is a tap (ms; Windows sends a trackpad tap as a ~220 ms press)
+  dbl: 320,      // two taps this close are a double tap (ms)
+};
+const SLIDERS = [
+  ['start', 'Stroke starts at', 50, 1200, 10, 'px/s', 'Lower picks up gentler movement; too low and resting fingers start strokes.'],
+  ['flick', 'Flick threshold', 300, 6000, 50, 'px/s', 'How fast a stroke must peak to count as a flick (a shot).'],
+  ['hard', 'Hardest flick', 3000, 40000, 500, 'px/s', 'Peak speed for full power. Set it to roughly your hardest comfortable flick. Power rises on a log scale between the two.'],
+  ['flickMs', 'Flick max duration', 80, 600, 10, 'ms', 'Slower, longer strokes than this are glides, not shots.'],
+  ['backMin', 'Pull-back min length', 10, 300, 5, 'px', 'How far down the pad a pull-back must travel to count as a wind-up.'],
+  ['combo', 'Swing window', 200, 2000, 50, 'ms', 'How long after a pull-back the forward flick may come and still be one swing.'],
+  ['gap', 'Stroke gap', 20, 150, 5, 'ms', 'A pause in movement this long ends a stroke.'],
+  ['end', 'Stroke ends below', 20, 800, 10, 'px/s', ''],
+  ['wgap', 'Two-finger gap', 40, 400, 10, 'ms', 'A pause this long ends a two-finger swipe.'],
+  ['wmin', 'Two-finger minimum', 5, 300, 5, 'px', 'Less scrolling than this is ignored.'],
+  ['tap', 'Tap max press', 80, 600, 10, 'ms', 'A longer press is a press-and-hold, not a tap.'],
+  ['dbl', 'Double-tap window', 120, 700, 10, 'ms', ''],
+];
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('gl_' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('gl_' + k, JSON.stringify(v)); } catch { } },
+};
+const P = Object.assign({}, DEF, store.get('p2', {}));
+// Two-finger direction. Scroll deltas are the page's movement, not the fingers': with natural
+// scrolling (the Windows and Mac default) fingers moving up scroll the page down (deltaY > 0) and
+// fingers moving right scroll it left (deltaX < 0). The fingers' own movement is delta * v (up and
+// down) and delta * h (left and right): natural scrolling is v = h = -1. Calibration measures both.
+let cal = Object.assign({ v: -1, h: -1, vDone: false, hDone: false }, store.get('cal2', {}));
+let raw = store.get('raw', false);
+let soundOn = store.get('sound', true);
+
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const now = () => performance.now();
+const fmt = (v, d = 0) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
+function toast(t, ms = 2400) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), ms); }
+
+// ------------------------------------------------------------------ device facts
+const dev = {
+  locked: false, lockErr: '', rawOk: null, secure: window.isSecureContext,
+  ptrSrc: '', ptrIv: [], whlIv: [], notched: 0, smooth: 0, lastPtrT: 0, lastWhlT: 0,
+};
+const median = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
+const hzOf = iv => { const m = median(iv); return m ? 1000 / m : null; };
+
+// ------------------------------------------------------------------ gesture events
+const counts = {};
+const recent = [];   // the last gestures, for the log and the export
+const keysHeld = new Set();
+const keyStats = { moveWith: 0, moveWithout: 0, withKey: {}, keyMs: 0, keyDownAt: 0, lastMoveWithKeyAt: 0 };
+const listeners = [];
+function emit(g) {
+  g.at = g.at || now();
+  g.withKey = keysHeld.size > 0;
+  counts[g.type] = (counts[g.type] || 0) + 1;
+  if (g.withKey) keyStats.withKey[g.type] = (keyStats.withKey[g.type] || 0) + 1;
+  recent.unshift(g); if (recent.length > 120) recent.pop();
+  for (const f of listeners) f(g);
+}
+
+// ------------------------------------------------------------------ one finger: strokes
+// Pointer movement arrives as small deltas. Speed is the displacement over the last ~32 ms. A
+// stroke opens when the speed passes `start` and closes when the finger stops or slows right down;
+// it is then classified: flick (a fast, short stroke), glide (anything slower), and a stroke down
+// the pad is a pull-back, the wind-up of a swing if a forward flick follows within `combo` ms.
+const win = [];
+let stroke = null, pendingWind = null;
+const speedTrace = [], wheelTrace = [];
+function onMove(t, dx, dy) {
+  if (!dx && !dy) return;
+  if (dev.lastPtrT) { const iv = t - dev.lastPtrT; if (iv > 0 && iv < 100) { dev.ptrIv.push(iv); if (dev.ptrIv.length > 300) dev.ptrIv.shift(); } }
+  dev.lastPtrT = t;
+  if (keysHeld.size) { keyStats.moveWith++; keyStats.lastMoveWithKeyAt = t; } else keyStats.moveWithout++;
+  win.push({ t, dx, dy });
+  while (win.length > 1 && t - win[0].t > 32) win.shift();
+  let sx = 0, sy = 0; for (const s of win) { sx += s.dx; sy += s.dy; }
+  const step = win.length > 1 ? win[win.length - 1].t - win[win.length - 2].t : 16;
+  const span = Math.max(8, t - win[0].t + Math.min(step, 20));
+  const spd = Math.hypot(sx, sy) / span * 1000;
+  speedTrace.push({ t, v: spd });
+  if (!stroke) {
+    if (spd >= P.start) {
+      stroke = { onsetT: win[0].t, lastT: t, x: 0, y: 0, path: [{ x: 0, y: 0, v: 0 }], len: 0, peak: 0, peakT: t, lowSince: null };
+      for (const s of win) addToStroke(s, spd);
+    }
+  } else addToStroke({ t, dx, dy }, spd);
+}
+function addToStroke(s, spd) {
+  const k = stroke;
+  k.x += s.dx; k.y += s.dy; k.len += Math.hypot(s.dx, s.dy); k.lastT = s.t;
+  k.path.push({ x: k.x, y: k.y, v: spd });
+  if (spd > k.peak) { k.peak = spd; k.peakT = s.t; }
+  if (spd < P.end) { if (k.lowSince == null) k.lowSince = s.t; else if (s.t - k.lowSince >= 50) endStroke(); }
+  else k.lowSince = null;
+}
+// the direction of a stroke in degrees: 0 = up the pad (forward, toward the far court), +90 right
+const degOf = (x, y) => Math.atan2(x, -y) * 180 / Math.PI;
+function dirName(deg) {
+  const a = Math.abs(deg), side = deg < 0 ? 'left' : 'right';
+  if (a <= 30) return 'forward';
+  if (a <= 60) return 'forward-' + side;
+  if (a <= 120) return side;
+  if (a <= 150) return 'back-' + side;
+  return 'back';
+}
+function endStroke() {
+  const k = stroke; stroke = null;
+  if (!k) return;
+  const dist = Math.hypot(k.x, k.y), dur = k.lastT - k.onsetT, deg = degOf(k.x, k.y);
+  // how far the path bows away from its chord, signed (+ = bows right of the line of travel)
+  let bow = 0;
+  if (dist > 1) { const ux = k.x / dist, uy = k.y / dist; for (const p of k.path) { const d = p.x * uy - p.y * ux; if (Math.abs(d) > Math.abs(bow)) bow = d; } }
+  const s = { onsetT: k.onsetT, peakT: k.peakT, endT: k.lastT, dx: k.x, dy: k.y, dist, dur, deg, dir: dirName(deg), peak: k.peak, len: k.len,
+    straight: dist / Math.max(1, k.len), curve: dist > 1 ? -bow / dist : 0, path: k.path };
+  s.flick = s.peak >= P.flick && dur <= P.flickMs && dist >= 12;
+  // (on a log scale: with pointer acceleration a hard flick is ten times a soft one's speed, and
+  // the soft end needs as much resolution as the hard)
+  s.power = clamp(Math.log(s.peak / P.flick) / Math.log(Math.max(P.flick * 1.5, P.hard) / P.flick), 0, 1);
+  const back = Math.abs(deg) >= 120 && dist >= P.backMin;
+  const fwd = Math.abs(deg) <= 60;
+  if (back) {
+    if (pendingWind) emit({ type: 'windup-dropped', stroke: pendingWind });
+    pendingWind = s;
+    emit({ type: 'pullback', stroke: s, anchors: { onset: s.onsetT, peak: s.peakT, end: s.endT } });
+  } else if (s.flick && fwd && pendingWind && s.onsetT - pendingWind.endT <= P.combo) {
+    const w = pendingWind; pendingWind = null;
+    emit({ type: 'swing', stroke: s, wind: w, windMs: s.onsetT - w.onsetT, gapMs: s.onsetT - w.endT,
+      anchors: { onset: s.onsetT, peak: s.peakT, end: s.endT, 'wind-start': w.onsetT } });
+  } else if (s.flick) {
+    emit({ type: fwd ? 'flick' : 'flick-side', stroke: s, anchors: { onset: s.onsetT, peak: s.peakT, end: s.endT } });
+  } else emit({ type: 'glide', stroke: s, anchors: { onset: s.onsetT, peak: s.peakT, end: s.endT } });
+}
+
+// ------------------------------------------------------------------ taps and clicks
+let down = null, lastTapT = -1e9;
+function onDown(e) {
+  if (!dev.locked) return;
+  down = { b: e.button, t: e.timeStamp };
+  e.preventDefault();
+}
+function onUp(e) {
+  if (!dev.locked || !down || down.b !== e.button) return;
+  const t0 = down.t, held = e.timeStamp - t0; down = null;
+  if (e.button === 0) {
+    if (held <= P.tap) {
+      const dbl = t0 - lastTapT <= P.dbl;
+      lastTapT = dbl ? -1e9 : t0;
+      emit({ type: dbl ? 'double-tap' : 'tap', held, anchors: { down: t0 } });
+    } else emit({ type: 'press-hold', held, anchors: { down: t0 } });
+  } else if (e.button === 2) emit({ type: 'two-finger-tap', held, anchors: { down: t0 } });
+  else if (e.button === 1) emit({ type: 'middle-click', held, anchors: { down: t0 } });
+}
+
+// ------------------------------------------------------------------ two fingers: scroll and pinch
+// Two-finger swipes reach the page as scroll (wheel) events, pinches as ctrl+scroll. A pause of
+// `wgap` ms ends one. A mouse wheel arrives in notches (whole multiples of ~100), a trackpad in
+// many small smooth steps: the lab tells them apart. On some trackpads the scroll coasts on after
+// the fingers lift: the onset is what counts for timing.
+let wg = null, calWaiting = ''; // '' | 'up' | 'right': which calibration swipe is awaited
+// After a swipe's fingers lift, Windows sends one zero event and then keeps scrolling on its own,
+// fading over about a second, with no pause before the next swipe. `coast` is that fade: its
+// events are not the player's. { ux, uy: the swipe's direction, peak: its biggest event, prev: the
+// last coast event's size, first: no coast event seen yet }
+let coast = null, lastFinger = null;
+const wwin = [];
+const rawWheel = []; // the last raw scroll events: [time ms, deltaX, deltaY, deltaMode, ctrl, shift]
+window.__labVersion = 2;
+function onWheel(e) {
+  if (!dev.locked && !calWaiting) return; // (the panels still scroll normally until the pad is captured)
+  e.preventDefault();
+  const t = e.timeStamp, sc = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+  let dx = e.deltaX * sc, dy = e.deltaY * sc;
+  const pinch = e.ctrlKey;
+  // (an older touchpad driver may send a sideways swipe as shift + a vertical wheel)
+  if (e.shiftKey && !dx && dy) { dx = dy; dy = 0; }
+  rawWheel.push([Math.round(t), +e.deltaX.toFixed(2), +e.deltaY.toFixed(2), e.deltaMode, e.ctrlKey ? 1 : 0, e.shiftKey ? 1 : 0]);
+  if (rawWheel.length > 400) rawWheel.shift();
+  if (dev.lastWhlT) { const iv = t - dev.lastWhlT; if (iv > 0 && iv < 100) { dev.whlIv.push(iv); if (dev.whlIv.length > 300) dev.whlIv.shift(); } }
+  dev.lastWhlT = t;
+  const notch = e.deltaMode === 1 || (Math.abs(e.deltaY) >= 50 && Math.abs(e.deltaY) % 50 < 0.01 && !e.deltaX);
+  if (notch) dev.notched++; else dev.smooth++;
+  const m = Math.hypot(dx, dy);
+  // A pause ends a swipe (and a coast); so does a pinch starting or stopping.
+  if (wg && (t - wg.lastT > P.wgap || wg.pinch !== pinch)) endWheel();
+  if (coast && (t - coast.t > P.wgap || pinch)) coast = null;
+  if (!pinch) {
+    if (!m) { // the fingers lifted: the swipe is over, whatever follows is the coast
+      if (wg) { const w = wg; endWheel(); coast = { t, ux: w.ux, uy: w.uy, peak: w.big, prev: 0, first: true }; }
+      else if (coast) coast.t = t;
+      return;
+    }
+    if (coast) {
+      const dot = (dx * coast.ux + dy * coast.uy) / m;
+      // still the fade: tiny blips; or the same way, no bigger than the swipe was (its first event
+      // may jump up to the swipe's speed), then only ever shrinking
+      const fade = m < 3 || (dot > 0.3 && (coast.first ? m <= coast.peak * 1.3 + 4 : m <= coast.prev * 1.5 + 4));
+      if (fade) { if (m >= 3) { coast.prev = m; coast.first = false; } coast.t = t; return; }
+      coast = null; // a jump, or a turn: new fingers on the pad
+    }
+    // within a swipe: the fingers turning back the way they came is a new swipe
+    if (wg && wg.n >= 3 && m >= 3 && (dx * wg.ux + dy * wg.uy) / m < 0) endWheel();
+  }
+  if (!wg) {
+    wg = { onsetT: t, lastT: t, dx: 0, dy: 0, ix: 0, iy: 0, n: 0, pinch, peak: 0, peakT: t, notchN: 0, big: 0, ux: 0, uy: 0 };
+    wwin.length = 0;
+  }
+  wg.dx += dx; wg.dy += dy; wg.n++; wg.lastT = t; wg.big = Math.max(wg.big, m);
+  if (notch) wg.notchN++;
+  { const l = Math.hypot(wg.dx, wg.dy) || 1; wg.ux = wg.dx / l; wg.uy = wg.dy / l; }
+  // the first 120 ms are the fingers themselves; after that it may be the scroll coasting on
+  if (t - wg.onsetT <= 120) { wg.ix += dx; wg.iy += dy; }
+  wwin.push({ t, d: Math.hypot(dx, dy) });
+  while (wwin.length > 1 && t - wwin[0].t > 32) wwin.shift();
+  const rate = wwin.reduce((a, s) => a + s.d, 0) / Math.max(16, t - wwin[0].t + 16) * 1000;
+  wheelTrace.push({ t, v: rate });
+  if (rate > wg.peak) { wg.peak = rate; wg.peakT = t; }
+}
+function endWheel() {
+  const w = wg; wg = null;
+  if (!w) return;
+  const dist = Math.hypot(w.dx, w.dy), dur = w.lastT - w.onsetT;
+  if (calWaiting && !w.pinch && dist >= P.wmin) {
+    if (calWaiting === 'up' && Math.abs(w.dy) > Math.abs(w.dx)) {
+      cal.v = w.dy > 0 ? -1 : 1; cal.vDone = true; calWaiting = 'right';
+      toast('Got it. Now swipe two fingers to the RIGHT', 6000);
+    } else if (calWaiting === 'right' && Math.abs(w.dx) > Math.abs(w.dy)) {
+      cal.h = w.dx > 0 ? 1 : -1; cal.hDone = true; calWaiting = '';
+      toast('Two-finger directions calibrated');
+    } else toast(calWaiting === 'up' ? 'That was sideways: swipe two fingers UP' : 'That was up or down: swipe two fingers to the RIGHT', 5000);
+    store.set('cal2', cal); renderCal(); return;
+  }
+  const base = { anchors: { onset: w.onsetT, peak: w.peakT, end: w.lastT }, dist, dur, n: w.n, peak: w.peak, wheel: w, notch: w.notchN === w.n };
+  if (dist < P.wmin) return emit(Object.assign(base, { type: 'tiny-scroll' }));
+  if (w.pinch) return emit(Object.assign(base, { type: w.dy < 0 ? 'pinch-out' : 'pinch-in' }));
+  // fingers' direction: natural scrolling turns "fingers up" into a positive deltaY; calibration
+  // learns which way this laptop is set
+  // the direction is the fingers' (the first 120 ms, unless that was too little to tell), so a
+  // coasting tail cannot change it
+  const early = Math.hypot(w.ix, w.iy) >= P.wmin * 0.5;
+  const fx = (early ? w.ix : w.dx) * cal.h, fy = (early ? w.iy : w.dy) * cal.v; // fingers: +x right, +y down the pad
+  const type = Math.abs(fy) >= Math.abs(fx) ? (fy < 0 ? 'two-finger-up' : 'two-finger-down') : (fx > 0 ? 'two-finger-right' : 'two-finger-left');
+  emit(Object.assign(base, { type }));
+}
+
+// ------------------------------------------------------------------ what each would be in the game
+function gameMeaning(g) {
+  const s = g.stroke, pw = s ? s.power : 0, tier = pw < 0.33 ? 'soft' : pw < 0.7 ? 'medium' : 'hard';
+  switch (g.type) {
+    case 'swing': {
+      const bigWind = g.wind.dist >= P.backMin * 2.2 || g.windMs > 380;
+      if (tier === 'soft') return bigWind ? 'DISGUISED DROP: a big wind-up, then a soft touch' : 'Drop / net shot';
+      if (tier === 'medium') return 'Drive / clear';
+      return 'SMASH (on a high shuttle)';
+    }
+    case 'flick': return tier === 'hard' ? 'Quick hard flick: flat drive / punch' : 'Quick flick: push';
+    case 'flick-side': return `Angled flick (${s.dir}): cross-court line`;
+    case 'pullback': return 'Wind-up: the opponent sees you loading. Now flick forward';
+    case 'windup-dropped': return 'Wind-up with no follow-through';
+    case 'tap': return 'Touch: block / net dab';
+    case 'double-tap': return '(not assigned yet)';
+    case 'two-finger-tap': return 'Brace: get set for their smash';
+    case 'two-finger-up': return 'Lift / clear: the defensive reset';
+    case 'two-finger-down': return 'Slice: cut drop';
+    case 'two-finger-left': case 'two-finger-right': return '(not assigned yet)';
+    case 'pinch-in': case 'pinch-out': return '(probably not used: emotes?)';
+    case 'press-hold': return 'A held press: the game avoids these on trackpads';
+    case 'glide': return 'Too slow for a shot (ignored in play)';
+    default: return '';
+  }
+}
+const NAMES = {
+  swing: 'Swing', flick: 'Flick', 'flick-side': 'Angled flick', pullback: 'Pull-back', 'windup-dropped': 'Wind-up dropped',
+  tap: 'Tap', 'double-tap': 'Double tap', 'two-finger-tap': 'Two-finger tap', 'press-hold': 'Press & hold', 'middle-click': 'Middle click',
+  'two-finger-up': '2-finger up', 'two-finger-down': '2-finger down', 'two-finger-left': '2-finger left', 'two-finger-right': '2-finger right',
+  'pinch-in': 'Pinch in', 'pinch-out': 'Pinch out', glide: 'Glide', 'tiny-scroll': 'Tiny scroll',
+};
+const COLOR = {
+  swing: 'var(--lime)', flick: 'var(--gold)', 'flick-side': 'var(--gold)', pullback: 'var(--violet)', tap: 'var(--green)', 'double-tap': 'var(--green)',
+  'two-finger-tap': 'var(--blue)', 'two-finger-up': 'var(--blue)', 'two-finger-down': 'var(--blue)', 'two-finger-left': 'var(--blue)', 'two-finger-right': 'var(--blue)',
+  'pinch-in': 'var(--red)', 'pinch-out': 'var(--red)',
+};
+const QUIET = new Set(['glide', 'tiny-scroll', 'windup-dropped']);
+function metaOf(g) {
+  const s = g.stroke;
+  if (g.type === 'swing') return `power ${fmt(s.power * 100)}% · peak ${fmt(s.peak)} px/s · ${s.dir} ${fmt(s.deg)}° · wind-up ${fmt(g.windMs)} ms (pull-back ${fmt(g.wind.dist)} px) · flick ${fmt(s.dur)} ms`;
+  if (s) return `${s.flick ? 'power ' + fmt(s.power * 100) + '% · ' : ''}peak ${fmt(s.peak)} px/s · ${fmt(s.dist)} px · ${fmt(s.dur)} ms · ${s.dir} ${fmt(s.deg)}° · curve ${fmt(s.curve, 2)}`;
+  if (g.wheel) return `${fmt(g.dist)} px · ${fmt(g.dur)} ms · ${g.n} events · peak ${fmt(g.peak)} px/s${g.notch ? ' · notched (mouse wheel?)' : ''}`;
+  if (g.held != null) return `pressed ${fmt(g.held)} ms`;
+  return '';
+}
+
+// ------------------------------------------------------------------ pad drawing
+const padCv = $('padCv'), pctx = padCv.getContext('2d'), stripCv = $('stripCv'), sctx = stripCv.getContext('2d');
+let W = 0, H = 0, SW = 0, SH = 0, DPR = 1;
+function fit() {
+  DPR = Math.min(2, devicePixelRatio || 1);
+  const r = $('pad').getBoundingClientRect(); W = r.width; H = r.height;
+  padCv.width = W * DPR; padCv.height = H * DPR;
+  const q = $('strip').getBoundingClientRect(); SW = q.width; SH = q.height;
+  stripCv.width = SW * DPR; stripCv.height = SH * DPR;
+}
+new ResizeObserver(fit).observe(document.body); fit();
+const marks = []; // drawn gestures, fading
+listeners.push(g => { if (g.type !== 'tiny-scroll' && g.type !== 'windup-dropped') marks.push({ g, t: now() }); if (marks.length > 30) marks.shift(); });
+function arrow(cx, cy, ang, len, color, width, label, dbl) {
+  const ex = cx + Math.sin(ang) * len, ey = cy - Math.cos(ang) * len;
+  pctx.strokeStyle = color; pctx.fillStyle = color; pctx.lineWidth = width; pctx.lineCap = 'round';
+  const offs = dbl ? [-7, 7] : [0];
+  for (const o of offs) {
+    const ox = Math.cos(ang) * o, oy = Math.sin(ang) * o;
+    pctx.beginPath(); pctx.moveTo(cx + ox, cy + oy); pctx.lineTo(ex + ox, ey + oy); pctx.stroke();
+  }
+  const h = 10 + width * 1.6;
+  pctx.beginPath();
+  pctx.moveTo(ex + Math.sin(ang) * h * 0.4, ey - Math.cos(ang) * h * 0.4);
+  pctx.lineTo(ex + Math.sin(ang - 2.5) * h, ey - Math.cos(ang - 2.5) * h);
+  pctx.lineTo(ex + Math.sin(ang + 2.5) * h, ey - Math.cos(ang + 2.5) * h);
+  pctx.closePath(); pctx.fill();
+  if (label) { pctx.font = `700 14px ${getComputedStyle(document.body).getPropertyValue('--cond')}`; pctx.textAlign = 'center'; pctx.fillText(label, ex + Math.sin(ang) * 26, ey - Math.cos(ang) * 26 + 5); }
+}
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const C = {};
+function colors() { for (const k of ['lime', 'gold', 'blue', 'red', 'green', 'violet', 'dim', 'faint']) C[k] = css('--' + k); }
+colors();
+const cOf = type => { const v = COLOR[type]; return v ? C[v.slice(6, -1)] : C.dim; };
+
+function drawPad(t) {
+  pctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  pctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H * 0.56;
+  // the court direction, faintly: forward is up
+  pctx.strokeStyle = 'rgba(255,255,255,.05)'; pctx.lineWidth = 1;
+  pctx.beginPath(); pctx.moveTo(cx, 20); pctx.lineTo(cx, H - 20); pctx.moveTo(20, cy); pctx.lineTo(W - 20, cy); pctx.stroke();
+  pctx.fillStyle = 'rgba(255,255,255,.18)'; pctx.font = `700 11px ${css('--cond')}`; pctx.textAlign = 'center';
+  pctx.fillText('FORWARD · TOWARD THE FAR COURT', cx, 16);
+  if (tab === 'timing') drawTiming(t, cx, cy);
+  // gestures, fading out
+  for (const m of marks) {
+    const age = (t - m.t) / 1400; if (age > 1) continue;
+    pctx.globalAlpha = 1 - age;
+    const g = m.g, col = cOf(g.type);
+    if (g.stroke) {
+      const s = g.stroke, ang = Math.atan2(s.dx, -s.dy);
+      if (g.type === 'swing') {
+        const w = g.wind, wa = Math.atan2(w.dx, -w.dy);
+        arrow(cx, cy, wa, clamp(w.dist * 0.5, 30, 120), C.violet, 3, 'WIND-UP');
+        arrow(cx, cy, ang, 70 + s.power * 190, col, 4 + s.power * 6, `SWING ${Math.round(s.power * 100)}%`);
+      } else if (g.type === 'glide') {
+        pctx.strokeStyle = C.faint; pctx.lineWidth = 2; pctx.beginPath();
+        const k = 0.5; s.path.forEach((p, i) => { const x = cx + clamp(p.x * k, -W / 2 + 10, W / 2 - 10), y = cy + clamp(p.y * k, -cy + 10, H - cy - 10); i ? pctx.lineTo(x, y) : pctx.moveTo(x, y); }); pctx.stroke();
+      } else arrow(cx, cy, ang, g.type === 'pullback' ? clamp(s.dist * 0.5, 30, 120) : 60 + s.power * 190, col, g.type === 'pullback' ? 3 : 3 + s.power * 6, (NAMES[g.type] || '').toUpperCase());
+    } else if (g.wheel) {
+      const ang = { 'two-finger-up': 0, 'two-finger-down': Math.PI, 'two-finger-left': -Math.PI / 2, 'two-finger-right': Math.PI / 2 }[g.type];
+      if (ang != null) arrow(cx, cy, ang, 80 + clamp(g.dist / 8, 0, 150), col, 3, (NAMES[g.type] || '').toUpperCase(), true);
+      else { pctx.strokeStyle = col; pctx.lineWidth = 3; const r = 30 + (g.type === 'pinch-out' ? age : 1 - age) * 60; pctx.beginPath(); pctx.arc(cx, cy, r, 0, Math.PI * 2); pctx.stroke(); }
+    } else {
+      const r = 14 + age * 70; pctx.strokeStyle = col; pctx.lineWidth = 3;
+      const xs = g.type === 'two-finger-tap' ? [-18, 18] : g.type === 'double-tap' ? [0, 0] : [0];
+      xs.forEach((ox, i) => { pctx.beginPath(); pctx.arc(cx + ox, cy, r + (g.type === 'double-tap' ? i * 14 : 0), 0, Math.PI * 2); pctx.stroke(); });
+    }
+  }
+  pctx.globalAlpha = 1;
+  // the stroke in progress
+  if (stroke) {
+    pctx.strokeStyle = C.lime; pctx.lineWidth = 3; pctx.beginPath();
+    const k = 0.5;
+    stroke.path.forEach((p, i) => { const x = cx + clamp(p.x * k, -W / 2 + 10, W / 2 - 10), y = cy + clamp(p.y * k, -cy + 10, H - cy - 10); i ? pctx.lineTo(x, y) : pctx.moveTo(x, y); });
+    pctx.stroke();
+  }
+  if (pendingWind) {
+    const left = 1 - (t - pendingWind.endT) / P.combo;
+    if (left > 0) { pctx.strokeStyle = C.violet; pctx.lineWidth = 4; pctx.beginPath(); pctx.arc(cx, cy, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left); pctx.stroke(); }
+  }
+}
+function drawStrip(t) {
+  sctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  sctx.clearRect(0, 0, SW, SH);
+  // (a log scale, like power: soft and hard flicks both readable)
+  const span = 3000, lo = 100, max = P.hard * 1.25, y = v => SH - 6 - clamp(Math.log(Math.max(v, lo) / lo) / Math.log(max / lo), 0, 1) * (SH - 22);
+  for (const [v, c] of [[P.start, 'rgba(255,255,255,.18)'], [P.flick, C.gold], [P.hard, C.red]]) {
+    sctx.strokeStyle = c; sctx.globalAlpha = 0.5; sctx.setLineDash([4, 4]); sctx.beginPath(); sctx.moveTo(0, y(v)); sctx.lineTo(SW, y(v)); sctx.stroke();
+  }
+  sctx.setLineDash([]); sctx.globalAlpha = 1;
+  const line = (tr, c) => {
+    while (tr.length && t - tr[0].t > span) tr.shift();
+    sctx.strokeStyle = c; sctx.lineWidth = 2; sctx.beginPath();
+    let prev = null;
+    for (const s of tr) {
+      const x = SW - (t - s.t) / span * SW;
+      if (prev && s.t - prev.t > 60) { sctx.lineTo(SW - (t - prev.t - 30) / span * SW, y(0)); sctx.lineTo(SW - (t - s.t + 30) / span * SW, y(0)); }
+      prev ? sctx.lineTo(x, y(s.v)) : sctx.moveTo(x, y(s.v)); prev = s;
+    }
+    sctx.stroke();
+  };
+  line(speedTrace, C.lime); line(wheelTrace, C.blue);
+}
+
+// ------------------------------------------------------------------ timing trainer
+// Beats come at irregular gaps; a ring closes on the target over APPROACH ms and the beat is the
+// moment it lands. A gesture of the type being practised is matched to the nearest beat within
+// MATCH ms, and its offset recorded for every anchor it has (for a flick: when it started, its
+// fastest point, when it ended). The grade uses each type's main anchor.
+const WINDOWS = [['PERFECT', 35, 'lime'], ['GREAT', 80, 'gold'], ['GOOD', 140, 'blue']];
+const PRACTISE = [
+  ['tap', 'Tap', ['tap', 'double-tap'], 'down'],
+  ['flick', 'Flick', ['flick', 'flick-side', 'swing'], 'peak'],
+  ['swing', 'Swing', ['swing'], 'peak'],
+  ['two', '2-finger swipe', ['two-finger-up', 'two-finger-down', 'two-finger-left', 'two-finger-right'], 'onset'],
+  ['twotap', '2-finger tap', ['two-finger-tap'], 'down'],
+];
+const APPROACH = 900, MATCH = 300;
+let practise = 'tap', timingOn = false, beats = [], feedback = null;
+const tstats = {}; // `${type}|${anchor}` -> offsets
+function gradeOf(off) { const a = Math.abs(off); for (const [n, w, c] of WINDOWS) if (a <= w) return [n, c]; return [off < 0 ? 'EARLY' : 'LATE', 'red']; }
+function scheduleBeats(t) {
+  while (beats.length < 3) {
+    const last = beats.length ? beats[beats.length - 1].t : t + 600;
+    const bt = last + 1150 + Math.random() * 850;
+    beats.push({ t: bt, hit: false }); Sound.tick(bt);
+  }
+}
+listeners.push(g => {
+  if (!timingOn || !g.anchors) return;
+  const P_ = PRACTISE.find(p => p[0] === practise);
+  if (!P_[2].includes(g.type)) return;
+  const main = g.anchors[P_[3]];
+  let best = null;
+  for (const b of beats) if (!b.hit && Math.abs(main - b.t) <= MATCH && (!best || Math.abs(main - b.t) < Math.abs(main - best.t))) best = b;
+  if (!best) return;
+  best.hit = true;
+  for (const [a, at] of Object.entries(g.anchors)) { const k = practise + '|' + a; (tstats[k] = tstats[k] || []).push(at - best.t); }
+  const off = main - best.t, [name, col] = gradeOf(off);
+  const k = practise + '|grade'; (tstats[k] = tstats[k] || []).push(name);
+  feedback = { name, col, off, t: now() };
+  Sound.grade(name, g.stroke ? g.stroke.power : 0.5);
+  renderTiming();
+});
+function drawTiming(t, cx, cy) {
+  if (timingOn) {
+    scheduleBeats(t);
+    for (const b of beats) {
+      if (!b.hit && t - b.t > MATCH + 150) { b.hit = true; b.miss = true; feedback = { name: 'MISS', col: 'faint', off: null, t }; const k = practise + '|grade'; (tstats[k] = tstats[k] || []).push('MISS'); Sound.grade('MISS'); renderTiming(); }
+    }
+    beats = beats.filter(b => t - b.t < MATCH + 400);
+  }
+  // the target, and the ring closing on it
+  pctx.strokeStyle = 'rgba(255,255,255,.25)'; pctx.lineWidth = 3;
+  pctx.beginPath(); pctx.arc(cx, cy, 44, 0, Math.PI * 2); pctx.stroke();
+  for (const b of beats) {
+    if (b.hit) continue;
+    const u = (b.t - t) / APPROACH;
+    if (u > 1 || u < -0.25) continue;
+    const r = 44 + Math.max(0, u) * 170;
+    pctx.strokeStyle = u < 0 ? C.red : C.lime; pctx.globalAlpha = clamp(1.2 - u, 0, 1); pctx.lineWidth = 4;
+    pctx.beginPath(); pctx.arc(cx, cy, r, 0, Math.PI * 2); pctx.stroke(); pctx.globalAlpha = 1;
+  }
+  if (feedback) {
+    const age = (t - feedback.t) / 700;
+    if (age < 1) {
+      const col = C[feedback.col] || C.dim, s = feedback.name === 'PERFECT' ? 1 + (1 - age) * 0.35 : 1;
+      if (feedback.name === 'PERFECT') { pctx.fillStyle = col; pctx.globalAlpha = (1 - age) * 0.18; pctx.fillRect(0, 0, W, H); }
+      pctx.globalAlpha = 1 - age * age; pctx.fillStyle = col; pctx.textAlign = 'center';
+      pctx.font = `800 ${Math.round(46 * s)}px ${css('--cond')}`; pctx.fillText(feedback.name, cx, cy - 70);
+      if (feedback.off != null) { pctx.font = `700 16px ${css('--cond')}`; pctx.fillText(`${feedback.off > 0 ? '+' : ''}${Math.round(feedback.off)} ms ${Math.abs(feedback.off) < 4 ? '' : feedback.off > 0 ? 'late' : 'early'}`, cx, cy - 46); }
+      pctx.globalAlpha = 1;
+    }
+  }
+  if (!timingOn) { pctx.fillStyle = C.dim; pctx.textAlign = 'center'; pctx.font = `700 14px ${css('--cond')}`; pctx.fillText('PRESS START IN THE TIMING PANEL', cx, cy + 74); }
+}
+const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+const sd = a => { if (a.length < 2) return null; const m = mean(a); return Math.sqrt(a.reduce((x, y) => x + (y - m) * (y - m), 0) / (a.length - 1)); };
+function timingSummary() {
+  const out = {};
+  for (const [k, arr] of Object.entries(tstats)) {
+    const [type, anchor] = k.split('|');
+    out[type] = out[type] || {};
+    if (anchor === 'grade') { const c = {}; arr.forEach(g => { c[g] = (c[g] || 0) + 1; }); out[type].grades = c; }
+    else out[type][anchor] = { n: arr.length, bias: +mean(arr).toFixed(1), sd: sd(arr) == null ? null : +sd(arr).toFixed(1),
+      inPerfect: +(arr.filter(v => Math.abs(v - mean(arr)) <= 35).length / arr.length).toFixed(2) };
+  }
+  return out;
+}
+function renderTiming() {
+  $('windowsLegend').innerHTML = WINDOWS.map(([n, w, c]) => `<b style="color:var(--${c})">${n}</b><span>within ${w} ms of the ring landing</span>`).join('') + `<b style="color:var(--red)">EARLY / LATE</b><span>further out (up to ${MATCH} ms)</span>`;
+  const sum = timingSummary(), rows = [];
+  for (const [type, label] of PRACTISE.map(p => [p[0], p[1]])) {
+    const s = sum[type]; if (!s) continue;
+    const anchors = Object.entries(s).filter(([a]) => a !== 'grades');
+    const bestSd = Math.min(...anchors.map(([, v]) => v.sd == null ? 1e9 : v.sd));
+    const g = s.grades || {}, total = Object.values(g).reduce((a, b) => a + b, 0) || 1;
+    rows.push(`<h3>${label}: ${WINDOWS.map(([n, , c]) => `<span style="color:var(--${c})">${Math.round((g[n] || 0) / total * 100)}% ${n.toLowerCase()}</span>`).join(' · ')} · ${Math.round(((g.EARLY || 0) + (g.LATE || 0) + (g.MISS || 0)) / total * 100)}% off</h3>`);
+    rows.push(`<table><tr><th>Measured at</th><th>Hits</th><th>Avg offset</th><th>Spread (sd)</th></tr>${anchors.map(([a, v]) =>
+      `<tr><td>${a}</td><td>${v.n}</td><td>${v.bias > 0 ? '+' : ''}${v.bias} ms</td><td class="${v.sd === bestSd && anchors.length > 1 ? 'best' : ''}">${v.sd == null ? '–' : '±' + v.sd + ' ms'}</td></tr>`).join('')}</table>`);
+  }
+  $('timingStats').innerHTML = rows.length ? rows.join('') + '<p class="note" style="margin-top:10px">The <span style="color:var(--lime)">highlighted</span> spread is the most consistent way to time that gesture. A steady average offset can be corrected for in the game; a wide spread cannot.</p>' : '<p class="note">No hits yet.</p>';
+}
+
+// ------------------------------------------------------------------ sound: a tick on each beat, a crack on each grade
+const Sound = {
+  ctx: null,
+  init() { if (!this.ctx) try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { } if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); },
+  at(tMs) { return this.ctx.currentTime + Math.max(0, (tMs - now()) / 1000); },
+  tone(t0, f, dur, type, vol, f2) {
+    const c = this.ctx, o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t0); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + dur);
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(c.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  },
+  noise(t0, dur, vol, hp) {
+    const c = this.ctx, n = Math.floor(c.sampleRate * dur), b = c.createBuffer(1, n, c.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3);
+    const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    s.buffer = b; f.type = 'highpass'; f.frequency.value = hp; g.gain.value = vol;
+    s.connect(f).connect(g).connect(c.destination); s.start(t0);
+  },
+  tick(tMs) { if (!soundOn || !this.ctx) return; this.tone(this.at(tMs), 1320, 0.05, 'sine', 0.08); },
+  grade(name, power = 0.5) {
+    if (!soundOn || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    if (name === 'PERFECT') { this.noise(t, 0.09, 0.5, 1800); this.tone(t, 160 + power * 60, 0.22, 'sine', 0.35, 60); this.tone(t + 0.02, 880, 0.25, 'triangle', 0.12); this.tone(t + 0.06, 1320, 0.3, 'triangle', 0.1); }
+    else if (name === 'GREAT') { this.noise(t, 0.06, 0.32, 2400); this.tone(t, 140, 0.14, 'sine', 0.2, 70); this.tone(t, 660, 0.15, 'triangle', 0.08); }
+    else if (name === 'GOOD') { this.noise(t, 0.05, 0.2, 3000); this.tone(t, 520, 0.1, 'triangle', 0.06); }
+    else this.tone(t, 180, 0.18, 'square', 0.04, 120);
+  },
+};
+
+// ------------------------------------------------------------------ pointer capture
+const pad = $('pad');
+async function lock() {
+  Sound.init();
+  try {
+    const p = raw ? pad.requestPointerLock({ unadjustedMovement: true }) : pad.requestPointerLock();
+    if (p && p.then) await p;
+    dev.rawOk = raw ? true : dev.rawOk;
+    dev.lockErr = '';
+  } catch (e) {
+    if (raw) { // raw movement is not supported everywhere: fall back to the ordinary kind
+      dev.rawOk = false;
+      try { const p = pad.requestPointerLock(); if (p && p.then) await p; dev.lockErr = ''; } catch (e2) { dev.lockErr = e2.message || String(e2); }
+    } else dev.lockErr = e.message || String(e);
+  }
+  renderChips();
+}
+document.addEventListener('pointerlockchange', () => {
+  dev.locked = document.pointerLockElement === pad;
+  $('padHint').classList.toggle('hidden', dev.locked);
+  if (!dev.locked) { if (stroke) endStroke(); down = null; }
+  renderChips();
+});
+document.addEventListener('pointerlockerror', () => { dev.lockErr = 'the browser refused to capture the pointer'; renderChips(); });
+pad.addEventListener('mousedown', e => { if (!dev.locked) { e.preventDefault(); lock(); } });
+// movement: the raw, unbatched stream where the page is allowed it (a secure page), else the
+// batched one with its coalesced samples where there are any
+const useRaw = 'onpointerrawupdate' in window && window.isSecureContext;
+dev.ptrSrc = useRaw ? 'pointerrawupdate' : 'pointermove';
+document.addEventListener(dev.ptrSrc, e => {
+  if (!dev.locked) return;
+  const list = !useRaw && e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+  if (list && list.length > 1 && list.some(c => c.movementX || c.movementY)) { for (const c of list) onMove(c.timeStamp, c.movementX, c.movementY); }
+  else onMove(e.timeStamp, e.movementX, e.movementY);
+});
+document.addEventListener('mousedown', onDown);
+document.addEventListener('mouseup', onUp);
+document.addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('wheel', onWheel, { passive: false });
+// keys: what is held (and nothing scrolls the page)
+const KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+addEventListener('keydown', e => {
+  if (!KEYS.has(e.code) && e.code !== 'Space') return;
+  e.preventDefault();
+  if (e.repeat || !KEYS.has(e.code)) return;
+  if (!keysHeld.size) keyStats.keyDownAt = now();
+  keysHeld.add(e.code); renderKeys();
+});
+addEventListener('keyup', e => {
+  if (!keysHeld.delete(e.code)) return;
+  if (!keysHeld.size) keyStats.keyMs += now() - keyStats.keyDownAt;
+  renderKeys();
+});
+addEventListener('blur', () => { if (keysHeld.size) keyStats.keyMs += now() - keyStats.keyDownAt; keysHeld.clear(); renderKeys(); });
+
+// ------------------------------------------------------------------ panels
+let tab = 'gestures';
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.dataset.pane === tab));
+  b.blur();
+});
+function renderChips() {
+  const ph = hzOf(dev.ptrIv), wh = hzOf(dev.whlIv);
+  const wheelKind = dev.smooth + dev.notched < 6 ? '–' : dev.notched > dev.smooth ? 'notched (mouse wheel)' : 'smooth (trackpad)';
+  const chip = (cls, label, v) => `<span class="chip ${cls}">${label} <b>${v}</b></span>`;
+  $('chips').innerHTML = [
+    chip(dev.locked ? 'ok' : 'warn', 'Pointer', dev.locked ? 'captured' : dev.lockErr ? 'refused' : 'click the pad'),
+    chip(ph == null ? '' : ph < 50 ? 'warn' : 'ok', 'Finger rate', ph == null ? '–' : Math.round(ph) + ' Hz'),
+    chip(wh == null ? '' : 'ok', '2-finger rate', wh == null ? '–' : Math.round(wh) + ' Hz'),
+    chip(wheelKind.startsWith('notched') ? 'warn' : wheelKind === '–' ? '' : 'ok', 'Scroll', wheelKind),
+    chip('', 'Input', dev.ptrSrc + (raw ? (dev.rawOk === false ? ' · raw refused' : ' · raw') : '')),
+    chip(cal.vDone && cal.hDone ? 'ok' : 'warn', '2-finger dir', cal.vDone && cal.hDone ? 'calibrated' : 'not calibrated'),
+  ].join('');
+}
+function renderLast(g) {
+  if (QUIET.has(g.type)) return;
+  const col = cOf(g.type);
+  $('last').innerHTML = `<div class="name" style="color:${col}">${NAMES[g.type] || g.type}</div><div class="meta">${metaOf(g)}${g.withKey ? ' · <b style="color:var(--lime)">key held</b>' : ''}</div><div class="game"><span>In the game</span>${gameMeaning(g)}</div>`;
+}
+function renderCounts() {
+  const order = ['swing', 'flick', 'flick-side', 'pullback', 'tap', 'double-tap', 'two-finger-tap', 'two-finger-up', 'two-finger-down', 'two-finger-left', 'two-finger-right', 'pinch-in', 'pinch-out', 'press-hold', 'glide'];
+  $('counts').innerHTML = order.map(k => `<div><span>${NAMES[k]}</span><b>${counts[k] || 0}</b></div>`).join('');
+}
+function renderLog() {
+  $('log').innerHTML = recent.slice(0, 40).map(g => `<div class="${QUIET.has(g.type) ? 'dim' : ''}"><span class="k" style="color:${cOf(g.type)}">${NAMES[g.type] || g.type}</span><span class="v">${metaOf(g)}</span></div>`).join('');
+}
+function renderKeys() {
+  document.querySelectorAll('.key[data-k]').forEach(k => k.classList.toggle('on', keysHeld.has(k.dataset.k)));
+  const w = keyStats.withKey, any = Object.entries(w).filter(([k]) => !QUIET.has(k)).reduce((a, [, v]) => a + v, 0);
+  $('keyCounts').innerHTML = [['Finger movement samples', keyStats.moveWith], ['Flicks / swings', (w.flick || 0) + (w.swing || 0) + (w['flick-side'] || 0)],
+    ['Taps', (w.tap || 0) + (w['double-tap'] || 0)], ['Two-finger taps', w['two-finger-tap'] || 0], ['Two-finger swipes', (w['two-finger-up'] || 0) + (w['two-finger-down'] || 0) + (w['two-finger-left'] || 0) + (w['two-finger-right'] || 0)]]
+    .map(([k, v]) => `<div><span>${k} with a key held</span><b>${v}</b></div>`).join('');
+  const held = keyStats.keyMs + (keysHeld.size ? now() - keyStats.keyDownAt : 0);
+  const v = $('keyVerdict');
+  if (held < 3000) { v.className = 'verdict'; v.innerHTML = 'Hold a movement key for a few seconds in total while you flick, tap and swipe.'; }
+  else if (keyStats.moveWith > 20 && any > 0 && (w.tap || w['double-tap'] || 0) > 0) { v.className = 'verdict ok'; v.innerHTML = '<b>Works together.</b> The trackpad keeps working while keys are held, taps included.'; }
+  else if (keyStats.moveWith > 20 && any > 0) { v.className = 'verdict'; v.innerHTML = 'Movement works with a key held. <b>Now try taps</b> with a key held too: they are the ones Windows most often blocks.'; }
+  else { v.className = 'verdict bad'; v.innerHTML = '<b>The trackpad seems to be ignored while a key is held.</b> On Windows: Settings › Bluetooth &amp; devices › Touchpad › Taps › <b>Touchpad sensitivity: Most sensitive</b>. Then try again.'; }
+}
+function renderCal() {
+  $('calNote').innerHTML = cal.vDone && cal.hDone ? 'Calibrated on this laptop.' : 'Not calibrated yet: until it is, up and down (or left and right) may read the wrong way round. Click the button, swipe two fingers <b>up</b> the pad, then to the <b>right</b>.';
+  $('calBanner').classList.toggle('hidden', cal.vDone && cal.hDone);
+  renderChips();
+}
+listeners.push(g => { renderLast(g); renderCounts(); renderLog(); if (g.withKey || keysHeld.size) renderKeys(); });
+function renderRaw() {
+  if (!rawWheel.length || rawWheel.length === renderRaw.n) return;
+  renderRaw.n = rawWheel.length;
+  const t0 = rawWheel[rawWheel.length - 1][0];
+  $('rawLog').innerHTML = rawWheel.slice(-24).reverse().map(r => `<div><span class="k" style="min-width:64px;color:var(--blue)">${r[0] - t0} ms</span><span class="v">dx ${r[1]} · dy ${r[2]} · mode ${r[3]}${r[4] ? ' · ctrl' : ''}${r[5] ? ' · shift' : ''}</span></div>`).join('');
+}
+
+// practise selector, timing controls
+$('practiseSeg').innerHTML = PRACTISE.map(([k, n]) => `<button class="btn small ${k === practise ? 'on' : ''}" data-p="${k}">${n}</button>`).join('');
+$('practiseSeg').querySelectorAll('button').forEach(b => b.onclick = () => { practise = b.dataset.p; $('practiseSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); beats = []; b.blur(); });
+$('timingGo').onclick = e => { timingOn = !timingOn; Sound.init(); beats = []; e.currentTarget.textContent = timingOn ? 'Stop' : 'Start'; if (timingOn && !dev.locked) toast('Now click the pad to capture the pointer'); e.currentTarget.blur(); };
+$('timingReset').onclick = e => { for (const k in tstats) delete tstats[k]; renderTiming(); e.currentTarget.blur(); };
+$('soundBtn').onclick = e => { soundOn = !soundOn; store.set('sound', soundOn); e.currentTarget.textContent = 'Sound: ' + (soundOn ? 'on' : 'off'); e.currentTarget.blur(); };
+$('soundBtn').textContent = 'Sound: ' + (soundOn ? 'on' : 'off');
+
+// tuning
+function renderSliders() {
+  $('sliders').innerHTML = SLIDERS.map(([k, l, a, b, st, u, h]) => `<div class="slider"><label for="s_${k}">${l}</label><output id="o_${k}">${P[k]} ${u}</output><input type="range" id="s_${k}" min="${a}" max="${b}" step="${st}" value="${P[k]}">${h ? `<small>${h}</small>` : ''}</div>`).join('');
+  SLIDERS.forEach(([k, , , , , u]) => { const i = $('s_' + k); i.oninput = () => { P[k] = +i.value; $('o_' + k).textContent = P[k] + ' ' + u; store.set('p2', P); }; });
+}
+renderSliders();
+$('rawToggle').checked = raw;
+$('rawToggle').onchange = e => { raw = e.target.checked; store.set('raw', raw); dev.rawOk = null; if (dev.locked) { document.exitPointerLock(); toast('Click the pad again to capture with the new setting'); } renderChips(); };
+$('resetBtn').onclick = () => { Object.assign(P, DEF); store.set('p2', P); renderSliders(); toast('Thresholds reset'); };
+const startCal = e => { calWaiting = 'up'; toast('Swipe two fingers UP the pad (away from you)', 6000); if (e) e.currentTarget.blur(); };
+$('calBtn').onclick = startCal; $('calBtn2').onclick = startCal;
+
+// ------------------------------------------------------------------ results
+function results() {
+  const strokes = recent.filter(g => g.stroke && !QUIET.has(g.type)).slice(0, 60).map(g => ({ type: g.type, t: Math.round(g.stroke.onsetT), end: Math.round(g.stroke.endT), peak: Math.round(g.stroke.peak), dist: Math.round(g.stroke.dist), dur: Math.round(g.stroke.dur), deg: Math.round(g.stroke.deg), curve: +g.stroke.curve.toFixed(2), power: +g.stroke.power.toFixed(2), windMs: g.windMs != null ? Math.round(g.windMs) : undefined, windDist: g.wind ? Math.round(g.wind.dist) : undefined, key: g.withKey || undefined }));
+  const wheels = recent.filter(g => g.wheel).slice(0, 30).map(g => ({ type: g.type, t: Math.round(g.anchors.onset), dist: Math.round(g.dist), dur: Math.round(g.dur), n: g.n, peak: Math.round(g.peak), notch: g.notch || undefined }));
+  const taps = recent.filter(g => g.held != null).slice(0, 30).map(g => ({ type: g.type, t: Math.round(g.anchors.down), held: Math.round(g.held) }));
+  return {
+    v: 2, at: new Date().toISOString(), ua: navigator.userAgent, platform: navigator.platform, screen: [screen.width, screen.height, devicePixelRatio],
+    secure: dev.secure, input: dev.ptrSrc, raw, rawOk: dev.rawOk, lockErr: dev.lockErr || undefined,
+    fingerHz: hzOf(dev.ptrIv) && Math.round(hzOf(dev.ptrIv)), twoFingerHz: hzOf(dev.whlIv) && Math.round(hzOf(dev.whlIv)),
+    scroll: { smooth: dev.smooth, notched: dev.notched, cal }, rawWheel: rawWheel.map(r => [r[0] - (rawWheel[0] ? rawWheel[0][0] : 0), ...r.slice(1)]),
+    thresholds: P, counts, keys: { heldMs: Math.round(keyStats.keyMs), moveWith: keyStats.moveWith, moveWithout: keyStats.moveWithout, gesturesWith: keyStats.withKey },
+    timing: timingSummary(), strokes, wheels, taps,
+  };
+}
+$('copyBtn').onclick = async e => {
+  const txt = JSON.stringify(results(), null, 1);
+  try { await navigator.clipboard.writeText(txt); toast('Results copied'); }
+  catch { const t = document.createElement('textarea'); t.value = txt; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); toast('Results copied'); } catch { toast('Could not copy'); } t.remove(); }
+  e.currentTarget.blur();
+};
+$('sendBtn').onclick = async e => {
+  e.currentTarget.blur();
+  try {
+    const r = await fetch('/api/diag', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'gesturelab', tier: '', gpu: '', data: results() }) });
+    toast(r.ok ? 'Sent to the host. Thanks!' : 'The host did not accept it (' + r.status + ')');
+  } catch { toast('Could not reach the host'); }
+};
+
+// ------------------------------------------------------------------ loop
+function loop() {
+  const t = now();
+  if (stroke && t - stroke.lastT > P.gap) endStroke();
+  if (wg && t - wg.lastT > P.wgap) endWheel();
+  if (pendingWind && t - pendingWind.endT > P.combo) { const w = pendingWind; pendingWind = null; emit({ type: 'windup-dropped', stroke: w }); }
+  drawPad(t); drawStrip(t);
+  if (Math.floor(t / 500) !== loop.k) { loop.k = Math.floor(t / 500); renderChips(); if (tab === 'keys') renderKeys(); if (tab === 'gestures') renderRaw(); }
+  requestAnimationFrame(loop);
+}
+renderChips(); renderCounts(); renderCal(); renderTiming(); renderKeys();
+requestAnimationFrame(loop);
+// read-only hooks for automated checks
+window.__lab = { get beats() { return beats; }, timingSummary, dev, results, onMove, onWheel: e => onWheel(e), emit, P, recent, get stroke() { return stroke; }, endStroke, tick: () => { const t = now(); if (stroke && t - stroke.lastT > P.gap) endStroke(); if (wg && t - wg.lastT > P.wgap) endWheel(); } };
+</script>
+</body>
+</html>

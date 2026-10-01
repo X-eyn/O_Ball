@@ -513,7 +513,7 @@ console.log('\n16. snapshot shape');
 {
   const s = BM.createSim(0, {});
   const st = BM.netState(s);
-  ok(st.p.every(a => a.length === 21 && a.every(finite)), 'player entries are complete and finite');
+  ok(st.p.every(a => a.length === 23 && a.every(finite)), 'player entries are complete and finite');
   ok(st.b.every(finite) && st.b.length === 6, 'shuttle entry is position + velocity');
   JSON.stringify(st);
   const bi = BM.botInput(s, 0);

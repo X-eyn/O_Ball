@@ -159,7 +159,7 @@ class Room {
   leave(m) {
     if (!m.connected) return;
     m.connected = false; m.ws = null; m.goneT = 0;
-    m.input = Object.assign(blankInput(), { kp: m.input.kp, dc: m.input.dc, dv: m.input.dv, jp: m.input.jp });
+    m.input = Object.assign(blankInput(), { kp: m.input.kp, dc: m.input.dc, dv: m.input.dv, jp: m.input.jp, sw: m.input.sw });
     this.dirty = true;
     const si = this.slots.indexOf(m.id);
     if (si >= 0 && !this.botMatch && this.phase === 'match') {
@@ -174,7 +174,12 @@ class Room {
         const n = v => (Number.isFinite(v) ? v | 0 : 0);
         if (m.needSync) { m.needSync = false; const si = this.slots.indexOf(m.id); if (si >= 0 && this.sim) this.sim.players[si].init = false; }
         const f = v => (Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
-        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), dv: n(msg.dv), sp: !!msg.sp, jp: n(msg.jp), as: !!msg.as, ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn) };
+        const m2 = v => (Number.isFinite(v) ? Math.max(-20, Math.min(20, v)) : 0);
+        m.input = { u: !!msg.u, d: !!msg.d, l: !!msg.l, r: !!msg.r, k: !!msg.k, kp: n(msg.kp), kc: Number.isFinite(msg.kc) ? msg.kc | 0 : null, dc: n(msg.dc), dv: n(msg.dv), sp: !!msg.sp, jp: n(msg.jp), as: !!msg.as, ax: f(msg.ax), ay: f(msg.ay), rb: n(msg.rb), lob: !!msg.lob, sh: !!msg.sh, kn: n(msg.kn),
+          // badminton trackpad controls: the sim runs the legs and the swing; tx/ty is the aimed spot
+          ez: !!msg.ez, am: !!msg.am, tx: m2(msg.tx), ty: m2(msg.ty),
+          // badminton swipe controls: a swipe counter, its grade, intensity, lift, line and the tick seen; magnetic steering
+          sw: n(msg.sw), sg: n(msg.sg), si: f(msg.si), sd: !!msg.sd, sl: f(msg.sl), svt: Number.isFinite(msg.svt) ? +msg.svt : null, swm: !!msg.swm, mg: !!msg.mg };
         break;
       }
       case 'emote': {
@@ -579,7 +584,8 @@ function diag(req, res) {
     let d; try { d = JSON.parse(body); } catch { return; }
     const who = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
     const t = d.data || {};
-    if (d.kind === 'perf') console.log(`  [perf] ${who} ${d.tier} "${d.gpu}": ${t.fps} fps (target ${t.target} ms), p95 ${t.p95} ms, missed ${t.missed}%, js ${t.js} ms (players ${t.players}, ball ${t.ball}, world ${t.world}, gl ${t.submit}), gpu ${t.gpu} ms, ${t.size} @ ${t.pr}x, scale ${t.scale}, level ${t.level}, ${t.calls} calls`);
+    if (d.kind === 'gesturelab') { const c = t.counts || {}; console.log(`  [gesture lab] ${who}: finger ${t.fingerHz || '?'} Hz, two-finger ${t.twoFingerHz || '?'} Hz, ${Object.entries(c).map(([k, v]) => k + ' ' + v).join(', ')}`); }
+    else if (d.kind === 'perf') console.log(`  [perf] ${who} ${d.tier} "${d.gpu}": ${t.fps} fps (target ${t.target} ms), p95 ${t.p95} ms, missed ${t.missed}%, js ${t.js} ms (players ${t.players}, ball ${t.ball}, world ${t.world}, gl ${t.submit}), gpu ${t.gpu} ms, ${t.size} @ ${t.pr}x, scale ${t.scale}, level ${t.level}, ${t.calls} calls`);
     else console.log(`  [diag] ${who} ${d.kind}: tier ${d.tier}, gpu "${d.gpu}", pitch green ${t.base ? t.base.green : '?'}${t.noShadow ? `, without shadows ${t.noShadow.green}` : ''} , textures ${t.srgb ? t.srgb.mode + " (" + t.srgb.native + "/" + t.srgb.nomip + "/" + t.srgb.shader + ")" : "?"} -> ${t.fix || 'ok'}`);
     try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.appendFileSync(path.join(DATA_DIR, 'diag.log'), JSON.stringify({ at: new Date().toISOString(), from: who, ...d }) + '\n'); } catch { }
   });

@@ -153,29 +153,49 @@ function slotName(i) { const id = room ? room.slots[i] : null; return id == null
 //   keyboard  WASD / arrows move; Space shot, E lift, Shift sprint (double-tap: dive), F jump
 //   mouse     the player runs to the pointer; click shot, shift+click / middle lift, right button
 //             sprint (double-click it: dive), thumb button jump; the action keys work too
+//   swipe     WASD / arrows move (steered onto the shuttle when heading its way); every shot is a
+//             two-finger swipe on the trackpad, timed against a ring closing on the shuttle (see the
+//             swipe section below and swipeShot in shared/badminton.js). Shift sprints, F jumps
+//   trackpad  (retired) the game runs the legs and times the swing (see ezInput in shared/badminton.js): a
+//             tap queues a shot, aimed where the pointer is on the far court (short = soft, deep =
+//             power); a two-finger tap (right click) or shift+tap lifts. Space / E / F work too
 //   gamepad   left stick / D-pad; A shot, Y lift, X / LB sprint (double-tap: dive), B / RB jump
 //   touch     the on-screen stick and buttons
 const KEYMAP = { KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r', Space: 'kick', KeyJ: 'kick', KeyE: 'lob', KeyL: 'lob', ShiftLeft: 'sprint', ShiftRight: 'sprint', KeyK: 'sprint', KeyF: 'jump', KeyI: 'jump' };
 const MOVE = new Set(['u', 'd', 'l', 'r']);
-const CTRLS = ['keyboard', 'mouse', 'gamepad', 'touch'];
-const CTRL_NAME = { keyboard: 'Keyboard', mouse: 'Mouse', gamepad: 'Controller', touch: 'Touch' };
+// (only Swipe and Keyboard are offered; the other schemes' code stays until the swipe design settles)
+const CTRLS = ['swipe', 'keyboard'];
+const CTRL_NAME = { swipe: 'Swipe', keyboard: 'Keyboard' };
 const DOUBLE_TAP = 280; // ms between two presses of sprint that make a dive
 const held = new Set();
 const kickSources = new Set(), sprintSources = new Set();
-const inp = { kp: 0, dv: 0, jp: 0, kn: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, lob: false, lobArm: false, sprintTapAt: -1e9 };
+const inp = { kp: 0, dv: 0, jp: 0, kn: 0, kc: null, kickDownAt: null, ax: 0, ay: 0, lob: false, lobArm: false, sprintTapAt: -1e9, ezLob: false };
+// trackpad controls: the spot aimed at on the far court (metres, sim coordinates); set: pointed at yet
+const aim = { x: 0, y: 0, set: false };
 const mouse = { x: 0, y: 0, has: false };
 const touchDevice = matchMedia('(hover: none) and (pointer: coarse)').matches;
-let ctrl = (() => { try { const v = localStorage.getItem('obm_ctrl'); if (CTRLS.includes(v)) return v; } catch { } return touchDevice ? 'touch' : 'keyboard'; })();
+let ctrl = (() => { try { const v = localStorage.getItem('obm_ctrl'); if (CTRLS.includes(v)) return v; } catch { } return 'swipe'; })();
 let lastSent = '';
 function typing(e) { const t = e.target; return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'); }
 function sendInput(force) {
-  const kb = ctrl === 'keyboard';
+  const kb = ctrl === 'keyboard' || ctrl === 'swipe';
+  if (ctrl === 'trackpad') {
+    // taps, the kind of the last one, and the aim: the sim does the rest
+    const msg = { t: 'i', u: 0, d: 0, l: 0, r: 0, k: false, kp: inp.kp, kc: null, dv: inp.dv, sp: 0, jp: inp.jp, kn: inp.kn, lob: inp.ezLob, as: 0, ax: 0, ay: 0,
+      ez: 1, am: aim.set ? 1 : 0, tx: Math.round(aim.x * 20) / 20, ty: Math.round(aim.y * 20) / 20 };
+    const s = JSON.stringify(msg);
+    lastInput = msg;
+    if (force || s !== lastSent) { lastSent = s; if (ws && ws.readyState === 1) ws.send(s); }
+    return;
+  }
   const msg = {
     t: 'i',
     u: +(kb && (held.has('KeyW') || held.has('ArrowUp'))), d: +(kb && (held.has('KeyS') || held.has('ArrowDown'))),
     l: +(kb && (held.has('KeyA') || held.has('ArrowLeft'))), r: +(kb && (held.has('KeyD') || held.has('ArrowRight'))),
     k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, dv: inp.dv, sp: sprintSources.size ? 1 : 0, jp: inp.jp, kn: inp.kn, lob: !!inp.lob, as: assistOn ? 1 : 0,
     ax: Math.round(inp.ax * 50) / 50, ay: Math.round(inp.ay * 50) / 50,
+    // magnetic steering, and the last swipe (see the swipe section)
+    mg: 1, swm: ctrl === 'swipe' ? 1 : 0, sw: swp.n, sg: swp.g, si: swp.si, sd: swp.sd ? 1 : 0, sl: swp.sl, svt: swp.vt,
   };
   const s = JSON.stringify(msg);
   lastInput = msg;
@@ -186,7 +206,7 @@ function sendInput(force) {
 // mapping (player 0 lives at x<0, player 1 at x>0). Called on every key event as well as per frame,
 // so a key reaches the server with its direction at once, not on the next drawn frame.
 function keyAxes() {
-  if (ctrl !== 'keyboard') return;
+  if (ctrl !== 'keyboard' && ctrl !== 'swipe') return;
   const side = mySlot() === 1 ? 1 : -1;
   const fwd = -side, rightY = -side;
   const wKey = (held.has('KeyW') || held.has('ArrowUp') ? 1 : 0) - (held.has('KeyS') || held.has('ArrowDown') ? 1 : 0);
@@ -227,6 +247,13 @@ function sprintDown(src) {
 }
 function sprintUp(src) { if (sprintSources.delete(src)) sendInput(); }
 function jumpPress() { inp.jp++; sendInput(); }
+// trackpad controls: a tap queues a shot for the next shuttle that comes your way (or replaces the
+// one queued); lob picks a lift instead
+let ezTapAt = 0;
+function ezTap(lob) {
+  inp.ezLob = !!lob; inp.kp++; ezTapAt = performance.now();
+  sendInput(true);
+}
 function releaseAll() {
   held.clear(); keyHeldSince = null;
   for (const s of [...kickSources]) kickUp(s);
@@ -235,15 +262,19 @@ function releaseAll() {
   inp.ax = inp.ay = 0; sendInput();
 }
 const CTRL_TOAST = {
+  swipe: 'Swipe controls: WASD moves, swipe two fingers up the trackpad to hit as the ring closes (down to lift)',
   keyboard: 'Keyboard controls: WASD moves, Space shoots, Shift sprints (double-tap to dive)',
-  mouse: 'Mouse controls: run to the pointer, click shoots, hold right button to sprint (double-click it to dive)',
+  mouse: 'Mouse controls: run to the pointer, click shoots, hold right button to sprint (double-click it to dive). On a trackpad? Try Trackpad',
+  trackpad: 'Trackpad controls: your player runs on their own. Point at the far court, tap to play a shot there; two-finger tap lifts',
   gamepad: 'Controller: left stick moves, A shoots, X sprints (double-tap to dive)',
   touch: 'Touch controls: left thumb moves, right thumb shoots, Sprint (double-tap to dive)',
 };
 function updateCtrlUI() {
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.classList.toggle('on', b.dataset.c === ctrl));
-  const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl] + CTRL_SHOTS;
+  // (the shot guide is about holding and releasing: the trackpad help says it its own way)
+  const h = $('ctrlHelp'); if (h) h.innerHTML = CTRL_HELP[ctrl] + (ctrl === 'trackpad' || ctrl === 'swipe' ? CTRL_PAUSE : CTRL_SHOTS);
   $('view').classList.toggle('mouse-mode', ctrl === 'mouse');
+  $('view').classList.toggle('trackpad-mode', ctrl === 'trackpad');
   $('touchui').classList.toggle('hidden', !(code && ctrl === 'touch'));
 }
 function setCtrl(mode, announce = true) {
@@ -253,6 +284,17 @@ function setCtrl(mode, announce = true) {
   updateCtrlUI();
   if (announce) toast(CTRL_TOAST[mode], 4000);
   sendInput(true);
+}
+// trackpad controls: the pointer's spot on the floor is the aim while it is over the far court
+// (over your own half the last aim stands, so the pointer can be parked anywhere)
+function aimAt() {
+  const K = window.BM && window.BM.C, ms = mySlot();
+  if (ctrl !== 'trackpad' || !R || !K || !mouse.has || ms < 0) return;
+  const g = R.pickGround(mouse.x, mouse.y);
+  if (!g) return;
+  const far = ms === 0 ? 1 : -1; // player 0 lives at x < 0
+  if (g.x * far < 0.3) return;
+  aim.x = far * clamp(g.x * far, 0.6, K.L - 0.3); aim.y = clamp(g.y, -(K.W - 0.25), K.W - 0.25); aim.set = true;
 }
 function setupInput() {
   addEventListener('keydown', e => {
@@ -264,9 +306,17 @@ function setupInput() {
     if (/^Digit[1-6]$/.test(e.code)) { send({ t: 'emote', n: +e.code.slice(5) - 1 }); return; }
     if (e.code === 'KeyM') { Sound.toggle(); if (setupMenu.muteLabel) setupMenu.muteLabel(); return; }
     if (!act) return;
+    // trackpad controls: the shot keys tap (Space a shot, E a lift), F jumps; nothing is held
+    if (ctrl === 'trackpad') {
+      if (act === 'kick') ezTap(false);
+      else if (act === 'lob') ezTap(true);
+      else if (act === 'jump') jumpPress();
+      return;
+    }
     // the keys play on keyboard controls; on mouse controls the action keys still work (the pointer
     // steers); on a controller or touch they do nothing
-    if (!(ctrl === 'keyboard' || (ctrl === 'mouse' && !MOVE.has(act)))) return;
+    // (on swipe controls the keys move, sprint and jump: shots are the trackpad's)
+    if (!(ctrl === 'keyboard' || (ctrl === 'swipe' && act !== 'kick' && act !== 'lob') || (ctrl === 'mouse' && !MOVE.has(act)))) return;
     held.add(e.code);
     if (act === 'kick') kickDown('key:' + e.code);
     if (act === 'lob') kickDown('lob:' + e.code);
@@ -291,8 +341,19 @@ function setupInput() {
   view.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') mouse.has = false; });
   // mouse buttons (mousedown fires for every button, even pressed together): mouse controls only
   view.addEventListener('mousedown', e => {
-    if (!code || ctrl !== 'mouse' || e.target.closest('button, input, a, select, .interactive')) return;
+    if (!code || (ctrl !== 'mouse' && ctrl !== 'trackpad') || menuOpen() || e.target.closest('button, input, a, select, .interactive')) return;
     at(e);
+    if (ctrl === 'trackpad') {
+      aimAt(); // (the tap's own spot, if it is on the far court)
+      // a tap (or click) is a shot, shift+tap / a two-finger tap (the right button) / middle a lift;
+      // nothing is held, so a tap-to-click trackpad's instant press and release is all it takes
+      if (e.button === 0) ezTap(e.shiftKey);
+      else if (e.button === 1 || e.button === 2) ezTap(true);
+      else if (e.button === 3 || e.button === 4) jumpPress();
+      else return;
+      e.preventDefault();
+      return;
+    }
     if (e.button === 0 && e.shiftKey) kickDown('lob:mouse');
     else if (e.button === 0) kickDown('mouse');
     else if (e.button === 1) kickDown('lob:mouse');
@@ -309,7 +370,7 @@ function setupInput() {
   view.addEventListener('contextmenu', e => e.preventDefault());
   addEventListener('blur', releaseAll);
   document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
-  addEventListener('gamepadconnected', () => { if (ctrl !== 'gamepad') toast('Controller detected. To play with it, pick Controller in Menu > Controls', 4000); });
+  addEventListener('wheel', onWheelGame, { passive: false });
   document.querySelectorAll('#ctrlSeg button').forEach(b => b.onclick = e => { setCtrl(b.dataset.c); e.currentTarget.blur(); });
   setInterval(() => sendInput(true), 250);
   setupTouch();
@@ -609,11 +670,27 @@ function copyText(v, btn) {
   else { const i = $('shareLink'); i.select(); document.execCommand('copy'); done(); }
 }
 const CTRL_HELP = {
+  swipe: `<span class="do">Move</span><span class="how"><b>WASD</b> or arrows. Head roughly toward the shuttle and your player locks onto the spot where it is best met.</span>
+  <span class="do">Shot</span><span class="how"><b>Swipe two fingers up</b> the trackpad as the ring closes on the shuttle. Gentle: a drop or net shot. Firm: a drive or clear. Fierce: a smash on a high shuttle, a kill at the net.</span>
+  <span class="do">Angle</span><span class="how">Lean the swipe left or right to send it across the court.</span>
+  <span class="do">Lift</span><span class="how"><b>Swipe down</b>: high and deep, the way out of trouble.</span>
+  <span class="do">Timing</span><span class="how">Swipe as the ring closes: <b>PERFECT</b>, GREAT or GOOD. Early or late is weak; way off is a miss. A perfect smash is the fastest shot in the game.</span>
+  <span class="do">Their smash</span><span class="how">Swipe firmly as it arrives to counter it (perfect: parry), gently to block it, down to lift it.</span>
+  <span class="do">Serve</span><span class="how">Swipe: gentle for a low serve, fierce for a high one.</span>
+  <span class="do">Sprint, jump</span><span class="how"><b>Shift</b> sprints (double-tap to dive), <b>F</b> jumps.</span>
+  <span class="do">Direction</span><span class="how">If swiping up lifts instead of hitting, switch <b>Swipe direction</b> in Settings.</span>`,
   keyboard: `<span class="do">Move</span><span class="how"><b>WASD</b> / arrows. A quick tap is a small step; hold to run. With no direction held, your player glides the last metre or two to where the shuttle is best met (Settings: Placement assist).</span>
   <span class="do">Shot</span><span class="how">Hold <b>Space</b>, release. <b>E</b> instead lifts it high and deep.</span>
   <span class="do">Sprint</span><span class="how">Hold <b>Shift</b>: a faster, longer stride that burns stamina.</span>
   <span class="do">Dive</span><span class="how">Double-tap <b>Shift</b>: a last-ditch launch along your run, the racket stretched out at the shuttle. It gets there when running will not, but you are on the floor for a moment after.</span>
   <span class="do">Jump</span><span class="how"><b>F</b>. Out of a sprint it is a long leap.</span>`,
+  trackpad: `<span class="do">Move</span><span class="how">Automatic: your player reads each shot and runs to meet it, then back to the middle.</span>
+  <span class="do">Aim</span><span class="how">Point at the far court: the ring is where your shot goes. Near the net (the ring reads <b>SOFT</b>): a drop, net shot or block. Deeper (<b>POWER</b>): a smash, clear, kill or counter.</span>
+  <span class="do">Shot</span><span class="how"><b>Tap</b> (or click, or Space). Any time: once the shuttle is coming your way is fine; the swing is timed for you. Tap early against a smash to counter it.</span>
+  <span class="do">Lift</span><span class="how"><b>Two-finger tap</b> (right click), shift+tap or <b>E</b>: high and deep.</span>
+  <span class="do">Serve</span><span class="how">Tap. Aimed short = low serve, deep = high serve.</span>
+  <span class="do">Jump</span><span class="how"><b>F</b>. Sprinting and diving happen on their own.</span>
+  <span class="do">Fair play</span><span class="how">The auto legs read a touch slower than a sharp player, and a timed-for-you swing is never a perfect one. Your name shows <b>ASSIST</b> to the other player.</span>`,
   mouse: `<span class="do">Move</span><span class="how">Your player runs to the pointer. With it still, your player glides to where the shuttle is best met (Settings: Placement assist).</span>
   <span class="do">Shot</span><span class="how">Hold click, release. Shift+click or middle-click lifts it high and deep.</span>
   <span class="do">Sprint</span><span class="how">Hold the right button (or Shift).</span>
@@ -636,6 +713,7 @@ const CTRL_SHOTS = `
   <span class="do">Defend a smash</span><span class="how">It is too fast to react to: read the wind-up. Hold Shot to <b>brace</b>, release as it arrives to <b>counter</b> it flat into the open court (clean and on time = <b>parry</b>). A late tap <b>blocks</b> it dead over the net; Lift sends it high.</span>
   <span class="do">Serve</span><span class="how">When you're serving, stand still and shoot: soft is a low serve, full charge is a high deep serve</span>
   <span class="do">Pause</span><span class="how"><b>Esc</b> opens the menu. Against the bot the match waits for you.</span>`;
+const CTRL_PAUSE = `<span class="do">Pause</span><span class="how"><b>Esc</b> opens the menu. Against the bot the match waits for you.</span>`;
 function setupMenu() {
   document.querySelectorAll('.menu-nav button').forEach(b => b.onclick = () => {
     if (b.dataset.pane === 'leave') { leaveRoom(); closeMenu(); navigate('/badminton'); return; }
@@ -647,6 +725,12 @@ function setupMenu() {
   $('copyBtn').onclick = e => copyText(shareUrl, e.currentTarget);
   $('sitBtn').onclick = () => { const me = room && room.members.find(m => m.id === myId); send({ t: 'sit', v: !(me && me.sitting) }); };
   $('renameBtn').onclick = () => { const n = prompt('Your name', myName()); if (n && n.trim()) { setName(n.trim().slice(0, 16)); send({ t: 'name', name: n.trim().slice(0, 16) }); } };
+  const sdb = $('swDirBtn');
+  if (sdb) {
+    const label = () => { sdb.textContent = swDir < 0 ? 'Natural' : 'Reversed'; };
+    label();
+    sdb.onclick = () => { swDir = -swDir; try { localStorage.setItem('obm_swdir', swDir < 0 ? 'nat' : 'rev'); } catch { } label(); };
+  }
   const ab = $('assistBtn');
   if (ab) {
     const label = () => { ab.textContent = assistOn ? 'On' : 'Off'; };
@@ -773,10 +857,14 @@ function selfStep(K, fresh, sp) {
     const sprinting = m0.sp && (sp[19] || sp[9] > K.SPRINT_MIN);
     const top = (sprinting ? K.SPRINT_V : K.TOP) * tired * (inp.kickDownAt !== null ? 0.6 : 1) * (sp[11] ? 0.5 : 1) * (sp[17] > 0 ? 0.35 : 1);
     // the same placement assist the server applies when nothing is held
+    const simOf = () => { const b = fresh.b; return { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } }; };
     if (m <= 0.05 && m0.as) {
-      const b = fresh.b, sim = { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } };
-      const a = window.BM.assistDir(sim, own);
+      const a = window.BM.assistDir(simOf(), own);
       if (a) { ax = a.x; ay = a.y; m = Math.hypot(ax, ay); if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; } }
+    } else if (m > 0.05 && m0.mg && window.BM.magnetDir) {
+      // the same magnetic steering the server applies
+      const g = window.BM.magnetDir(simOf(), own, ax, ay, m);
+      if (g) { ax = g.x; ay = g.y; m = Math.hypot(ax, ay); if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; } }
     }
     window.BM.run(own, ax, ay, m, top); // the sim's own running step: prediction and server agree
     own.x += own.vx / 60; own.y += own.vy / 60;
@@ -885,7 +973,9 @@ function frame(now) {
       $('stamFill').parentElement.classList.toggle('low', st < 22);
     } else dashEl.classList.add('hidden');
     const live = s.rp === 'match' && (s.ph === 'rally' || s.ph === 'serve' || s.ph === 'point' || s.ph === 'over');
-    const localCt = inp.kickDownAt !== null ? (now - inp.kickDownAt) * TPMS : -1;
+    // (on trackpad controls the sim winds the swing up: the ring shows its charge)
+    const mine = ms >= 0 && s.p ? s.p[ms] : null;
+    const localCt = ctrl === 'trackpad' ? (mine && mine[6] >= 0 ? mine[6] : -1) : inp.kickDownAt !== null ? (now - inp.kickDownAt) * TPMS : -1;
     if (ms >= 0 && localCt >= 0 && s.ph !== 'point') {
       chargeEl.classList.remove('hidden');
       const pct = clamp(localCt / C.CHARGE_FULL, 0, 1.3);
@@ -894,7 +984,7 @@ function frame(now) {
       ring.classList.toggle('gold', localCt >= C.CHARGE_FULL && localCt <= C.PERF_END);
       ring.classList.toggle('over', localCt > C.PERF_END);
       const b = hist[hist.length - 1];
-      const hint = b ? shotHint(b, ms, localCt, inp.lobArm) : '';
+      const hint = b ? shotHint(b, ms, localCt, ctrl === 'trackpad' ? !!(mine && mine[22] === 2) : inp.lobArm) : '';
       $('powerTip').classList.remove('hidden');
       $('powerTip').innerHTML = `<b>${hint}</b>${localCt > C.PERF_END ? ' · overcooked' : ''}`;
       $('tShoot') && $('tShoot').classList.toggle('charging', true);
@@ -932,10 +1022,14 @@ function frame(now) {
       const g = mouse.has ? R.pickGround(mouse.x, mouse.y) : null;
       if (g) {
         const dx = g.x - me[0], dy = g.y - me[1], d = Math.hypot(dx, dy);
-        if (d < 0.25) { inp.ax = 0; inp.ay = 0; } else { const mag = clamp((d - 0.25) / 3, 0.3, 1); inp.ax = dx / d * mag; inp.ay = dy / d * mag; }
+        // (full speed from 1.6 m out: a short flick of a trackpad is enough to run)
+        if (d < 0.25) { inp.ax = 0; inp.ay = 0; } else { const mag = clamp((d - 0.25) / 1.6, 0.3, 1); inp.ax = dx / d * mag; inp.ay = dy / d * mag; }
       } else { inp.ax = 0; inp.ay = 0; }
       sendInput();
-    } else if (ctrl === 'keyboard') {
+    } else if (ctrl === 'trackpad') {
+      aimAt();
+      sendInput();
+    } else if (ctrl === 'keyboard' || ctrl === 'swipe') {
       // WASD is relative to the camera you are looking through: W always runs toward the net, D to
       // the right of the screen. The camera sits behind each player's own end, so the two ends
       // mirror the mapping (player 0 lives at x<0, player 1 at x>0).
@@ -943,8 +1037,11 @@ function frame(now) {
       sendInput();
     }
   }
-  if (world && ms >= 0) world.players[ms] = predictSelf(world.players[ms], dtMs, ms, now);
+  // (on trackpad controls the sim moves the player, so it is drawn as the server has it)
+  if (world && ms >= 0 && ctrl !== 'trackpad') world.players[ms] = predictSelf(world.players[ms], dtMs, ms, now);
   else own.on = false;
+  drawAim(live, ms, fresh, now);
+  drawSwipeRing(now, planFrame(now, s, world, ms, live), live);
   lastWorld = world;
   const hype = s ? clamp(s.rc / 20, 0, 1) + (s.hs > 0 ? 0.3 : 0) : 0;
   const rv = {
@@ -967,8 +1064,9 @@ function frame(now) {
       const el = els[i];
       el.style.display = pr.ok ? '' : 'none';
       el.style.transform = `translate3d(${pr.x.toFixed(1)}px,${pr.y.toFixed(1)}px,0) translate(-50%,-100%)`;
-      const txt = (i === ms ? 'YOU · ' : '') + slotName(i);
-      if (el.textContent !== txt) el.textContent = txt;
+      // (a player on trackpad controls is marked, so the other side knows the legs are assisted)
+      const html = esc((i === ms ? 'YOU · ' : '') + slotName(i)) + (p[21] ? '<span class="ez"> · ASSIST</span>' : '');
+      if (el._html !== html) { el._html = html; el.innerHTML = html; }
       el.classList.toggle('me', i === ms);
     }
   }
@@ -977,7 +1075,7 @@ function frame(now) {
 
   // footer
   let foot = '';
-  if (s && s.rp === 'match' && ms >= 0 && s.ph === 'serve' && s.sv === ms) foot = 'Your serve · shoot: soft = low serve, full = high serve';
+  if (s && s.rp === 'match' && ms >= 0 && s.ph === 'serve' && s.sv === ms) foot = ctrl === 'swipe' ? 'Your serve · swipe: gentle = low serve, fierce = high serve' : ctrl === 'trackpad' ? 'Your serve · tap: aimed short = low serve, deep = high serve' : 'Your serve · shoot: soft = low serve, full = high serve';
   else if (s && s.rp === 'match' && ms >= 0 && s.ph === 'serve') foot = 'Receiving';
   if (s && s.rp === 'match' && ms < 0 && room) {
     const me = room.members.find(m => m.id === myId), qi = room.queue.indexOf(myId);
@@ -986,8 +1084,160 @@ function frame(now) {
   setText($('footer'), foot);
 }
 
+// trackpad controls: the ring on the far court where the next shot goes, soft or power by depth,
+// pulsing once a shot is queued (at once on the tap, then as the server has it)
+function drawAim(live, ms, fresh, now) {
+  const el = $('aimMark'), BM = window.BM;
+  const sp = fresh && fresh.p && ms >= 0 ? fresh.p[ms] : null;
+  if (ctrl !== 'trackpad' || !live || !R || !BM || !sp) { el.classList.add('hidden'); return; }
+  // a server started before trackpad controls existed sends no trackpad flag (and ignores the
+  // taps): say so rather than leave the player standing still
+  if (sp.length < 22 && !drawAim.warned) { drawAim.warned = true; toast('Trackpad controls need the game server restarted: close the server window and start it again', 8000); }
+  const K = BM.C, far = ms === 0 ? 1 : -1;
+  const ax = aim.set ? far * Math.abs(aim.x) : far * K.L * 0.75, ay = aim.set ? aim.y : 0;
+  const pr = R.project(ax, ay, 0);
+  if (!pr.ok) { el.classList.add('hidden'); return; }
+  const tapped = now - ezTapAt < 250;
+  const q = tapped ? (inp.ezLob ? 2 : 1) : (sp[22] | 0);
+  const soft = Math.abs(ax) < BM.EZ.SOFT_X;
+  const label = q === 2 ? 'Lift ready' : (soft ? 'Soft' : 'Power') + (q ? ' · ready' : '');
+  el.classList.remove('hidden');
+  el.classList.toggle('soft', soft && q !== 2); el.classList.toggle('lift', q === 2); el.classList.toggle('queued', q > 0);
+  const sp2 = el.querySelector('span'); if (sp2.textContent !== label) sp2.textContent = label;
+  el.style.transform = `translate3d(${pr.x.toFixed(1)}px,${pr.y.toFixed(1)}px,0) translate(-50%,-50%)`;
+}
+
+// ---------------------------------------------------------------- swipe controls
+// Every shot is a two-finger swipe. A trackpad sends one as a burst of scroll events; when the
+// fingers lift there is one zero event, then Windows keeps scrolling on its own, fading over about a
+// second with no pause before the next swipe. So: a zero event ends a swipe, the fade after it is
+// ignored, and a jump in size or a turn of direction is new fingers on the pad (measured on real
+// laptops in the gesture lab, /badminton/lab.html).
+// A swipe is played as soon as it is past its fastest point. Its timing is judged here, against
+// what was on screen: the moment the shuttle was best met from where the player stood (contactPlan,
+// the sim's own), recorded each frame. The swipe's moment is its fastest point less SWP.BIAS (people
+// land a swipe's peak ~40 ms after the moment they aim for). The grade, the swipe's intensity,
+// direction and the tick on screen go to the server, which plays the shot where the shuttle was.
+const SWP = {
+  BIAS: 40,               // ms: the lab's measured lag from aiming at a moment to a swipe's peak
+  LO: 3000, HI: 40000,    // swipe speeds (px/s) for intensity 0 and 1 (on a log scale between)
+  MIN: 25,                // px: less is not a swipe
+  GAP: 110,               // ms: a pause this long ends a swipe (and a fade)
+  WIN: [25, 60, 110, 220], // ms either side: perfect, great, good, early/late (beyond: a miss)
+};
+const swp = { n: 0, g: 4, si: 0, sd: false, sl: 0, vt: null };
+// the fingers' direction is the scroll's times swDir: natural scrolling (the default) is -1
+let swDir = (() => { try { return localStorage.getItem('obm_swdir') === 'rev' ? 1 : -1; } catch { return -1; } })();
+const swState = { wg: null, coast: null, win: [] };
+const frames = []; // per frame: { t, vt: the tick on screen, ideal: when the shuttle is best met (ms) or null }
+function onWheelGame(e) {
+  if (!code) return;
+  if (e.ctrlKey) { e.preventDefault(); return; } // (a pinch must not zoom the game)
+  if (ctrl !== 'swipe' || menuOpen()) return;
+  e.preventDefault();
+  const t = e.timeStamp, sc = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+  let dx = e.deltaX * sc, dy = e.deltaY * sc;
+  if (e.shiftKey && !dx && dy) { dx = dy; dy = 0; } // (an older driver's sideways swipe)
+  const m = Math.hypot(dx, dy), W = swState;
+  if (W.wg && t - W.wg.lastT > SWP.GAP) endSwipe();
+  if (W.coast && t - W.coast.t > SWP.GAP) W.coast = null;
+  if (!m) { // the fingers lifted
+    if (W.wg) { const w = W.wg; endSwipe(); W.coast = { t, ux: w.ux, uy: w.uy, peak: w.big, prev: 0, first: true }; }
+    else if (W.coast) W.coast.t = t;
+    return;
+  }
+  if (W.coast) { // still the fade: tiny, or the same way and only ever shrinking (its first may jump up)
+    const dot = (dx * W.coast.ux + dy * W.coast.uy) / m;
+    const fade = m < 3 || (dot > 0.3 && (W.coast.first ? m <= W.coast.peak * 1.3 + 4 : m <= W.coast.prev * 1.5 + 4));
+    if (fade) { if (m >= 3) { W.coast.prev = m; W.coast.first = false; } W.coast.t = t; return; }
+    W.coast = null;
+  }
+  if (W.wg && W.wg.n >= 3 && m >= 3 && (dx * W.wg.ux + dy * W.wg.uy) / m < 0) endSwipe(); // turned back: a new swipe
+  if (!W.wg) { W.wg = { t0: t, lastT: t, dx: 0, dy: 0, n: 0, big: 0, ux: 0, uy: 0, peak: 0, peakT: t, fired: false }; W.win.length = 0; }
+  const w = W.wg;
+  w.dx += dx; w.dy += dy; w.n++; w.lastT = t; w.big = Math.max(w.big, m);
+  { const l = Math.hypot(w.dx, w.dy) || 1; w.ux = w.dx / l; w.uy = w.dy / l; }
+  W.win.push({ t, d: m });
+  while (W.win.length > 1 && t - W.win[0].t > 32) W.win.shift();
+  const rate = W.win.reduce((a, q) => a + q.d, 0) / Math.max(16, t - W.win[0].t + 16) * 1000;
+  if (rate > w.peak) { w.peak = rate; w.peakT = t; }
+  // past its fastest (the speed has fallen away), or on long enough to know: play it
+  if (!w.fired && w.n >= 2 && (m < w.big * 0.7 || t - w.t0 > 110)) fireSwipe(w);
+}
+function endSwipe() { const w = swState.wg; swState.wg = null; if (w && !w.fired) fireSwipe(w); }
+function fireSwipe(w) {
+  w.fired = true;
+  const ms = mySlot(), st = hist[hist.length - 1];
+  if (Math.hypot(w.dx, w.dy) < SWP.MIN || ms < 0 || !st) return;
+  const fx = w.dx * swDir, fy = w.dy * swDir;            // the fingers: +x right, +y down the pad
+  const deg = Math.atan2(fx, -fy) * 180 / Math.PI;        // 0 = up the pad, away from you
+  const down = Math.abs(deg) > 100;
+  const lean = down ? (deg > 0 ? 180 - deg : -180 - deg) : deg; // how far it leans off straight
+  const side = ms === 1 ? 1 : -1;                         // screen right is court y * -side (see keyAxes)
+  // the moment it was aimed at, and what was on screen then
+  const T = w.peakT - SWP.BIAS;
+  let rec = null;
+  for (let i = frames.length - 1; i >= 0; i--) if (frames[i].t <= T) { rec = frames[i]; break; }
+  if (!rec) rec = frames[0] || { t: T, vt: lastRenderTick, ideal: null };
+  const serving = st.ph === 'serve' && st.sv === ms && st.hold;
+  let g = 4, off = null;
+  if (serving) g = 1;
+  else if (rec.ideal != null) {
+    off = T - rec.ideal;
+    const a = Math.abs(off);
+    g = SWP.WIN.findIndex(x => a <= x); if (g < 0) g = 4;
+  }
+  swp.n++; swp.g = g; swp.sd = down; swp.sl = Math.round(clamp(lean / 55, -1, 1) * -side * 100) / 100;
+  swp.si = Math.round(clamp(Math.log(Math.max(w.peak, 1) / SWP.LO) / Math.log(SWP.HI / SWP.LO), 0, 1) * 100) / 100;
+  swp.vt = Math.round((rec.vt + (T - rec.t) * TPMS) * 10) / 10;
+  sendInput(true);
+  if (!serving) gradeFx(g, off, ms);
+  if (window.__ob) window.__ob.lastSwipe = { g, off, si: swp.si, sd: swp.sd, sl: swp.sl, vt: swp.vt, deg: Math.round(deg) };
+}
+// the grade, at once, over the player's head
+function gradeFx(g, off, ms) {
+  const w = lastWorld, me = w && w.players[ms];
+  if (!me) return;
+  const [txt, col, size] = g === 0 ? ['PERFECT', '#ffd34d', 46] : g === 1 ? ['GREAT', '#e4ff3c', 34] : g === 2 ? ['GOOD', '#7fd8ff', 28]
+    : g === 3 ? [off < 0 ? 'EARLY' : 'LATE', '#ff8f6b', 26] : [off == null ? 'SWING' : off < 0 ? 'TOO EARLY' : 'TOO LATE', '#8b93a4', 22];
+  floatText(me[0], me[1], (me[14] || 0) + 2.5, txt, col, size);
+  if (g === 0) flash('#ffd34d', 0.18);
+}
+// each frame on swipe controls: when the incoming shuttle is best met from where the player is now
+function planFrame(now, s, world, ms, live) {
+  let ideal = null, plan = null;
+  if (ctrl === 'swipe' && live && world && ms >= 0 && s && s.ph === 'rally' && s.lh >= 0 && s.lh !== ms && window.BM && window.BM.contactPlan) {
+    const b = world.ball, me = world.players[ms];
+    plan = window.BM.contactPlan({ x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5] }, { i: ms, x: me[0], y: me[1], z: me[14] || 0 });
+    if (plan) ideal = now + plan.k * 1000 / 60;
+  }
+  frames.push({ t: now, vt: lastRenderTick, ideal });
+  while (frames.length > 150) frames.shift();
+  return plan;
+}
+// the ring: closes on the point the shuttle is best met, landing on it at that moment
+function drawSwipeRing(now, plan, live) {
+  const cv = $('swCv'); if (!cv) return;
+  const r = $('view').getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1);
+  if (cv.width !== Math.round(r.width * dpr) || cv.height !== Math.round(r.height * dpr)) { cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); }
+  const x = cv.getContext('2d');
+  x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, r.width, r.height);
+  if (!plan || !live || ctrl !== 'swipe' || !R) return;
+  const dt = plan.k * 1000 / 60;
+  if (dt > 1000) return;
+  const pr = R.project(plan.x, plan.y, plan.z);
+  if (!pr.ok) return;
+  const rad = 13 + 95 * clamp(dt / 850, 0, 1), close = dt <= SWP.WIN[0];
+  x.lineWidth = 2; x.strokeStyle = 'rgba(255,255,255,.55)';
+  x.beginPath(); x.arc(pr.x, pr.y, 13, 0, Math.PI * 2); x.stroke();
+  x.lineWidth = close ? 5 : 3.5; x.strokeStyle = close ? '#ffd34d' : '#e4ff3c'; x.globalAlpha = clamp(1.3 - dt / 1000, 0.25, 1);
+  if (close) { x.shadowColor = '#ffd34d'; x.shadowBlur = 18; }
+  x.beginPath(); x.arc(pr.x, pr.y, rad, 0, Math.PI * 2); x.stroke();
+  x.globalAlpha = 1; x.shadowBlur = 0;
+}
+
 // read-only hooks for debugging and automated checks
-window.__ob = { state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, delay: () => clock.delay, tier: () => tier, project: (x, y, z) => R && R.project(x, y, z), stats: () => R && Object.assign(R.stats(), { cpuMs: +cpuMs.toFixed(2) }), r3d: () => R && R._dbg && R._dbg(), R: () => R, prof: () => R && R.prof(), events: 0, hits: 0, myHits: 0, input: () => ({ k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, lob: inp.lob, ax: inp.ax, ay: inp.ay, ws: ws ? ws.readyState : -1 }) };
+window.__ob = { swipe: () => ({ ctrl, swp: Object.assign({}, swp), frames: frames.length, ideal: frames.length ? frames[frames.length - 1].ideal : null }), state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, delay: () => clock.delay, tier: () => tier, project: (x, y, z) => R && R.project(x, y, z), stats: () => R && Object.assign(R.stats(), { cpuMs: +cpuMs.toFixed(2) }), r3d: () => R && R._dbg && R._dbg(), R: () => R, prof: () => R && R.prof(), events: 0, hits: 0, myHits: 0, input: () => ({ k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, lob: inp.lob, ax: inp.ax, ay: inp.ay, ws: ws ? ws.readyState : -1 }) };
 
 // ---------------------------------------------------------------- start
 export async function start(api) {

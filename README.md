@@ -36,8 +36,16 @@ room you get the practice bot.
   faster stride that burns stamina; **double-tap** it to **dive**: a last-ditch launch of about 2 m along
   your run (bent toward a shuttle coming down just off the line) that strikes whatever it reaches, soft,
   and leaves you on the floor for two thirds of a second. Sprints, dives, jumps and smashes cost stamina.
-- **Controls**: pick Keyboard, Mouse, Controller or Touch under Menu > Controls. The game never changes
-  scheme by itself (a nudge of the mouse or a controller on the desk does nothing until you pick it).
+- **Controls** (Menu > Controls): **Swipe** (the default) or **Keyboard**.
+- **Swipe** controls (prototype): **WASD** or arrows move; head roughly toward the shuttle and your player
+  locks onto the spot where it is best met. Every shot is a **two-finger swipe up the trackpad**, timed as a
+  ring closes on the shuttle: **PERFECT**, GREAT or GOOD (early or late is weak, way off misses). Gentle is
+  a drop or net shot, firm a drive or clear, fierce a smash or kill; lean the swipe left or right to angle
+  it; **swipe down** to lift. Against a smash: firm counters (perfect parries), gentle blocks. Shift sprints,
+  F jumps. Two-finger swipes were chosen because they are the one trackpad gesture Windows does not
+  ignore while a key is held (measured in the gesture lab, `/badminton/lab.html`). The timing is judged in
+  the browser against what was on screen, and the server plays the shot where the shuttle was at that
+  moment, so network lag does not eat a perfect swipe (`tools/swipe_test.js`).
 - **Esc** opens the menu, and against the practice bot the match pauses until you close it.
 - **Bot difficulty** (Menu > Settings): Easy, Normal, Hard or Pro. It is kept per player and applies
   to a practice match in play at once.

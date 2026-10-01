@@ -1,6 +1,8 @@
 'use strict';
 // Office Badminton — live browser check. Boots /badminton in headless Chrome/Edge, waits for the
-// room and a bot match, plays a few rallies (move, charge, release, dash, lift), captures
+// room and a bot match, plays a few rallies on keyboard controls (move, charge, release, dash,
+// lift), then switches to swipe controls and plays on with two-finger swipes timed against the
+// ring (one through Chrome's real input pipeline, the rest timed in the page), captures
 // screenshots and reports every console error/warning the page produced.
 //   node tools/badminton_check.js [url]
 const { spawn } = require('child_process');
@@ -76,6 +78,12 @@ class CDP {
   key(code, vk, down) {
     return this.send('Input.dispatchKeyEvent', { type: down ? 'keyDown' : 'keyUp', code, key: code.replace(/^Key/, '').toLowerCase(), windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, text: down && code === 'Space' ? ' ' : undefined });
   }
+  // a real mouse press and release (a trackpad's tap-to-click is exactly this: no time held)
+  async tap(x, y, button = 'left') {
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: 1 });
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: 1 });
+  }
   async shot(name) {
     const s = await this.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(OUT, name), Buffer.from(s.data, 'base64'));
@@ -108,7 +116,7 @@ class CDP {
     await cdp.send('Runtime.enable');
     await cdp.send('Page.enable');
     await cdp.send('Log.enable');
-    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `try{localStorage.setItem('obm_name','CheckBot');}catch(e){}` });
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `try{localStorage.setItem('obm_name','CheckBot');localStorage.setItem('obm_ctrl','keyboard');}catch(e){}` });
     // first the plain page: it must show the home menu (not the room's connecting overlay)
     const homeUrl = URL.replace(/\/r\/[A-Za-z0-9]{1,8}\/?.*$/, '');
     console.log('navigating to', homeUrl);
@@ -248,6 +256,94 @@ class CDP {
 
     // let the bot serve a few times so a rally happens
     for (let i = 0; i < 14; i++) { await sleep(900); await sample(); }
+
+    // swipe controls: picked in the menu. First a serve swiped through Chrome's real input pipeline
+    // (scroll events as a trackpad sends them); then a player in the page who swipes as the ring
+    // closes (its fastest moment on the ring, with a human's scatter), at a mix of strengths, now
+    // and then a downward lift. The swipes must be graded, reach the server, and become hits.
+    {
+      // (a fresh room, so the keyboard match's state does not carry over)
+      await cdp.ev(`(() => { localStorage.setItem('obm_ctrl', 'swipe'); return true; })()`);
+      const swUrl = URL.replace(/\/r\/[A-Za-z0-9]{1,8}/, '/r/SW' + String(Date.now() % 100000));
+      await cdp.send('Page.navigate', { url: swUrl });
+      for (let i = 0; i < 120; i++) { await sleep(500); const ok = await cdp.ev(`!!(window.__ob && window.__ob.state && window.__ob.state() && window.__ob.state().rp === 'match' && window.__ob.slot() >= 0)`).catch(() => false); if (ok) break; }
+      await cdp.ev(`(() => { document.getElementById('menuBtn').click(); document.querySelector('#ctrlSeg button[data-c="swipe"]').click(); document.querySelector('.menu-nav button[data-pane="resume"]').click(); return true; })()`);
+      await sleep(800);
+      console.log('swipe room:', swUrl, JSON.stringify(await cdp.ev(`window.__ob.swipe()`)));
+      const hits0 = await cdp.ev(`window.__ob.myHits`);
+      // a real swipe on our serve
+      let realOk = false;
+      for (let i = 0; i < 60 && !realOk; i++) {
+        const st = await cdp.ev(`(() => { const s = window.__ob.state(); return s ? { ph: s.ph, sv: s.sv, hold: s.hold, ms: window.__ob.slot() } : null; })()`);
+        if (st && st.ph === 'serve' && st.sv === st.ms && st.hold) {
+          const n0 = await cdp.ev(`window.__ob.swipe().swp.n`);
+          for (const d of [60, 180, 260, 180, 60, 0]) { await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 640, y: 380, deltaX: 0, deltaY: d }); await sleep(16); }
+          await sleep(400);
+          const sw = await cdp.ev(`window.__ob.swipe().swp`);
+          let served = false;
+          for (let k = 0; k < 12 && !served; k++) { await sleep(250); served = (await cdp.ev(`window.__ob.myHits`)) > hits0; }
+          realOk = sw.n > n0 && served;
+          console.log(`swipe (real input): recognised ${sw.n > n0} (intensity ${sw.si}, ${sw.sd ? 'down' : 'up'}) · served ${served}`);
+        } else await sleep(400);
+      }
+      if (!realOk) cdp.logs.push('assert: a real trackpad swipe did not serve');
+      // the swiping player, in the page
+      await cdp.ev(`(() => {
+        const T = window.__swt = { n: 0, grades: [0, 0, 0, 0, 0], kinds: {}, lastKey: '' };
+        const fire = (vals, down) => vals.forEach((v, i) => setTimeout(() => dispatchEvent(new WheelEvent('wheel', { deltaY: down ? -v : v, deltaMode: 0, cancelable: true })), i * 16));
+        T.keys = new Set();
+        const press = (code, down) => dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code, bubbles: true }));
+        T.timer = setInterval(() => {
+          const s = window.__ob.state(), sw = window.__ob.swipe(), ms = window.__ob.slot();
+          if (!s || ms < 0 || !s.p) return;
+          // the legs: hold the keys toward where the shuttle is best met (roughly: the magnet does the rest)
+          const me = s.p[ms], b = s.b, want = new Set();
+          const tg = window.BM.meetTarget({ tick: s.k, phase: s.ph, serveHold: !!s.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: s.lh } }, { i: ms, x: me[0], y: me[1] });
+          if (tg) {
+            const dx = tg.x - me[0], dy = tg.y - me[1], d = Math.hypot(dx, dy), side = ms === 1 ? 1 : -1;
+            const fwd = dx * -side, right = dy * -side;
+            if (d > 0.3) { if (fwd > 0.38 * d) want.add('KeyW'); if (fwd < -0.38 * d) want.add('KeyS'); if (right > 0.38 * d) want.add('KeyD'); if (right < -0.38 * d) want.add('KeyA'); }
+          }
+          T.d = T.d || { ticks: 0, tg: 0, keys: 0, ideal: 0, minLead: 1e9, dist: [] };
+          T.d.ticks++; if (tg) T.d.tg++; if (want.size) T.d.keys++; if (sw.ideal != null) { T.d.ideal++; T.d.minLead = Math.min(T.d.minLead, Math.abs(sw.ideal - performance.now())); }
+          for (const k of T.keys) if (!want.has(k)) { press(k, false); T.keys.delete(k); }
+          for (const k of want) if (!T.keys.has(k)) { press(k, true); T.keys.add(k); }
+          const key = s.lh + ':' + s.rc + ':' + s.ph;
+          if (key === T.lastKey) return;
+          const serving = s.ph === 'serve' && s.sv === ms && s.hold;
+          if (serving) { T.lastKey = key; setTimeout(() => fire([60, 200, 300, 200, 60, 0], false), 300); return; }
+          if (sw.ideal == null || s.lh === ms) return;
+          const lead = sw.ideal - performance.now();
+          if (lead > 160 || lead < -40) return; // (headless software rendering is slow: a late read still swipes, graded late)
+          T.lastKey = key; T.n++;
+          const r = Math.random(), down = Math.random() < 0.15;
+          const big = r < 0.3 ? 40 : r < 0.6 ? 160 : 520;      // gentle, firm, fierce
+          // the third event is the fastest: land it on the ring (plus the 40 ms people run late, and a scatter)
+          const at = lead + 40 + (Math.random() * 2 - 1) * 30 - 32;
+          setTimeout(() => fire([big * 0.3, big * 0.8, big, big * 0.55, big * 0.2, 0], down), Math.max(0, at));
+        }, 8);
+        return true; })()`);
+      const t0 = Date.now();
+      let shot = false, line = [];
+      while (Date.now() - t0 < 35000) {
+        await sleep(500);
+        const tl = await cdp.ev(`(() => { const s = window.__ob.state(); return s ? s.ph[0] + s.sc.join('') + '/' + window.__swt.n : '-'; })()`);
+        if (line[line.length - 1] !== tl) line.push(tl);
+        if (!shot && (await cdp.ev(`window.__swt.n`)) >= 3) { await cdp.shot('swipe.png'); shot = true; }
+        const ls = await cdp.ev(`window.__ob.lastSwipe || null`);
+        if (ls) await cdp.ev(`(() => { const T = window.__swt, ls = window.__ob.lastSwipe; if (ls && ls !== T.seen) { T.seen = ls; T.grades[ls.g]++; } return true; })()`);
+      }
+      const T = await cdp.ev(`(() => { clearInterval(window.__swt.timer); for (const k of window.__swt.keys) dispatchEvent(new KeyboardEvent('keyup', { code: k })); return { n: window.__swt.n, grades: window.__swt.grades, d: window.__swt.d }; })()`);
+      console.log('swipe player diagnostics:', JSON.stringify(T.d));
+      console.log('swipe timeline (phase, score / swipes):', line.join(' '));
+      await sample();
+      let hits = 0;
+      for (let k = 0; k < 10; k++) { hits = (await cdp.ev(`window.__ob.myHits`)) - hits0; if (hits >= 3) break; await sleep(300); }
+      console.log(`swipe: ${T.n} timed swipes · grades perfect ${T.grades[0]}, great ${T.grades[1]}, good ${T.grades[2]}, early/late ${T.grades[3]}, miss ${T.grades[4]} -> ${hits} own hits`);
+      if (!(T.n >= 3 && hits >= 3)) cdp.logs.push(`assert: timed swipes did not become hits (${T.n} swipes, ${hits} hits)`);
+      if (T.grades.reduce((a, b) => a + b, 0) < T.n) cdp.logs.push(`assert: not every swipe was graded (${JSON.stringify(T.grades)} of ${T.n})`);
+      if (T.grades[0] + T.grades[1] + T.grades[2] < Math.ceil(T.n * 0.5)) cdp.logs.push(`assert: well-timed swipes were not graded well (${JSON.stringify(T.grades)})`);
+    }
 
     const last = samples[samples.length - 1];
     const finite = samples.every(s => s.allFinite);

@@ -74,6 +74,8 @@
     <div id="vignette"></div>
     <div id="flash"></div>
     <div id="labels"></div>
+    <canvas id="swCv"></canvas>
+    <div id="aimMark" class="hidden"><i></i><span></span></div>
     <div id="bigText"></div>
     <div id="banner"><div class="bn-band"><div class="bn-text" id="bnText"></div><div class="bn-sub" id="bnSub"></div></div></div>
     <div id="screen"></div>
@@ -142,7 +144,7 @@
       <div class="pane" data-pane="controls">
         <h3>Controls</h3>
         <p class="muted small">Pick how you play. The game only changes scheme when you pick one here.</p>
-        <div class="seg" id="ctrlSeg"><button data-c="keyboard">Keyboard</button><button data-c="mouse">Mouse</button><button data-c="gamepad">Controller</button><button data-c="touch">Touch</button></div>
+        <div class="seg" id="ctrlSeg"><button data-c="swipe">Swipe</button><button data-c="keyboard">Keyboard</button></div>
         <div id="ctrlHelp" class="ctrl-help"></div>
       </div>
       <div class="pane" data-pane="table">
@@ -155,6 +157,8 @@
         <div class="set-row"><span>Sound</span><button id="muteBtn" class="btn">On</button></div>
         <div class="set-row"><label for="levelSel">Bot difficulty</label><select id="levelSel" class="sel"></select></div>
         <p id="levelDesc" class="muted small set-desc"></p>
+        <div class="set-row"><span>Swipe direction</span><button id="swDirBtn" class="btn">Natural</button></div>
+        <p class="muted small set-desc">If swiping up on the trackpad plays a lift instead of a shot, switch this.</p>
         <div class="set-row"><span>Placement assist</span><button id="assistBtn" class="btn">On</button></div>
         <p class="muted small set-desc">With no direction held, your player glides the last metre or two to where the shuttle is best met. Any movement input takes over.</p>
         <div class="set-row"><label for="qualitySel">Graphics</label><select id="qualitySel" class="sel"></select></div>
