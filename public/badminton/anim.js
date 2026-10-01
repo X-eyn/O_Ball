@@ -55,7 +55,7 @@ export const STROKES = {
       clavR: [-0.25, 0, -0.3], armR: [-0.65, 0.45, -2.5], foreR: [-0.12, 0, 0], handR: [-0.2, 0, -0.1],
       clavL: [0, 0, 0.1], armL: [-0.6, 0, 0.3], foreL: [-1.7, 0, 0], handL: [0, 0, 0] }),
     follow: P({ hips: [0.12, 0.45, 0], spine: [0.25, 0.2, 0], chest: [0.3, 0.35, -0.05], neck: [0.05, -0.3, 0], head: [0, -0.1, 0],
-      clavR: [0.05, 0, 0.05], armR: [-0.8, 0.6, -0.2], foreR: [-0.5, 0, 0], handR: [-0.6, 0, -0.3],
+      clavR: [0.05, 0, 0.05], armR: [-0.75, 0.5, 0.15], foreR: [-0.5, 0, 0], handR: [-0.6, 0, -0.3],
       clavL: [0, 0, 0.05], armL: [0.35, 0, 0.35], foreL: [-1.3, 0, 0], handL: [0, 0, 0] }),
   },
   // the smash: the same stroke, arched harder, uncoiled harder, and folded right through
@@ -73,9 +73,9 @@ export const STROKES = {
   },
   // forehand drive: shoulder height on the racket side, racket laid back, a flat whip through
   fh: {
-    fwd: 0.085, fol: 0.14,
-    load: P({ hips: [0, -0.3, 0], spine: [0.05, -0.12, 0], chest: [0.02, -0.22, 0], clavR: [-0.1, 0, -0.15], armR: [0.35, -0.9, -1.3], foreR: [-1.55, 0, 0], handR: [0.6, 0, 0.25], armL: [-0.9, 0, 0.7], foreL: [-0.9, 0, 0] }),
-    contact: P({ hips: [0, 0.1, 0], spine: [0.06, 0.05, 0], chest: [0.05, 0.12, 0], clavR: [-0.1, 0, -0.15], armR: [-0.85, 0.05, -1.3], foreR: [-0.2, 0, 0], handR: [-0.1, 0, 0], armL: [-0.4, 0, 0.5], foreL: [-1.2, 0, 0] }),
+    fwd: 0.1, fol: 0.18,
+    load: P({ hips: [0, -0.3, 0], spine: [0.05, -0.12, 0], chest: [0.02, -0.22, 0], clavR: [-0.1, 0, -0.17], armR: [0.45, -0.85, -1.3], foreR: [-1.6, 0, 0], handR: [0.7, 0, 0.28], armL: [-1.0, 0, 0.75], foreL: [-0.8, 0, 0] }),
+    contact: P({ hips: [0.02, 0.1, 0], spine: [0.06, 0.06, 0], chest: [0.05, 0.14, 0], clavR: [-0.1, 0, -0.15], armR: [-0.85, 0.05, -1.3], foreR: [-0.2, 0, 0], handR: [-0.1, 0, 0], armL: [-0.4, 0, 0.5], foreL: [-1.2, 0, 0] }),
     follow: P({ hips: [0, 0.3, 0], spine: [0.08, 0.14, 0], chest: [0.08, 0.24, 0], clavR: [0, 0, -0.1], armR: [-1.7, 0.3, -1.2], foreR: [-0.6, 0, 0], handR: [-0.5, 0, 0], armL: [-0.1, 0, 0.35], foreL: [-1.1, 0, 0] }),
   },
   // backhand: the racket taken across the chest to the far shoulder, the back half-turned to the
@@ -141,7 +141,8 @@ const ELBOW = { over: [0.9, 0.25, 0.3], smash: [0.9, 0.25, 0.3], kill: [0.9, 0.1
 // the smash is the overhead with extra arch and fold
 STROKES.smash.load = add(STROKES.over.load, STROKES.smash.extend.load);
 STROKES.smash.contact = STROKES.over.contact;
-// (the smash keeps the original, tighter follow-through: the fastest stroke, its contact is tuned to it)
+// (the smash keeps the tighter follow-through: the fastest stroke, its racket path through the
+// contact is the most sensitive; the clear and the drop get the long turn-through)
 const SMASH_FOLLOW = { hips: [0.1, 0.3, 0], spine: [0.22, 0.12, 0], chest: [0.3, 0.22, -0.05], neck: [0.05, -0.2, 0], head: [0.05, 0, 0],
   clavR: [0, 0, -0.05], armR: [-1.0, 0.9, -0.55], foreR: [-0.6, 0, 0], handR: [-0.7, 0, -0.2], clavL: [0, 0, 0.05], armL: [0.25, 0, 0.3], foreL: [-1.2, 0, 0], handL: [0, 0, 0] };
 STROKES.smash.follow = add(SMASH_FOLLOW, STROKES.smash.extend.follow);
@@ -182,6 +183,44 @@ function sampleStroke(st, bone, u, c, out) {
   for (let i = 0; i < 3; i++) out[i] = f[i];
   return true;
 }
+
+// The racket arm through a retargeted stroke, in rotations rather than angles: each of armR, foreR
+// and handR turns from its LOAD rotation to the contact rotation solved onto this shuttle along the
+// shortest way round (slerp), on the same clock as sampleStroke (cubic into the contact, so every
+// joint is at its fastest there, whatever the wind-up), then on to the follow-through. q: the
+// rotation in the model's anatomical frame (human.js: what a pose Euler stands for). Writes the
+// pose Euler for it into out.
+const _sqA = new THREE.Quaternion(), _sqE = new THREE.Euler();
+const ARM_W = 60; // rad/s: the fastest a racket-arm joint turns on the way into or out of a contact
+function sampleArmQ(st, Q, bone, u, out) {
+  const L = Q.load[bone], K = Q.contact[bone], F = Q.follow[bone];
+  if (!L || !K || !F) return false;
+  // (a big turn - a large correction onto a shuttle far from the authored contact - starts earlier
+  // rather than spinning faster: the joint's swing lasts long enough never to pass ARM_W rad/s,
+  // and still arrives at the contact on time; the same for the follow-through)
+  const fwd = Math.max(st.fwd, 3 * L.angleTo(K) / ARM_W), pf = st.fol > 0.2 ? 5 : 3, fol = Math.max(st.fol, pf * K.angleTo(F) / ARM_W);
+  if (st.early && st.early[bone] && u <= 0) u = Math.min(0, u + st.early[bone] * clamp((u + fwd) / fwd * 3, 0, 1));
+  if (u <= -fwd) _sqA.copy(L);
+  else if (u <= 0) { const x = 1 + u / fwd; _sqA.copy(L).slerp(K, x * x * x); }
+  else if (u <= fol) { const x = 1 - u / fol; _sqA.copy(K).slerp(F, 1 - Math.pow(x, pf)); }
+  else _sqA.copy(F);
+  // A rotation has two Euler triples (for the arm's XZY order: x+pi, y+pi, pi-z), and the layers
+  // blend Euler values, so the one written must be the one nearest the authored angles for this
+  // moment (else a blend between two descriptions of one rotation jolts the arm): ref is the
+  // authored stroke sampled at u
+  const ord = orderOf(bone);
+  _sqE.setFromQuaternion(_sqA, ord);
+  const a = [_sqE.x, _sqE.y, _sqE.z], alt = ord === 'XZY' ? [a[0] + Math.PI, a[1] + Math.PI, Math.PI - a[2]] : ord === 'YXZ' ? [a[0] + Math.PI, Math.PI - a[1], a[2] + Math.PI] : [a[0] + Math.PI, Math.PI - a[1], a[2] + Math.PI];
+  const ref = _sqR; if (!sampleStroke(st, bone, u, 1, ref)) { ref[0] = a[0]; ref[1] = a[1]; ref[2] = a[2]; }
+  const wrapTo = (v, r) => r + Math.atan2(Math.sin(v - r), Math.cos(v - r));
+  const A1 = a.map((v, i) => wrapTo(v, ref[i])), A2 = alt.map((v, i) => wrapTo(v, ref[i]));
+  const d = A => Math.abs(A[0] - ref[0]) + Math.abs(A[1] - ref[1]) + Math.abs(A[2] - ref[2]);
+  const B = d(A1) <= d(A2) ? A1 : A2;
+  out[0] = B[0]; out[1] = B[1]; out[2] = B[2];
+  return true;
+}
+const _sqR = [0, 0, 0];
+const qOfKey = (k, bone) => new THREE.Quaternion().setFromEuler(new THREE.Euler(k[0], k[1], k[2], orderOf(bone)));
 
 // ---------------------------------------------------------------- stance, legs, reactions
 const READY = { thigh: -0.3, shin: 0.62, foot: -0.26 };
@@ -491,7 +530,7 @@ function faceTo(h, racket, effector, want, w, side, prev) {
 // how the face is presented, per stroke: the shot's rise (+) or fall (-) against the level aim
 // the follow-through of the strokes played in front: where the racket head goes from the contact
 // (metres: along the aim, to the body's right (+) or left (-), up)
-const FOLLOW = { fh: [0.75, -0.25, 0.12], bh: [0.55, 0.35, 0.12], under: [0.45, 0.2, 0.6], bhunder: [0.58, 0.0, 0.78], touch: [0.12, 0, 0.1], bhtouch: [0.12, 0, 0.1] };
+const FOLLOW = { kill: [0.4, 0, -0.35], fh: [0.75, -0.25, 0.12], bh: [0.55, 0.35, 0.12], under: [0.45, 0.2, 0.6], bhunder: [0.58, 0.0, 0.78], touch: [0.12, 0, 0.1], bhtouch: [0.12, 0, 0.1] };
 const FACE_UP = { smash: -0.3, kill: -0.5, over: 0.45, fh: 0.08, bh: 0.08, under: 0.9, bhunder: 0.9, touch: 0.45, bhtouch: 0.45, block: 0.3, bhblock: 0.3 };
 
 // ---------------------------------------------------------------- the athlete
@@ -564,6 +603,9 @@ export class Athlete {
     solveArm(h, this.sweet, tgt, 1, _rtP.set(-cs * e[0] + sn * e[2], e[1], sn * e[0] + cs * e[2]), 0.6);
     const rtOff = tgt.clone().sub(this.sweet(_ikA)), rtErr = rtOff.length(); // what the probe could not reach
     this._rtPQ = RT_CHAIN.map(n => h.ref[boneIndex(n)].map(r => r.bone.quaternion.clone())); this._rtPS = this.sweet(new THREE.Vector3()); this._rtPR = h.root.getWorldPosition(new THREE.Vector3());
+    // the solved contact as rotations (the arm's swing is built from these: see sampleArmQ)
+    const qSol = {};
+    for (const n of ['armR', 'foreR', 'handR']) { const r = h.ref[boneIndex(n)][0]; qSol[n] = new THREE.Quaternion().copy(r.C).multiply(r.bone.quaternion).multiply(r.Li).multiply(r.Ci).normalize(); }
     const out = {};
     for (const n of ['armR', 'foreR', 'handR']) {
       const r = h.ref[boneIndex(n)][0], k = K[n] || [0, 0, 0], ord = orderOf(n);
@@ -592,7 +634,20 @@ export class Athlete {
     // (the arm's shift in full, the elbow and wrist's in part, and the elbow kept inside its range)
     for (const n of ['armR', 'foreR', 'handR']) { const f0 = base.follow[n] || K[n] || [0, 0, 0], k = K[n] || [0, 0, 0], g = n === 'armR' ? 0.7 : 0.5; follow[n] = f0.map((v, i) => v + (out[n][i] - k[i]) * g); }
     follow.foreR = [clamp(follow.foreR[0], -2.1, -0.1), follow.foreR[1], follow.foreR[2]];
-    this.rt = { name: st.name, err: rtErr, off: rtOff, at: st.contact.clone(), key: this._rtKey(st), S: { fwd: base.fwd, fol: base.fol, load, contact, follow, low: base.low, early: base.early } };
+    // the racket arm in rotations: LOAD as authored, CONTACT as solved, FOLLOW carrying the same
+    // correction on (the arm's mostly, the elbow and wrist's in part); a compact stroke moves as a
+    // whole to the shuttle, a block is set there, a very low backhand lift takes its LOAD down with it
+    const Q = { load: {}, contact: {}, follow: {} };
+    for (const n of ['armR', 'foreR', 'handR']) {
+      const kq = qOfKey(K[n] || [0, 0, 0], n), lq = qOfKey(base.load[n] || K[n] || [0, 0, 0], n), fq = qOfKey(base.follow[n] || K[n] || [0, 0, 0], n);
+      const delta = qSol[n].clone().multiply(kq.clone().invert()); // the correction, in the anatomical frame
+      const part = g => new THREE.Quaternion().slerp(delta, g);   // (identity -> delta)
+      Q.contact[n] = qSol[n];
+      Q.load[n] = /^(block|bhblock)$/.test(st.name) ? qSol[n].clone() : /^(touch|bhtouch)$/.test(st.name) ? delta.clone().multiply(lq)
+        : st.name === 'bhunder' && st.rz != null && st.rz < 0.55 ? part(0.3).multiply(lq) : lq;
+      Q.follow[n] = /^(block|bhblock)$/.test(st.name) ? qSol[n].clone() : part(n === 'armR' ? 0.7 : 0.5).multiply(fq);
+    }
+    this.rt = { name: st.name, err: rtErr, off: rtOff, at: st.contact.clone(), key: this._rtKey(st), Q, S: { fwd: base.fwd, fol: base.fol, load, contact, follow, low: base.low, early: base.early } };
   }
   setIdentity(name, slot) {
     if (name === this.identity) return;
@@ -749,8 +804,10 @@ export class Athlete {
       for (const bone of UPPER) {
         // (the racket arm's own small leads fold to zero at the contact itself, so the arm is at
         // the retargeted contact key exactly when the shuttle is there)
-        const lead = (LEAD[bone] || 0) * (/^(armR|foreR|handR)$/.test(bone) ? 1 - bump(st.u, 0.05) : 1);
-        if (sampleStroke(S, bone, st.u + lead, 1, this.tmp)) T.set(bone, this.tmp[0], this.tmp[1], this.tmp[2]);
+        const armB = /^(armR|foreR|handR)$/.test(bone);
+        const lead = (LEAD[bone] || 0) * (armB ? 1 - bump(st.u, 0.05) : 1);
+        // (the racket arm swings in rotations onto the solved contact: sampleArmQ)
+        if (armB && rt && rt.Q ? sampleArmQ(S, rt.Q, bone, st.u + lead, this.tmp) : sampleStroke(S, bone, st.u + lead, 1, this.tmp)) T.set(bone, this.tmp[0], this.tmp[1], this.tmp[2]);
       }
       // in and out of the stroke: it owns the upper body from the wind-up to the end of the
       // follow-through, then hands back to the stance
