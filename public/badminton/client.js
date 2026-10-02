@@ -859,10 +859,10 @@ function showHome() {
 // frame you press them. Each new snapshot is compared with where this prediction stood when the
 // server was applying the same inputs (one round trip earlier); the difference is folded back in
 // gently, or snapped when the server moved the player itself (a serve reset, a dash or a dive).
-const own = { on: false, slot: -1, x: 0, y: 0, vx: 0, vy: 0, fx: 1, fy: 0, acc: 0, k: -1, hist: [] };
+const own = { on: false, slot: -1, x: 0, y: 0, vx: 0, vy: 0, fx: 1, fy: 0, acc: 0, k: -1, hist: [], ox: 0, oy: 0, errs: [] };
 let lastInput = null;
 function selfReset(sp, ms) {
-  Object.assign(own, { on: true, slot: ms, i: ms, x: sp[0], y: sp[1], vx: sp[2], vy: sp[3], fx: sp[4], fy: sp[5], acc: 0 });
+  Object.assign(own, { on: true, slot: ms, i: ms, x: sp[0], y: sp[1], vx: sp[2], vy: sp[3], fx: sp[4], fy: sp[5], acc: 0, ox: 0, oy: 0 });
   own.hist.length = 0;
 }
 function selfStep(K, fresh, sp) {
@@ -872,6 +872,7 @@ function selfStep(K, fresh, sp) {
   let m = Math.hypot(ax, ay);
   if (m > 1) { ax /= m; ay /= m; m = 1; }
   if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; }
+  own.arc = ctrl === 'keyboard'; // (the meet spot is planned at the arcade running speed: as the server has it)
   if (!fresh.hs) {
     const tired = sp[9] < K.TIRED ? 0.86 : 1;
     // (sprinting as the server has it, or about to: held with the breath for it)
@@ -884,7 +885,7 @@ function selfStep(K, fresh, sp) {
       if (a) { ax = a.x; ay = a.y; m = Math.hypot(ax, ay); if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; } }
     } else if (m > 0.05 && m0.mg && window.BM.magnetDir) {
       // the same magnetic steering the server applies
-      const g = window.BM.magnetDir(simOf(), own, ax, ay, m);
+      const g = window.BM.magnetDir(simOf(), own, ax, ay, m, top);
       if (g) { ax = g.x; ay = g.y; m = Math.hypot(ax, ay); if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; } }
     }
     window.BM.run(own, ax, ay, m, top); // the sim's own running step: prediction and server agree
@@ -913,23 +914,27 @@ function predictSelf(p, dtMs, ms, now) {
     for (let i = own.hist.length - 1; i >= 0; i--) if (own.hist[i].t <= back) { h = own.hist[i]; break; }
     if (h) {
       const ex = sp[0] - h.x, ey = sp[1] - h.y, e = Math.hypot(ex, ey);
+      own.errs.push(+e.toFixed(3)); if (own.errs.length > 600) own.errs.shift(); // (debug: window.__ob.own())
       if (e > 1.0) selfReset(sp, ms);
       else if (e > 0.02) {
         const g = 0.25;
         own.x += ex * g; own.y += ey * g;
         for (const q of own.hist) { q.x += ex * g; q.y += ey * g; }
+        // (the player is drawn where they were and slides over onto the correction in a few frames:
+        // a correction never shows as a jump, or as a kink in the run)
+        own.ox -= ex * g; own.oy -= ey * g;
       }
     }
   }
   own.acc = Math.min(own.acc + dtMs, 100);
-  while (own.acc >= 1000 / 60) { own.acc -= 1000 / 60; selfStep(K, fresh, sp); }
+  while (own.acc >= 1000 / 60) { own.acc -= 1000 / 60; selfStep(K, fresh, sp); own.ox *= 0.84; own.oy *= 0.84; }
   own.hist.push({ t: now, x: own.x, y: own.y });
   while (own.hist.length && now - own.hist[0].t > 1000) own.hist.shift();
   const out = p.slice();
   // drawn carried forward by the time since the last 60 Hz step, so a 120/144 Hz screen gets a new
   // position every frame rather than the same one twice
   const ahead = own.acc / 1000;
-  out[0] = own.x + own.vx * ahead; out[1] = own.y + own.vy * ahead; out[2] = own.vx; out[3] = own.vy; out[4] = own.fx; out[5] = own.fy;
+  out[0] = own.x + own.ox + own.vx * ahead; out[1] = own.y + own.oy + own.vy * ahead; out[2] = own.vx; out[3] = own.vy; out[4] = own.fx; out[5] = own.fy;
   return out;
 }
 
@@ -1285,7 +1290,9 @@ function planFrame(now, s, world, ms, live) {
       const sim = { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, hitstop: fresh.hs || 0, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } };
       // (one key per shot: the hitter, the rally count and the point)
       const key = fresh.lh + ':' + fresh.rc + ':' + (fresh.sc[0] + fresh.sc[1]);
-      ringLock.c = window.BM.ringPlan(sim, { i: ms, x: me[0], y: me[1], z: me[14] || 0 }, key, ringLock.c);
+      // (planned on the predicted player itself, so the ring is met from the very spot the magnet steers to)
+      const pl = own.on && own.slot === ms ? Object.assign(own, { z: me[14] || 0 }) : { i: ms, x: me[0], y: me[1], z: me[14] || 0, arc: ctrl === 'keyboard' };
+      ringLock.c = window.BM.ringPlan(sim, pl, key, ringLock.c);
     }
     const c = ringLock.c;
     if (c) {
@@ -1354,7 +1361,7 @@ function drawKeyRing(x, plan, dt) {
 }
 
 // read-only hooks for debugging and automated checks
-window.__ob = { swipe: () => ({ ctrl, swp: Object.assign({}, swp), frames: frames.length, ideal: frames.length ? frames[frames.length - 1].ideal : null }), state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, delay: () => clock.delay, tier: () => tier, project: (x, y, z) => R && R.project(x, y, z), stats: () => R && Object.assign(R.stats(), { cpuMs: +cpuMs.toFixed(2) }), r3d: () => R && R._dbg && R._dbg(), R: () => R, prof: () => R && R.prof(), events: 0, hits: 0, myHits: 0, input: () => ({ k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, lob: inp.lob, ax: inp.ax, ay: inp.ay, ws: ws ? ws.readyState : -1 }) };
+window.__ob = { own: () => own, swipe: () => ({ ctrl, swp: Object.assign({}, swp), frames: frames.length, ideal: frames.length ? frames[frames.length - 1].ideal : null }), state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, delay: () => clock.delay, tier: () => tier, project: (x, y, z) => R && R.project(x, y, z), stats: () => R && Object.assign(R.stats(), { cpuMs: +cpuMs.toFixed(2) }), r3d: () => R && R._dbg && R._dbg(), R: () => R, prof: () => R && R.prof(), events: 0, hits: 0, myHits: 0, input: () => ({ k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, lob: inp.lob, ax: inp.ax, ay: inp.ay, ws: ws ? ws.readyState : -1 }) };
 
 // ---------------------------------------------------------------- start
 export async function start(api) {

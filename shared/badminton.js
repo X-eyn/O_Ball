@@ -55,7 +55,13 @@
     // arcade controls (keyboard: move + A hit + B soft): one running speed, no sprint; a whiffed
     // press locks the racket for ARC_LOCK ticks; a press with the shuttle out of reach but coming
     // down within ARC_DIVE_R metres in ARC_DIVE_T ticks dives for it
-    ARC_TOP: 9.0, ARC_LOCK: 18, ARC_DIVE_R: 4.0, ARC_DIVE_T: 40,
+    ARC_TOP: 9.0, ARC_LOCK: 18, ARC_DIVE_R: 4.0, ARC_DIVE_T: 22, ARC_DIVE_REC: 22,
+    // the arcade forgiveness: a press reaches ARC_STRETCH further (the body stretches the rest of
+    // the way, ARC_NUDGE ticks), and an early press is held ARC_BUF ticks for the shuttle to come
+    ARC_STRETCH: 0.7, ARC_NUDGE: 7, ARC_BUF: 14,
+    // ...and a late one is played at the last moment the shuttle was there to hit, up to ARC_LATE
+    // ticks before (the landing is ruled on ARC_GRACE ticks late for it)
+    ARC_LATE: 8, ARC_GRACE: 12,
     POINTS: 7, PRE_T: 210, POINT_T: 110, OVER_T: 60 * 8, PAUSE_T: 60 * 12,
   };
   // Shot table. min/max: metres past the net the shot is aimed to land (court-scaled); ang: the
@@ -98,7 +104,7 @@
       sprint: false, diveT: 0, diveCd: 0, floorT: 0, stun: 0, recover: 0,
       squat: 0, landT: 0, airSmash: false,
       stamina: C.ST_MAX, hitCd: 0, lastKp: 0, lastDv: 0, lastKn: 0, lastJp: 0, lastSw: 0, init: false, ai: false, ez: false, aim: null, swPerfect: null,
-      arc: false, lock: 0, dep: null,
+      arc: false, lock: 0, dep: null, armed: null, nudge: null, _mt: null, _mg: null,
       st: { hits: 0, smashes: 0, perfects: 0, winners: 0, aces: 0, dives: 0, maxRally: 0, errors: 0, jumps: 0, counters: 0, kills: 0 },
     };
   }
@@ -232,7 +238,9 @@
   function quality(s, p, lateMul) {
     const b = s.ball;
     const d = Math.hypot(b.x - p.x, b.y - p.y) || 1;
-    const qr = clamp(1 - (d - C.SWEET) / (C.REACH - C.SWEET), 0, 1);
+    // (an arcade press: the sweet zone and the reach both stretched, a step's worth more forgiving)
+    const far = p.arc && p.swQ != null ? C.ARC_STRETCH : 0, sw = C.SWEET + far * 0.7;
+    const qr = clamp(1 - (d - sw) / (C.REACH + far - sw), 0, 1);
     // the ideal strike zone is overhead (measured from the player's own feet, so a jump lifts it)
     const rz = b.z - p.z;
     const qh = rz >= C.MID_Z ? 1 - clamp(Math.abs(rz - C.SWEET_Z) / 1.6, 0, 1) * 0.4 : 0.8;
@@ -256,8 +264,13 @@
       else if (s.lastHitter !== s.server) return false; // nobody may hit before the serve
     } else if (p.i === s.lastHitter) return false;       // no double hits
     const d = Math.hypot(b.x - p.x, b.y - p.y);
-    const reach = p.diveT > 0 ? C.REACH * C.DIVE_REACH : airborne(p) ? C.REACH * 0.9 : C.REACH;
+    const stretch = p.arc && p.swQ != null && p.diveT === 0 ? C.ARC_STRETCH : 0;
+    const reach = (p.diveT > 0 ? C.REACH * C.DIVE_REACH : airborne(p) ? C.REACH * 0.9 : C.REACH) + stretch;
     if (d > reach || b.z > p.z + C.MAX_Z || b.z < Math.max(0.02, p.z - 0.15)) return false;
+    if (stretch && d > C.REACH * 0.9 && !airborne(p)) { // reached for: the body goes the rest of the way
+      const go = (d - C.REACH * 0.9) / C.ARC_NUDGE;
+      p.nudge = { x: (b.x - p.x) / d * go, y: (b.y - p.y) / d * go, t: C.ARC_NUDGE };
+    }
     let q = quality(s, p, lateMul);
     // a swipe: the timing grade sets the contact, how well placed the striker is scales it
     if (p.swQ != null) q = clamp(p.swQ * (0.55 + 0.45 * clamp(q / 0.8, 0, 1)), 0.05, 1);
@@ -438,18 +451,51 @@
   // point it will be met (overhead while it is high, else where it comes down), with the shuttle
   // on the racket side. Returns a steering vector (magnitude <= ASSIST_V) or null when there is
   // nothing to do: not coming to you, too far away to be "placement", or already there.
-  // where to stand for the incoming shuttle (see assistDir), or null when nothing is coming to p
+  // Where to meet the incoming shuttle, and where to stand for it (beside and a little behind, the
+  // shuttle on the racket side). The meet is a point the player can actually get to from where they
+  // were when the flight was first read: overhead if they can be under it in time (away from the
+  // net), else at waist height or below once it has dropped there, with a little time to spare,
+  // else as late as it can be taken.
+  // Fixed once per flight (kept on p._mt, tick-stamped, so the server and a client predicting the
+  // same player agree on it), read again only when the flight changes (off the net cord).
+  // Returns { x, y: the standing spot, t: seconds to the meet, z, bx, by: the meet } or null.
+  function meetPlan(s, p, d) {
+    const b = s.ball, dt = 1 / 60, top = (p.arc ? C.ARC_TOP : C.TOP) * 0.9;
+    let x = b.x, y = b.y, z = b.z, vx = b.vx, vy = b.vy, vz = b.vz;
+    let high = null, easy = null, tight = null, late = null;
+    for (let k = 1; k <= 300; k++) {
+      const sp = Math.hypot(vx, vy, vz), dec = 1 / (1 + C.DRAG * sp * dt);
+      vx *= dec; vy *= dec; vz = vz * dec - C.G * dt;
+      const nx = x + vx * dt, ny = y + vy * dt, nz = z + vz * dt;
+      if ((x < 0) !== (nx < 0)) { const u = (0 - x) / (nx - x), yc = y + (ny - y) * u, zc = z + (nz - z) * u; if (zc < netAt(yc)) break; }
+      x = nx; y = ny; z = nz;
+      if (z <= 0) break;
+      if (Math.sign(x || 1) !== d || Math.abs(x) < 0.3 || z < 0.42 || z > 2.35) continue;
+      const sx = x + d * 0.35, sy = y + d * 0.4; // (facing the net, the racket side is toward -d·y)
+      const dist = Math.hypot(sx - p.x, sy - p.y), need = dist < 0.3 ? 0 : 0.12 + dist / top, t = k / 60;
+      const c = { k, x: sx, y: sy, z, bx: x, by: y };
+      late = c;
+      if (need > t) continue;
+      if (!high && z >= 1.55 && vz < 0 && Math.abs(x) > 1.6 && need <= t * 0.85) high = c;
+      if (!easy && z <= 1.3 && need <= t * 0.8 - 0.03) easy = c;
+      if (!tight && z <= 1.3) tight = c;
+    }
+    return high || easy || tight || late;
+  }
   function meetTarget(s, p) {
     const b = s.ball;
-    if ((s.phase !== 'rally' && s.phase !== 'serve') || s.serveHold || b.last < 0 || b.last === p.i) return null;
+    if ((s.phase !== 'rally' && s.phase !== 'serve') || s.serveHold || b.last < 0 || b.last === p.i) { p._mt = null; return null; }
     const d = sideOf(p);
     if (!s._pred || s._predT !== s.tick) { s._pred = predict(s); s._predT = s.tick; }
     const pr = s._pred;
     if (!pr.land || Math.sign(pr.land.x || 1) !== d) return null;
-    const meet = pr.high && Math.sign(pr.high.x || 1) === d && pr.high.t < pr.land.t ? pr.high : pr.land;
-    // facing the net, the racket side (right hand) is (-f.y, f.x)
-    const fx = -d, fy = 0, rx = -fy, ry = fx;
-    return { x: meet.x - rx * 0.4 - fx * 0.35, y: meet.y - ry * 0.4 - fy * 0.35, t: meet.t };
+    let m = p._mt;
+    if (!m || m.last !== b.last || Math.hypot(m.lx - pr.land.x, m.ly - pr.land.y) > 0.4 || s.tick < m.at) {
+      const c = meetPlan(s, p, d);
+      if (!c) return null;
+      m = p._mt = { last: b.last, lx: pr.land.x, ly: pr.land.y, at: s.tick, k: s.tick + c.k, x: c.x, y: c.y, z: c.z, bx: c.bx, by: c.by };
+    }
+    return { x: m.x, y: m.y, t: (m.k - s.tick) / 60, z: m.z, bx: m.bx, by: m.by };
   }
   function assistDir(s, p) {
     const m = meetTarget(s, p);
@@ -457,22 +503,40 @@
     const tx = m.x, ty = m.y;
     const ex = tx - p.x, ey = ty - p.y, dist = Math.hypot(ex, ey);
     if (dist < 0.1 || dist > C.ASSIST_R) return null;
-    const k = Math.min(C.ASSIST_V, dist / 1.2) / dist;
+    const k = Math.min(C.ASSIST_V, Math.sqrt(2 * MAG.A * dist) / C.ARC_TOP, dist / 0.35) / dist;
     return { x: ex * k, y: ey * k };
   }
 
-  // Magnetic steering (swipe controls): a direction held roughly toward where the incoming shuttle
-  // is best met (within MAGNET_DEG) runs the player onto that spot, easing in as they arrive; held
-  // anywhere else it is just the direction held. (ax, ay, m) is the stick; returns the new one or null.
-  const MAGNET_COS = Math.cos(60 * Math.PI / 180);
-  function magnetDir(s, p, ax, ay, m) {
+  // Magnetic steering (keyboard and swipe). A direction held roughly toward the meet spot is bent
+  // onto it, the more the nearer the spot and the closer the direction held (8 keys never point
+  // exactly at it); and the run eases off as it arrives, so the player settles on the spot instead
+  // of running through it. Held well away from the spot it is just the direction held. Everything
+  // fades in smoothly (no snap of heading or speed to give it away). (ax, ay, m): the stick; top:
+  // the running speed. Returns the new stick, or null to leave it.
+  const MAG = { COS0: Math.cos(78 * Math.PI / 180), COS1: Math.cos(30 * Math.PI / 180), R0: 3.5, R1: 7, A: 24 };
+  const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  function magnetDir(s, p, ax, ay, m, top) {
     const t = meetTarget(s, p);
-    if (!t || m <= 0.05) return null;
-    const ex = t.x - p.x, ey = t.y - p.y, dist = Math.hypot(ex, ey);
-    if (dist < 0.12) return { x: 0, y: 0 }; // there: hold the spot
-    if ((ax * ex + ay * ey) / (m * dist) < MAGNET_COS) return null;
-    const mag = Math.min(m, Math.max(0.2, dist / 0.9));
-    return { x: ex / dist * mag, y: ey / dist * mag };
+    if (!t || m <= 0.05 || t.t < -0.15) return null;
+    const ex = t.x - p.x, ey = t.y - p.y, dist = Math.hypot(ex, ey), ux = ax / m, uy = ay / m;
+    if (dist < 0.04) return t.t > -0.05 ? { x: 0, y: 0 } : null; // on it: held there for the shot
+    const cos = (ux * ex + uy * ey) / dist;
+    // (once it has the player, it keeps them while the same direction is held: closing in at an
+    // angle the spot swings off to the side, and the run is still meant for it; a new direction,
+    // or one turned away from it, lets go)
+    let wc = smoothstep(MAG.COS0, MAG.COS1, cos);
+    const L = p._mg, id = p._mt ? p._mt.k : 0;
+    if (L && L.id === id && Math.abs(L.ax - ax) < 1e-3 && Math.abs(L.ay - ay) < 1e-3 && cos > -0.25) wc = Math.max(wc, L.w);
+    p._mg = { id, ax, ay, w: wc };
+    const w = wc * (1 - smoothstep(MAG.R0, MAG.R1, dist));
+    if (w <= 0.001) return null;
+    let hx = ux + (ex / dist - ux) * w, hy = uy + (ey / dist - uy) * w;
+    const hl = Math.hypot(hx, hy) || 1; hx /= hl; hy /= hl;
+    // arriving: the speed that stops on the spot (v² = 2·A·d), taken the more fully the more the
+    // run is aimed at it
+    const arrive = Math.min(1, Math.sqrt(2 * MAG.A * Math.max(0, dist - 0.02)) / (top || C.ARC_TOP));
+    const mag = m * (1 - w * (1 - arrive));
+    return { x: hx * mag, y: hy * mag };
   }
 
   // the dive: a launch low along (dx, dy), a unit vector
@@ -492,7 +556,10 @@
     const t = s._pred.land;
     if (!t || Math.sign(t.x || 1) !== sideOf(p) || t.t * 60 > C.ARC_DIVE_T) return false;
     const dx = t.x - p.x, dy = t.y - p.y, d = Math.hypot(dx, dy);
-    if (d < C.REACH * 0.8 || d > C.ARC_DIVE_R) return false;
+    if (d < C.REACH + C.ARC_STRETCH * 0.8 || d > C.ARC_DIVE_R) return false; // (nearer: a stretch does it)
+    // only a dive that gets there: the slide it covers before the shuttle is down
+    const n = Math.min(C.DIVE_T, Math.max(0, Math.round(t.t * 60) - 1));
+    if (d > C.REACH * C.DIVE_REACH + C.DIVE_V / 60 * (1 - Math.pow(0.9, n)) / 0.1) return false;
     startDive(s, p, dx / d, dy / d);
     return true;
   }
@@ -591,13 +658,14 @@
 
     // a two-finger swipe (swipe controls): one per change of the counter
     const sw = inp.sw | 0;
-    if (sw !== p.lastSw) { p.lastSw = sw; swipeShot(s, p, inp); }
+    if (sw !== p.lastSw) { p.lastSw = sw; p.armed = null; swipeShot(s, p, inp); }
+    else if (p.armed) armedShot(s, p);
 
     if (p.stun > 0) { p.stun--; ax = ay = 0; m = 0; }
     const tired = (p.stamina < C.TIRED ? 0.86 : 1) * (p.ai ? 0.78 + 0.2 * s.skill : p.ez ? EZ.LEGS : 1);
     if (p.diveT > 0) {
       p.diveT--; p.vx *= 0.9; p.vy *= 0.9;
-      if (p.diveT === 0) { p.floorT = C.DIVE_REC; p.vx *= 0.3; p.vy *= 0.3; }
+      if (p.diveT === 0) { p.floorT = p.arc ? C.ARC_DIVE_REC : C.DIVE_REC; p.vx *= 0.3; p.vy *= 0.3; }
     } else if (p.floorT > 0) {
       // on the floor after a dive: a short slide out, then back up onto the feet
       p.floorT--; p.vx *= 0.8; p.vy *= 0.8;
@@ -612,7 +680,7 @@
       const top = (p.sprint ? C.SPRINT_V : p.arc ? C.ARC_TOP : C.TOP) * tired * (p.ch ? 0.6 : 1) * (p.recover > 0 ? 0.5 : 1) * (p.landT > 0 ? 0.35 : 1);
       // nothing held: the placement assist may steer the last metre or two (see assistDir)
       if (m <= 0.05 && inp.as && !p.ai) { const a = assistDir(s, p); if (a) { ax = a.x; ay = a.y; m = Math.hypot(ax, ay); if (m > 0.12) { p.fx = ax / m; p.fy = ay / m; } } }
-      else if (m > 0.05 && inp.mg && !p.ai) { const g = magnetDir(s, p, ax, ay, m); if (g) { ax = g.x; ay = g.y; m = Math.hypot(ax, ay); if (m > 0.12) { p.fx = ax / m; p.fy = ay / m; } } }
+      else if (m > 0.05 && inp.mg && !p.ai) { const g = magnetDir(s, p, ax, ay, m, top); if (g) { ax = g.x; ay = g.y; m = Math.hypot(ax, ay); if (m > 0.12) { p.fx = ax / m; p.fy = ay / m; } } }
       run(p, ax, ay, m, top);
     }
     if (p.landT > 0) p.landT--;
@@ -634,6 +702,8 @@
       }
     }
     p.x += p.vx / 60; p.y += p.vy / 60;
+    // a stretched contact: the body carries the rest of the way to the shuttle
+    if (p.nudge) { p.x += p.nudge.x; p.y += p.nudge.y; if (--p.nudge.t <= 0) p.nudge = null; }
     bound(p);
   }
   // stay on your own half; a little behind the back line and beside the sidelines is the limit.
@@ -716,7 +786,8 @@
       return;
     }
     if (s.landAt != null) { // down by a swipe player: ruled on once their swipe has had time to arrive
-      if (s.tick - s.landAt >= SWIPE.LAND_GRACE) { s.landAt = null; resolveLanding(s); }
+      const rc = s.lastHitter >= 0 ? s.players[opp(s.lastHitter)] : null;
+      if (s.tick - s.landAt >= (rc && rc.arc ? C.ARC_GRACE : SWIPE.LAND_GRACE)) { s.landAt = null; resolveLanding(s); }
       return;
     }
     if (stepBall(s)) {
@@ -962,9 +1033,36 @@
     if (si < SWIPE.HARD) return Math.round(20 + (si - SWIPE.SOFT) / (SWIPE.HARD - SWIPE.SOFT) * 12);    // 20..32
     return Math.round(36 + (si - SWIPE.HARD) / (1 - SWIPE.HARD) * 5);                                   // 36..41
   }
-  function swipeShot(s, p, inp) {
-    if (p.stun > 0 || p.floorT > 0 || p.diveT > 0 || p.ai) return;
-    if (p.arc && p.lock > 0) return; // arcade controls: the racket is still coming back from a whiff
+  // the shuttle (b, as it was) is coming in to the player at (q[0], q[1]): on its way to them and not
+  // yet as close as a comfortable contact
+  function coming(p, b, q) {
+    if (b.last < 0 || b.last === p.i) return false;
+    const dx = q[0] - b.x, dy = q[1] - b.y, d = Math.hypot(dx, dy);
+    if (b.z > (q[2] || 0) + C.MAX_Z - 0.1 && b.vz < 0 && d < C.REACH + C.ARC_STRETCH) return true; // (still above the racket)
+    return d > C.REACH * 0.75 && dx * b.vx + dy * b.vy > 0 && b.z > 0.3;
+  }
+  // an armed (early) arcade press, tried once a tick: struck when the shuttle is in reach and as
+  // good as it will get (close, or no longer closing, or about to drop out); a whiff when it never is
+  function armedShot(s, p) {
+    const a = p.armed, b = s.ball;
+    if (s.phase !== 'rally' || b.last === p.i || p.stun > 0 || p.floorT > 0 || p.diveT > 0) { p.armed = null; return true; }
+    const d = Math.hypot(b.x - p.x, b.y - p.y), nz = b.z + b.vz / 60;
+    const high = b.z > p.z + C.MAX_Z - 0.1 && b.vz < 0; // (dropping in from above: wait for it)
+    const best = !high && (d <= C.REACH * 0.75 || d >= a.pd || nz < 0.35 || a.t <= 1 || nz < p.z + C.SWEET_Z - 0.2);
+    a.pd = d;
+    if (best && swipeShot(s, p, Object.assign({}, a.inp, { svt: s.tick }), true)) { p.armed = null; return true; }
+    if (--a.t <= 0) {
+      p.armed = null;
+      if (arcDive(s, p)) return true;
+      ev(s, 'swing', { p: p.i, whiff: 1 });
+      p.lock = C.ARC_LOCK;
+      return true;
+    }
+    return false;
+  }
+  function swipeShot(s, p, inp, retry) {
+    if (p.stun > 0 || p.floorT > 0 || p.diveT > 0 || p.ai) return false;
+    if (p.arc && p.lock > 0) return false; // arcade controls: the racket is still coming back from a whiff
     const g = clamp(inp.sg | 0, 0, 4), si = clamp(+inp.si || 0, 0, 1), lob = !!inp.sd, sl = clamp(+inp.sl || 0, -1, 1);
     const d = sideOf(p);
     // arcade controls: a press that meets nothing dives for it if it can, else whiffs and locks
@@ -973,7 +1071,7 @@
       ev(s, 'swing', { p: p.i, whiff: p.arc ? 1 : 0 });
       if (p.arc && s.phase === 'rally') p.lock = C.ARC_LOCK;
     };
-    p.anim = 8;
+    if (!retry) p.anim = 8;
     // the serve: no timing (the shuttle is in hand); gentle is low, fierce is high
     if (s.phase === 'serve' && s.server === p.i && s.lastHitter === -1) {
       p.swGrade = 1; p.swPerfect = false;
@@ -1000,17 +1098,31 @@
     // played where the shuttle (and the striker) were at the tick the player saw
     const k = clamp(Number.isFinite(inp.svt) ? Math.round(inp.svt) : s.tick, s.tick - SWIPE.REWIND, s.tick);
     const h = k < s.tick ? s.bh.find(e => e.k === k) : null;
-    if (h && s.phase === 'rally') {
+    // arcade: a press with the shuttle still on its way in (out of reach, or only just in it) waits
+    // for it, up to ARC_BUF ticks, and strikes when it is best in reach (armedShot)
+    if (retry) return strike();
+    if (p.arc && s.phase === 'rally' && coming(p, h ? h.b : s.ball, h ? h.p[p.i] : [p.x, p.y, p.z])) {
+      p.armed = { inp: { sg: g, si, sd: lob ? 1 : 0, sl, sz: inp.sz }, t: C.ARC_BUF, pd: Infinity };
+      if (!armedShot(s, p)) ev(s, 'swing', { p: p.i, early: 1 });
+      return true;
+    }
+    if ((h || p.arc) && s.phase === 'rally') {
       const now = Object.assign({}, s.ball), at = { x: p.x, y: p.y, z: p.z };
-      Object.assign(s.ball, h.b); p.x = h.p[p.i][0]; p.y = h.p[p.i][1]; p.z = h.p[p.i][2];
-      const ok = strike();
-      p.x = at.x; p.y = at.y; p.z = at.z;
-      if (ok) { // the new shot flies on from then to now
-        s.landAt = null;
-        for (let i = k; i < s.tick; i++) if (stepBall(s)) { resolveLanding(s); break; }
-        return;
+      if (!h && strike()) return; // (judged on now first, when now is the tick it was seen)
+      // played at tick k; an arcade press that meets nothing there is tried a little earlier too
+      for (let j = 0; j <= (p.arc ? C.ARC_LATE : 0); j++) {
+        const hk = k - j, hh = hk < s.tick ? s.bh.find(e => e.k === hk) : null;
+        if (!hh) { if (j === 0 && !h) continue; break; }
+        Object.assign(s.ball, hh.b); p.x = hh.p[p.i][0]; p.y = hh.p[p.i][1]; p.z = hh.p[p.i][2];
+        const ok = strike();
+        p.x = at.x; p.y = at.y; p.z = at.z;
+        if (ok) { // the new shot flies on from then to now
+          s.landAt = null;
+          for (let i = hk; i < s.tick; i++) if (stepBall(s)) { resolveLanding(s); break; }
+          return;
+        }
+        Object.assign(s.ball, now);
       }
-      Object.assign(s.ball, now);
       miss(); // (nothing in reach when the player swiped: a swing at air)
       return;
     }
@@ -1034,7 +1146,7 @@
       if (dd > C.REACH || z > pz + C.MAX_Z || z < Math.max(0.02, pz - 0.15)) { if (best) break; continue; }
       const qr = clamp(1 - (dd - C.SWEET) / (C.REACH - C.SWEET), 0, 1), rz = z - pz;
       const qh = rz >= C.MID_Z ? 1 - clamp(Math.abs(rz - C.SWEET_Z) / 1.6, 0, 1) * 0.4 : 0.8;
-      const q = (0.16 + 0.84 * qr) * (0.66 + 0.34 * qh);
+      const q = (0.16 + 0.84 * qr) * (0.66 + 0.34 * qh) * (0.5 + 0.5 * clamp(rz / 0.5, 0, 1));
       if (!best || q > best.q + 1e-3) best = { k, q, x, y, z };
     }
     return best;
@@ -1229,5 +1341,5 @@
     };
   }
 
-  return { C, SHOTS, KIND_CODE, BOT_LEVELS, EZ, SWIPE, swipeCt, contactPlan, ringPlan, meetTarget, magnetDir, arcDive, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
+  return { C, SHOTS, KIND_CODE, BOT_LEVELS, EZ, SWIPE, MAG, swipeCt, contactPlan, ringPlan, meetTarget, magnetDir, arcDive, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
 });
