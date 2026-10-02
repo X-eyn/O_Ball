@@ -668,7 +668,9 @@ export class Athlete {
     const ch = p[6], dive = p[8], stun = p[10], recover = p[11];
     const z = p[14], vz = p[15], squat = p[16], landT = p[17];
     // facing and gait (footwork.js): the body is organised round the net, not round the stick
-    const mode = fw.pre(f, p, dt, { lunge: this.lungeW > 0.3, lungeSide: this.lungeSide, lungeRising: this.lungeRising, strokeYawWant: this.strokeYawWant, strokeYawW: this.strokeYawW });
+    // (a shot being readied or struck: the body stands up out of the running crouch into it)
+    const shotOn = !!((f.stroke && f.stroke.u > -0.6 && f.stroke.u < 0.5) || (f.prep && f.prep.eta < 0.6));
+    const mode = fw.pre(f, p, dt, { shot: shotOn, lunge: this.lungeW > 0.3, lungeSide: this.lungeSide, lungeRising: this.lungeRising, strokeYawWant: this.strokeYawWant, strokeYawW: this.strokeYawW });
     this.yaw = fw.yaw; this.gait = mode;
     if (fw.snap) { this.lungeW = 0; this.lungeGX = this.lungeGZ = 0; this.reachX = this.reachZ = this.reachLift = 0; this.lungeAt = null; }
     const sp = Math.hypot(vx, vy);
@@ -914,6 +916,26 @@ export class Athlete {
     // (springs - human.js _spring - only while no shot is coming: moving and waiting. From the
     // moment a shot is prepared the stroke layer drives the arm exactly as it is tuned to)
     // the feet on the floor (planned steps, locked strides, leg IK) and nothing through the floor
+    // the hips over the player's position: the pose (the crouch, the trunk's lean) sets where the
+    // pelvis sits in the model; the model is moved so the hips are over the point the feet are
+    // planned round (and the body turns about its own hips). The offset is followed smoothly and
+    // held through a shot: a stroke's hip turn must not slide the shoulders under the racket arm.
+    // Not in a dive: that has its own line
+    {
+      const g = h.group, w = 1 - this.diveW;
+      h.root.updateMatrixWorld(true);
+      const hm = _a.copy(B.thigh_l.getWorldPosition(_b)).add(B.thigh_r.getWorldPosition(_b)).multiplyScalar(0.5);
+      g.worldToLocal(hm); // (the model's own frame, before the group's offset and scale)
+      const sc = g.scale.y || 1, c = this.cOff || (this.cOff = [0, 0]);
+      // (readying a shot it eases to the stance the strokes are tuned to; through the swing it holds)
+      const swinging = !!(f.stroke && f.stroke.u > -0.6 && f.stroke.u < 0.5), readying = !swinging && !!(f.prep && f.prep.eta < 0.6);
+      const kc = fw.snap ? 1 : swinging || fw.dive.on ? 0 : clamp((readying ? 9 : 6) * dt, 0, 1);
+      // (moving: centred; standing, the stance is as the strokes are tuned to it - the feet still
+      // stand under the hips: see footwork.js anchor)
+      const mv = fw.ballW || 0; // (the same blend the feet use: see footwork.js anchor)
+      c[0] += (hm.x * sc * mv - c[0]) * kc; c[1] += (hm.z * sc * mv - c[1]) * kc;
+      if (w > 1e-3) { g.position.x -= c[0] * w; g.position.z -= c[1] * w; }
+    }
     h.root.updateMatrixWorld(true);
     fw.post(f, p, dt, this.hop);
 

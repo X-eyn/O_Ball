@@ -35,6 +35,15 @@ const LIMITS = {
   cross: 3,             // frames, feet crossed in a chassé
   moonwalk: 8,          // frames (>2.5 m/s), travelling backward relative to the hips: no more than one
                         // pivot through the net-facing position (~0.13 s) when a run swings behind the body
+  // the legs under the body (deg from the hip; pump: m, the hips' bounce within a stride). Steady
+  // running and walking, and the moments around a hard start, stop or turn (a braking leg goes out
+  // further, a driving one further back, and the knees give a little)
+  legs: {
+    steady: { behind: -35, ahead: 33, leg: 37, swing: 40, pump: 0.03 },
+    trans: { behind: -45, ahead: 40, leg: 48, swing: 46, pump: 0.09 },
+  },
+  // (cases that break the clock or the data on purpose: the legs cannot follow a teleport)
+  legsExempt: /^(dt spikes|broken rows|hit-stop frozen frames)$/,
 };
 
 // (the 88 cases and the contact-sheet moments: public/badminton/labcases.js)
@@ -99,6 +108,13 @@ function judge(m) {
   if (m.pop > LIMITS.pop) bad.push(`pop ${m.pop.toFixed(2)}m`);
   if (m.cross > LIMITS.cross) bad.push(`feet crossed in chasse x${m.cross}`);
   if ((m.moonwalk || 0) > LIMITS.moonwalk) bad.push(`moonwalk x${m.moonwalk}`);
+  if (m.legs && !LIMITS.legsExempt.test(m.name)) for (const k of ['steady', 'trans']) {
+    const g = m.legs[k], L = LIMITS.legs[k]; if (!g) continue;
+    const out = [];
+    if (g.behind < L.behind) out.push(`behind ${g.behind}`);
+    for (const x of ['ahead', 'leg', 'swing', 'pump']) if (g[x] > L[x]) out.push(`${x} ${g[x]}`);
+    if (out.length) bad.push(`legs ${k}: ${out.join(', ')}`);
+  }
   for (const w of m.windows || []) if (w.frac < w.need) bad.push(`${w.allow ? 'mode ' + w.allow.join('|') : 'theta ' + w.theta.join('..')} ${w.t0}-${w.t1}s ${(w.frac * 100).toFixed(0)}%<${(w.need * 100).toFixed(0)}%`);
   return bad;
 }
@@ -188,6 +204,8 @@ function judge(m) {
         + pad((m.pen * 1000).toFixed(1), 5) + pad(m.headErr.toFixed(0), 5) + pad(m.pelvisMin < 9 ? m.pelvisMin.toFixed(2) + '-' + m.pelvisMax.toFixed(2) : '-', 10) + (bad.length ? 'FAIL ' + bad.join('; ') : 'PASS'));
     });
     const worst = k => Math.max(...rows.map(m => m[k] || 0));
+    const lw = (k, x, f) => rows.reduce((w, m) => (m.legs && m.legs[k] && !LIMITS.legsExempt.test(m.name) ? f(w, m.legs[k][x]) : w), 0);
+    console.log(`legs, worst steady: behind ${lw('steady', 'behind', Math.min)} ahead ${lw('steady', 'ahead', Math.max)} leg ${lw('steady', 'leg', Math.max)} swing ${lw('steady', 'swing', Math.max)} deg, pump ${(lw('steady', 'pump', Math.max) * 100).toFixed(1)} cm · around starts/stops: behind ${lw('trans', 'behind', Math.min)} ahead ${lw('trans', 'ahead', Math.max)} leg ${lw('trans', 'leg', Math.max)} swing ${lw('trans', 'swing', Math.max)} deg, pump ${(lw('trans', 'pump', Math.max) * 100).toFixed(1)} cm`);
     console.log(`\n${rows.length - fails}/${rows.length} PASS in ${((Date.now() - t0) / 1000).toFixed(0)} s · worst: yaw rate ${worst('maxYawRate').toFixed(1)} rad/s, skate ${(worst('skate') * 100).toFixed(1)} cm, penetration ${(worst('pen') * 1000).toFixed(1)} mm, back-chest ${(worst('backChest') / D).toFixed(0)} deg, head ${worst('headErr').toFixed(0)} deg`);
     fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(rows, null, opt('trace') ? 0 : 1));
     if (shots.length) console.log('contact sheets:\n  ' + shots.join('\n  '));

@@ -7,6 +7,9 @@
 //   body     NaNs, pelvis height, the knee bending the right way, clearance over the floor in a
 //            dive, head on the shuttle, pops (the pelvis leaving the sim position)
 //   gait     the mode the footwork chose, against what the case expects
+//   legs     the legs under the body: each planted leg's angle from its hip (behind / ahead along
+//            the travel, and in all), the swinging leg's reach ahead, and the hips' bounce within a
+//            stride; steady running and the moments around a hard start, stop or turn apart
 // Driven by tools/motion_test.js through __ob.R().motionLab({ op, cases, shots }).
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
@@ -184,6 +187,11 @@ function runCase(ctx, C, c, shotTimes) {
   const shots = []; let nextShot = 0;
   const sheet = shotTimes ? { tiles: [] } : null;
   let prevYaw = null, prevPelvis = null, frame = 0;
+  // the legs (see judge in tools/motion_test.js): per phase, every planted leg's angle along the
+  // travel and in all, every swinging leg's along it, and the hips' height (from the root: a split
+  // step's hop is the whole body) with its frame index, for the bounce within a stride
+  const LG = { steady: { a: [], f: [], sw: [], hy: [], fi: [] }, trans: { a: [], f: [], sw: [], hy: [], fi: [] } };
+  let lgV = null, lgT = -9, lgSkip = -9;
   const DT = 1 / 60;
   const expect = (c.expect || []).map(e => ({ ...e, n: 0, ok: 0 }));
   let lastInp = { ax: 0, ay: 0 };
@@ -271,13 +279,14 @@ function runCase(ctx, C, c, shotTimes) {
     // (a chasse never crosses; going back faster than a chasse can carry, the footwork crosses over
     // behind on purpose - footwork.js GAIT.CROSS_BACK - so that is not counted)
     const crossBack = 4.5; // (footwork.js GAIT.CROSS_BACK)
-    if ((mode === 'shuffle' || (mode === 'back' && spd <= crossBack)) && lat.L > lat.R - 0.02) m.cross++;
+    if ((mode === 'shuffle' || mode === 'back') && spd <= crossBack && lat.L > lat.R - 0.02) m.cross++;
     if (c.trace) {
-      const fr = { t: +t.toFixed(3), mode, by: A.fw && A.fw.feetBy, th: +(th).toFixed(3), sp: +spd.toFixed(2), drop: A.fw && +A.fw.drop.toFixed(3), lift: A.fw && +A.fw.dive.lift.toFixed(3), by2: A.fw && A.fw.liftBy, tilt: A.fw && +A.fw.dive.tilt.toFixed(2) };
+      const fr = { t: +t.toFixed(3), gs: +h.group.scale.y.toFixed(3), mode, by: A.fw && A.fw.feetBy, th: +(th).toFixed(3), sp: +spd.toFixed(2), drop: A.fw && +A.fw.drop.toFixed(3), lift: A.fw && +A.fw.dive.lift.toFixed(3), by2: A.fw && A.fw.liftBy, tilt: A.fw && +A.fw.dive.tilt.toFixed(2) };
       for (const [k, s2] of [['L', 'l'], ['R', 'r']]) {
         let lo = Infinity; for (const cc of footC[k]) lo = Math.min(lo, v4.copy(cc.p).applyMatrix4(cc.bone.matrixWorld).y);
         const bw = B['ball_' + s2].getWorldPosition(V()), F = A.fw && A.fw.feet[k];
-        fr[k] = { lo: +lo.toFixed(4), x: +bw.x.toFixed(3), z: +bw.z.toFixed(3), y: +bw.y.toFixed(3), st: F && F.st, lock: F && F.lock, tx: F && +F.x.toFixed(3), tz: F && +F.z.toFixed(3), lift: F && +(F.lift || 0).toFixed(3), pitch: F && +(F.pitch || 0).toFixed(2) };
+        const Hh = B['thigh_' + s2].getWorldPosition(V()), Kk = B['foot_' + s2].getWorldPosition(V());
+        fr[k] = { ang: +(Math.atan2(Math.hypot(Kk.x - Hh.x, Kk.z - Hh.z), Hh.y - Kk.y) / D2R).toFixed(1), hy: +Hh.y.toFixed(3), lo: +lo.toFixed(4), x: +bw.x.toFixed(3), z: +bw.z.toFixed(3), y: +bw.y.toFixed(3), st: F && F.st, lock: F && F.lock, tx: F && +F.x.toFixed(3), tz: F && +F.z.toFixed(3), lift: F && +(F.lift || 0).toFixed(3), pitch: F && +(F.pitch || 0).toFixed(2) };
       }
       (m.trace || (m.trace = [])).push(fr);
     }
@@ -306,7 +315,37 @@ function runCase(ctx, C, c, shotTimes) {
       sheet.tiles.push(snap(ctx, A, p, sd, ball, `${t.toFixed(2)}s ${mode} th${Math.round(th / D2R)}`));
       nextShot++;
     }
+    // the legs (on the ground, not in a frozen or skipped frame); 'trans' within 0.3 s of the sim
+    // changing velocity faster than 8 m/s2 or 0.45 s of being off the floor or landing
+    {
+      const dvv = lgV && dt > 0 ? Math.hypot(p.vx - lgV[0], p.vy - lgV[1]) / Math.max(dt, DT) : 0; lgV = [p.vx, p.vy];
+      if (dvv > 8) lgT = Math.max(lgT, t);
+      if (floorMode) lgSkip = t + 0.5; // (getting up off the floor is not a stride)
+      if (!onGround || floorMode || mode === 'land' || mode === 'crouch' || p.landT > 0) lgT = Math.max(lgT, t + 0.15);
+      else if (t < lgSkip) { /* rising */ }
+      else if (!frozen && dt > 0 && dt < 0.05) {
+        const P = t - lgT < 0.3 ? LG.trans : LG.steady;
+        const tx = spd > 0.3 ? p.vx / spd : Math.sin(A.yaw), tz = spd > 0.3 ? p.vy / spd : Math.cos(A.yaw);
+        let hy = 0;
+        for (const s of ['l', 'r']) {
+          const H = B['thigh_' + s].getWorldPosition(V()), K = B['foot_' + s].getWorldPosition(V()), ft = A.fw && A.fw.feet[s.toUpperCase()];
+          hy += H.y / 2;
+          const dx = K.x - H.x, dz = K.z - H.z, dy = H.y - K.y, along = Math.atan2(dx * tx + dz * tz, dy) / D2R;
+          if (ft && ft.st === 'plant') { P.a.push(along); P.f.push(Math.atan2(Math.hypot(dx, dz), dy) / D2R); } else P.sw.push(along);
+        }
+        P.hy.push(hy - A.root.position.y); P.fi.push(frame);
+      }
+    }
     lastInp = inpT;
+  }
+  {
+    const q = (a, f) => { if (!a.length) return 0; const b = a.slice().sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * f))]; };
+    m.legs = {};
+    for (const k of ['steady', 'trans']) {
+      const P = LG[k]; if (!P.hy.length) continue;
+      const pump = P.hy.map((v, i, a) => (i < 8 || i + 8 >= a.length || P.fi[i + 8] - P.fi[i - 8] !== 16 ? 0 : Math.abs(v - (a[i - 8] + a[i + 8]) / 2)));
+      m.legs[k] = { n: P.hy.length, behind: +q(P.a, 0.005).toFixed(1), ahead: +q(P.a, 0.995).toFixed(1), leg: +q(P.f, 0.995).toFixed(1), swing: +q(P.sw, 0.995).toFixed(1), pump: +q(pump, 0.99).toFixed(3) };
+    }
   }
   m.headErr = m.headN ? m.headErr / m.headN : 0;
   m.windows = expect.map(e => ({ t0: e.t0, t1: e.t1, allow: e.allow, theta: e.theta, frac: e.n ? e.ok / e.n : 1, need: e.frac || 0.6 }));
