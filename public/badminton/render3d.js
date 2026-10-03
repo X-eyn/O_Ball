@@ -4,6 +4,12 @@
 // are metres: x runs the length (net at 0), y across, z up. In three.js the court lies on the XZ
 // plane, so world = (x, z, y).
 import * as THREE from 'three';
+import { NetDynamics } from './net-dynamics.mjs';
+import { createHeatVfx } from './heat-vfx.js';
+import { presentationUrl } from './presentation-assets.js';
+import { createNetLook } from './net-look.js';
+import { createShuttleFx } from './shuttle-fx.js';
+import { createSmashFx } from './smash-fx.js';
 import { HAIR_KEYS, MODEL_HEIGHT, loadPlayerAssets } from '../human.js';
 import { Athlete, strokeFor, STROKES } from './anim.js';
 import { KITS } from '../kits.js';
@@ -72,7 +78,7 @@ function courtTexture() {
     // the court mat: the doubles box plus a margin, in court green
     const { L, W: SW, DW, SHORT, LONG } = CT;
     const cg = g.createLinearGradient(0, py(-DW), 0, py(DW));
-    cg.addColorStop(0, '#16643f'); cg.addColorStop(0.5, '#1a7249'); cg.addColorStop(1, '#16643f');
+    cg.addColorStop(0, '#0e5849'); cg.addColorStop(0.5, '#126453'); cg.addColorStop(1, '#0e5849');
     g.fillStyle = cg;
     g.fillRect(px(-L) - mw(0.8), py(-DW) - mw(0.8), mw(2 * L + 1.6), mw(2 * DW + 1.6));
     // event name behind each baseline, turned to face the far camera
@@ -82,18 +88,37 @@ function courtTexture() {
       g.textAlign = 'left';
       const a = g.measureText('OFFICE ').width, b = g.measureText('BADMINTON').width, x0 = -(a + b) / 2;
       g.fillStyle = 'rgba(255,255,255,.9)'; g.fillText('OFFICE ', x0, 0);
-      g.fillStyle = '#e4ff3c'; g.fillText('BADMINTON', x0 + a, 0);
+      g.fillStyle = '#ffc83d'; g.fillText('BADMINTON', x0 + a, 0);
       g.restore();
     };
     word(L + 1.55, Math.PI / 2); word(-L - 1.55, -Math.PI / 2);
     // sideline stripes on the surround
-    g.fillStyle = 'rgba(228,255,60,.5)';
+    g.fillStyle = 'rgba(255,200,61,.5)';
     g.fillRect(px(-L), py(-DW) - mw(1.35), mw(2 * L), mw(0.05));
     g.fillRect(px(-L), py(DW) + mw(1.3), mw(2 * L), mw(0.05));
     grain(g, W, H, 9);
-    // lines: 40 mm white, drawn after the grain so they stay crisp
-    g.strokeStyle = '#f5f8f4'; g.lineWidth = mw(0.045); g.lineCap = 'square';
-    const line = (x1, y1, x2, y2) => { g.beginPath(); g.moveTo(px(x1), py(y1)); g.lineTo(px(x2), py(y2)); g.stroke(); };
+    // Fine joined rolls and shoe scuffs are baked once; physical micrograin comes from the maps.
+    g.strokeStyle = 'rgba(6,28,21,.13)'; g.lineWidth = mw(0.012);
+    for (let y = -DW + 1.3; y < DW; y += 1.3) { g.beginPath(); g.moveTo(px(-L)-mw(0.8),py(y)); g.lineTo(px(L)+mw(0.8),py(y)); g.stroke(); }
+    let seed = 813; const rand = () => { seed = (Math.imul(seed,1664525)+1013904223)>>>0; return seed/4294967296; };
+    for (let i=0;i<85;i++) {
+      const x=px((rand()*2-1)*L), y=py((rand()*2-1)*DW);
+      g.save(); g.translate(x,y); g.rotate(rand()*6.28); g.strokeStyle='rgba(5,21,17,.07)'; g.lineWidth=mw(0.012);
+      g.beginPath();g.ellipse(0,0,mw(0.08+rand()*0.16),mw(0.025),0,0,Math.PI*1.1);g.stroke();g.restore();
+    }
+    // Pigmented brush paint: irregular edges, translucent bristle streaks, and small worn pores.
+    // The rule geometry stays exact and the pigment never interrupts a line across its width.
+    const line = (x1,y1,x2,y2) => {
+      const ax=px(x1),ay=py(y1),bx=px(x2),by=py(y2),len=Math.hypot(bx-ax,by-ay), nx=-(by-ay)/len,ny=(bx-ax)/len,hw=mw(0.021);
+      const steps=Math.max(4,Math.ceil(len/6)); g.fillStyle='#f4f3e7';g.beginPath();
+      for(let side=0;side<2;side++)for(let j=0;j<=steps;j++){
+        const t=side?1-j/steps:j/steps,k=(side?-1:1)*(hw+(rand()-.5)*.38),x=ax+(bx-ax)*t+nx*k,y=ay+(by-ay)*t+ny*k;
+        if(!side&&!j)g.moveTo(x,y);else g.lineTo(x,y);
+      }g.closePath();g.fill();
+      g.strokeStyle='rgba(126,143,129,.17)';g.lineWidth=.35;
+      for(let j=0;j<3;j++){const k=(rand()-.5)*hw*1.2;g.beginPath();g.moveTo(ax+nx*k,ay+ny*k);g.lineTo(bx+nx*k,by+ny*k);g.stroke();}
+      g.fillStyle='rgba(28,78,53,.22)';for(let j=0;j<len*.3;j++){const t=rand(),k=(rand()-.5)*hw*1.4;g.fillRect(ax+(bx-ax)*t+nx*k,ay+(by-ay)*t+ny*k,.6,.6);}
+    };
     for (const y of [-DW, -SW, SW, DW]) line(-L, y, L, y);
     for (const x of [-L, -LONG, -SHORT, SHORT, LONG, L]) line(x, -DW, x, DW);
     line(-L, 0, -SHORT, 0); line(SHORT, 0, L, 0);
@@ -103,33 +128,20 @@ function courtTexture() {
     g.fillStyle = pool; g.fillRect(0, 0, W, H);
   });
 }
-// a tournament net: black mesh, white tape along the top and down both ends
-function netTexture() {
-  return canvasTex(1024, 128, (g, W, H) => {
-    g.clearRect(0, 0, W, H);
-    g.strokeStyle = 'rgba(12,14,18,.92)'; g.lineWidth = 1.3;
-    const top = 11, cell = 7.2;
-    for (let x = 0; x <= W; x += cell) { g.beginPath(); g.moveTo(x, top); g.lineTo(x, H); g.stroke(); }
-    for (let y = top; y <= H; y += cell) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
-    g.fillStyle = '#f7f9fb'; g.fillRect(0, 0, W, top + 2);          // 75 mm tape, folded over the cord
-    g.fillStyle = 'rgba(0,0,0,.18)'; g.fillRect(0, top, W, 2);
-    g.fillStyle = '#f7f9fb'; g.fillRect(0, 0, 5, H); g.fillRect(W - 5, 0, 5, H);
-    g.fillStyle = '#10151c'; g.fillRect(0, H - 3, W, 3);             // bottom cord
-  });
-}
 // LED boards: a dark panel with the event name, scrolled by moving the texture offset
-function boardTexture() {
-  const font = `italic 800 74px ${FONT}`;
-  const items = [['OFFICE ', '#ffffff'], ['BADMINTON', '#e4ff3c'], ['   ◆   ', '#3aa0ff'], ['FIRST TO 7', '#ffffff'], ['   ◆   ', '#3aa0ff'], ['WINNER STAYS ON', '#ffffff'], ['   ◆   ', '#3aa0ff']];
-  const m = document.createElement('canvas').getContext('2d'); m.font = font;
-  const widths = items.map(([s]) => m.measureText(s).width), unit = widths.reduce((a, b) => a + b, 0);
-  // exactly one message per texture width, so the repeat wraps with no seam
-  const t = canvasTex(Math.ceil(unit), 128, (g, W, H) => {
+function boardTexture(message = 'OFFICE BADMINTON  ·  THE OFFICE OPEN') {
+  const t = canvasTex(4096, 128, (g, W, H) => {
     const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#0d2a52'); bg.addColorStop(1, '#071a36');
     g.fillStyle = bg; g.fillRect(0, 0, W, H);
-    g.textBaseline = 'middle'; g.font = font;
-    let cx = (W - unit) / 2;
-    items.forEach(([s, c], i) => { g.fillStyle = c; g.fillText(s, cx, H / 2 + 3); cx += widths[i]; });
+    const campaigns = [['APEX COURT','FIND YOUR NEXT LEVEL','#e4ff3c'],['FEATHER LAB','PRECISION IN EVERY STRIKE','#88d8ff'],['THE OFFICE OPEN',message,'#f4f5ef']];
+    campaigns.forEach(([title, sub, color], i) => {
+      const x=i*W/3;g.fillStyle=color;
+      // Authored graphic mark, repeated with its campaign across the perimeter.
+      g.beginPath();g.moveTo(x+22,96);g.lineTo(x+65,25);g.lineTo(x+108,96);g.lineTo(x+82,96);g.lineTo(x+65,65);g.lineTo(x+48,96);g.closePath();g.fill();
+      g.textBaseline='middle';g.font=`italic 800 59px ${FONT}`;g.fillText(title,x+140,46);
+      g.font=`600 29px ${FONT}`;g.fillStyle='#d1dbe7';g.fillText(sub,x+142,93,W/3-172);
+      g.fillStyle='rgba(151,182,213,.35)';g.fillRect(x+W/3-15,23,2,82);
+    });
     // LED pitch: a faint pixel grid
     g.fillStyle = 'rgba(0,0,0,.28)';
     for (let x = 0; x < W; x += 4) g.fillRect(x, 0, 1, H);
@@ -243,14 +255,15 @@ function buildHall(scene, tier) {
   // LED boards round the field of play, leaning back a little as real ones do
   const bTex = boardTexture();
   const boardMats = [];
+  let boardCursor = 0, boardTime = 0, messageKey = '';
   const back = new THREE.MeshLambertMaterial({ color: 0x0a0d13 });
   const BH = 0.82;
   const glowTex = canvasTex(4, 64, (g, w, h) => { const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.3, 'rgba(255,255,255,.35)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, w, h); });
   const glowMat = new THREE.MeshBasicMaterial({ map: glowTex, color: 0x4f8fff, transparent: true, opacity: lite ? 0.18 : 0.26, blending: THREE.AdditiveBlending, depthWrite: false });
   const board = (len, x, z, rotY) => {
-    const t = bTex.clone(); t.needsUpdate = true; t.repeat.set(Math.max(1, Math.round(len / 8)), 1); t.offset.x = Math.random();
+    const t = bTex.clone(); t.needsUpdate = true; t.repeat.set(len / 30, 1); t.offset.x = boardCursor / 30;
     const face = new THREE.MeshBasicMaterial({ map: t, color: 0xe8ecff });
-    boardMats.push({ tex: t, len });
+    boardMats.push({ tex: t, start: boardCursor }); boardCursor += len;
     const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = rotY; scene.add(g);
     const panel = new THREE.Mesh(new THREE.PlaneGeometry(len, BH), face);
     panel.position.set(0, BH / 2 + 0.02, 0); panel.rotation.x = -0.12; g.add(panel);
@@ -262,9 +275,9 @@ function buildHall(scene, tier) {
   };
   const BX = FOP_X + 0.1, BZ = FOP_Y + 0.1;
   board(2 * BX, 0, -BZ, 0);                 // sides (face the court)
+  board(2 * BZ - 0.6, BX, 0, -Math.PI / 2);
   board(2 * BX, 0, BZ, Math.PI);
   board(2 * BZ - 0.6, -BX, 0, Math.PI / 2); // ends
-  board(2 * BZ - 0.6, BX, 0, -Math.PI / 2);
 
   // raked seating on all four sides. The crowd is baked: every row of fans is painted once into a
   // strip of a texture (crowdAtlas) and stands on its step as a single upright card, so the whole
@@ -359,8 +372,15 @@ function buildHall(scene, tier) {
 
   let cheer = 0;
   return {
-    update(dt) {
-      for (const b of boardMats) b.tex.offset.x = (b.tex.offset.x + dt * 0.9 / b.len) % 1;
+    update(dt, rv) {
+      boardTime += dt;
+      for (const b of boardMats) b.tex.offset.x = (b.start / 30 + boardTime * 0.6 / 30) % 1;
+      const score = rv?.score || [0,0], names = rv?.names || ['RED','BLUE'];
+      const text = rv?.match ? `${names[0].slice(0,18)}  ${score[0]} : ${score[1]}  ${names[1].slice(0,18)}${Math.max(...score) === CT.POINTS-1 ? '  /  MATCH POINT' : '  /  WINNER STAYS ON'}` : 'OFFICE BADMINTON  /  THE OFFICE OPEN';
+      if (messageKey !== text) {
+        messageKey = text; const next = boardTexture(text.toUpperCase());
+        for(const b of boardMats){b.tex.image=next.image;b.tex.needsUpdate=true;} next.dispose();
+      }
       if (cheer > 0 && (cheer -= dt) <= 0) crowdMat.map = sheets[0];
     },
     point() { cheer = 2.2; crowdMat.map = sheets[1]; },
@@ -400,11 +420,21 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   scene.add(key);
   const fill = new THREE.DirectionalLight(0xc8dcff, 0.6); fill.position.set(-12, 6, 2); scene.add(fill);
 
-  // floor: the field of play, with a slight vinyl sheen
-  // Phong, not PBR: the floor covers most of the screen, and a plain specular lobe from the key
-  // gives the vinyl its sheen at a third of the cost (no environment lookups, no normal map)
+  // Fine vinyl micrograin and roughness are tiled in world scale independently of the court paint.
   const courtTex = courtTexture(); courtTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(2 * FOP_X, 2 * FOP_Y), new THREE.MeshPhongMaterial({ map: courtTex, specular: 0x1c1c1c, shininess: 24 }));
+  const surfaceMaps = await Promise.all(['mat-normal.jpg','mat-roughness.jpg'].map(async name => {
+    try { const t=await new THREE.TextureLoader().loadAsync(presentationUrl(name));t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(2*FOP_X/1.2,2*FOP_Y/1.2);t.anisotropy=Math.min(4,renderer.capabilities.getMaxAnisotropy());return t; } catch { return null; }
+  }));
+  const floorMat = hi
+    ? new THREE.MeshStandardMaterial({map:courtTex,normalMap:surfaceMaps[0],normalScale:new THREE.Vector2(0.18,0.18),roughnessMap:surfaceMaps[1],roughness:0.96,metalness:0,envMapIntensity:0.15})
+    : new THREE.MeshPhongMaterial({map:courtTex,normalMap:lite?null:surfaceMaps[0],normalScale:new THREE.Vector2(0.13,0.13),specular:0x141917,shininess:9});
+  if (hi) {
+    // Vinyl sports flooring stays matte even where the source roughness map is smoother.
+    floorMat.onBeforeCompile=shader=>{shader.fragmentShader=shader.fragmentShader.replace('#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\nroughnessFactor = max(0.82, roughnessFactor);');};
+    floorMat.customProgramCacheKey=()=> 'badminton-matte-vinyl-v1';
+  }
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(2 * FOP_X, 2 * FOP_Y), floorMat);
+  floor.name='Indoor sports mat';
   floor.rotation.x = -Math.PI / 2; floor.receiveShadow = hi;
   scene.add(floor);
   const hall = buildHall(scene, tier);
@@ -422,17 +452,22 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
     cap.position.set(0, 1.585, z); scene.add(cap);
   }
   const NET_D = 0.76;
-  const netGeo = new THREE.PlaneGeometry(2 * PZ, NET_D, 24, 1);
-  { const p = netGeo.attributes.position; for (let i = 0; i < p.count; i++) { const u = Math.abs(p.getX(i)) / PZ; p.setY(i, p.getY(i) - (1 - u * u) * 0.026); } }
-  const net = new THREE.Mesh(netGeo, new THREE.MeshStandardMaterial({ map: netTexture(), transparent: true, side: THREE.DoubleSide, roughness: 0.9, alphaTest: 0.08 }));
-  net.position.set(0, 1.55 - NET_D / 2, 0); net.rotation.y = Math.PI / 2; net.castShadow = hi; scene.add(net);
+  const netDynamics = new NetDynamics(2 * PZ, NET_D, lite ? 24 : 40, lite ? 6 : 10);
+  // the look (net-look.js): real-scale knotted netting on a smooth display mesh, the folded tape,
+  // side bands and cord as geometry, all following the cloth
+  const netLook = createNetLook({ renderer, dynamics: netDynamics, tier });
+  const net = netLook.mesh;
+  net.position.set(0, 1.55 - NET_D / 2, 0); net.rotation.y = Math.PI / 2; scene.add(net);
+  let netActive = 0;
 
   // players: the real rigged characters, loaded from the same assets as football
   const A = await loadPlayerAssets(renderer, boot, { extraSteps: 2, lite: tier === 'lite' });
   scene.environment = A.env;
   if ('environmentIntensity' in scene) scene.environmentIntensity = 0.45;
   const players = [0, 1].map(i => new Athlete(scene, KITS[i], A, lookFor));
+  const heatVfx = createHeatVfx(scene, tier, renderer);
   if (boot.playersReady) boot.playersReady();
+  const portrait = createPortrait();
   // contact shadows: a soft dark pool under each player, which grounds them on every tier
   const blob = blobTexture('rgba(0,0,0,.75)', 'rgba(0,0,0,0)');
   const feet = players.map(() => {
@@ -448,9 +483,16 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   band.position.y = 0.005; shuttle.add(band);
   const skirt = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.013, 0.068, 16, 1, true), new THREE.MeshStandardMaterial({ map: skirtTexture(), transparent: true, alphaTest: 0.3, side: THREE.DoubleSide, roughness: 0.8 }));
   skirt.position.y = 0.01 + 0.034; shuttle.add(skirt);
+  // an ink outline, Nintendo-style: slightly larger dark hulls of the cork and the skirt, drawn
+  // from their back faces only, so they show just as a rim round the silhouette. It keeps the
+  // shuttle readable against the court, the lines and the crowd without making it glow.
+  const ink = new THREE.MeshBasicMaterial({ color: 0x0d1838, side: THREE.BackSide, fog: false });
+  const corkInk = new THREE.Mesh(new THREE.SphereGeometry(0.0135 * 1.32, 16, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), ink);
+  const skirtInk = new THREE.Mesh(new THREE.CylinderGeometry(0.033 * 1.16, 0.013 * 1.3, 0.068 * 1.08, 16, 1, false), ink);
+  skirtInk.position.y = skirt.position.y; shuttle.add(corkInk, skirtInk);
   shuttle.traverse(o => { if (o.isMesh) o.castShadow = false; });
   const SH_SCALE = 2.4; // larger than life, and never smaller on screen than SH_PX (see the frame)
-  const SH_PX = 11;
+  const SH_PX = 16;
   scene.add(shuttle);
   const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: blobTexture('rgba(255,255,255,.9)', 'rgba(255,255,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
   halo.scale.setScalar(0.35); scene.add(halo);
@@ -461,6 +503,15 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   const beaconGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: halo.material.map, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, fog: false }));
   const beaconRing = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTex, transparent: true, depthWrite: false, depthTest: false, fog: false }));
   beaconGlow.renderOrder = 20; beaconRing.renderOrder = 21; scene.add(beaconGlow, beaconRing);
+  // (superseded by shuttle-fx.js: the crafted beacon, trail and glint; the sprites stay for the
+  // halo's texture, which the sparks and dust share)
+  beaconGlow.visible = beaconRing.visible = halo.visible = false;
+  const shuttleFx = createShuttleFx(scene);
+  // smashes: contact flash and shockwave, cracked court and debris on a winner, the screen
+  // shattering on the hardest (smash-fx.js)
+  const smashFx = createSmashFx({ scene, renderer, tier });
+  let lastSmash = 0; // the power (0..1) of the latest smash contact, for the slam it ends in
+  const shotVel = new THREE.Vector3(); // the shuttle's world velocity: which way contact glass is thrown
   // the drop line: shuttle straight down to its shadow, so its height reads at a glance
   const dropGeo = new THREE.BufferGeometry(); dropGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
   const dropLine = new THREE.Line(dropGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false }));
@@ -646,12 +697,12 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
     const needD = hi + 0.4;
     // widen fast (never lose the shuttle), tighten slowly (never lurch)
     rig.d = damp(rig.d, needD, rig.dv, 0, needD > rig.d ? 0.22 : 0.9, dt);
-    placeCamera(camera, f, Math.max(D_MIN * 0.9, rig.d - zoomBoost), rig.side);
+    placeCamera(camera, f, Math.max(D_MIN * 0.9, rig.d - zoomBoost - swellZoom), rig.side);
     camTarget.set(f.x, f.y, f.z);
   }
   camera.position.set(-CAM_D, CAM_H, 0);
   const camTarget = new THREE.Vector3(-2, 0, 0);
-  let camSide = -1, shake = 0, safeBottom = 0, zoomBoost = 0;
+  let camSide = -1, shake = 0, safeBottom = 0, zoomBoost = 0, swellZoom = 0; // (swellZoom: the camera leaning in on a long rally)
   let w = 1, h = 1, lastT = performance.now();
 
   // adaptive resolution: the frame interval is watched, and the render scale steps down when the
@@ -701,25 +752,32 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   }
   const TRAIL_COLORS = { smash: 0xff5a3c, jsmash: 0xff3b1f, kill: 0xff4a6a, drop: 0x6fe0ff, clear: 0xffffff, lift: 0xe8f4ff, drive: 0xffd34d, counter: 0x57d6ff, block: 0x9fe8c0, net: 0x9fe8c0, servel: 0xbfd4ff, serveh: 0xbfd4ff };
   function fxHit(e) {
-    const c = e.parry ? 0xffd34d : TRAIL_COLORS[e.kind] || 0xffffff;
-    trailMat.uniforms.uColor.value.setHex(c);
+    const c = e.fire ? 0xff5a1a : e.parry || e.fireHeld ? 0xffd34d : TRAIL_COLORS[e.kind] || 0xffffff;
     const z = Math.max(0.3, e.z);
     const big = e.kind === 'smash' || e.kind === 'jsmash' || e.kind === 'kill';
+    // a smash's power: its speed, a timed (perfect) contact, a jump
+    const power = big ? clamp((e.kmh - 140) / 180, 0, 1) * 0.75 + (e.perfect ? 0.2 : 0) + (e.kind === 'jsmash' ? 0.15 : 0) : 0;
+    lastSmash = big ? clamp(power, 0, 1) : 0;
+    shuttleFx.hit(c, big ? 0.6 + power : e.perfect || e.parry ? 0.5 : 0.15);
+    if (big) smashFx.contact(new THREE.Vector3(...W2(e.x, e.y, z)), clamp(power, 0, 1), c);
     impactRing(e.x, e.y, z, c, e.kind === 'jsmash' ? 2.1 : big ? 1.6 : e.parry ? 1.8 : 1, big || e.perfect || e.parry ? 1 : 0.5);
     // the weight of the contact, scaled to the shot: a jump smash kicks the whole view
-    if (e.kind === 'jsmash') { shake = Math.max(shake, e.perfect ? 0.22 : 0.15); zoomBoost = 0.55; burst(e.x, e.y, z, e.perfect ? 32 : 22, 6, c); }
+    if (e.fire) { shake = Math.max(shake, 0.3); zoomBoost = 0.7; burst(e.x, e.y, z, 44, 7, c); shuttleFx.hit(c, 1.8); }
+    else if (e.fireHeld) { shake = Math.max(shake, 0.18); zoomBoost = 0.45; burst(e.x, e.y, z, 30, 5.5, c); }
+    else if (e.kind === 'jsmash') { shake = Math.max(shake, e.perfect ? 0.22 : 0.15); zoomBoost = 0.55; burst(e.x, e.y, z, e.perfect ? 32 : 22, 6, c); }
     else if (big) { shake = Math.max(shake, e.perfect ? 0.16 : 0.1); zoomBoost = 0.3; burst(e.x, e.y, z, e.perfect ? 24 : 14, 4.5, c); }
     else if (e.parry) { shake = Math.max(shake, 0.12); zoomBoost = 0.35; burst(e.x, e.y, z, 26, 5, 0xffd34d); }
     else if (e.perfect) { shake = Math.max(shake, 0.05); burst(e.x, e.y, z, 12, 3, 0xffd34d); }
   }
-  function fxNet(x, y, z) { impactRing(x, y, z, 0xaab8c4, 0.7, 0); }
+  function fxNet(x, y, z, event) { impactRing(x, y, z, 0xaab8c4, 0.7, 0); netDynamics.impact(event || {y,z,vx:0,vy:0,vz:0});netActive=3; }
   function fxDust(x, y, amount) { dust(x, y, amount); }
   // a smash into the floor: a hot shockwave ring spreading across the mat, a spray of dust and
   // sparks, and the whole view kicks
   function fxSlam(x, y, kmh) {
     const k = clamp((kmh || 60) / 80, 0.5, 1.4);
-    const r = slams.find(r => r.t >= r.life) || slams[0];
-    r.t = 0; r.life = 0.55; r.k = k; r.mesh.visible = true; r.mesh.position.set(x, 0.02, y);
+    // the court cracks under it, scaled by the smash that sent it
+    const power = Math.max(lastSmash, clamp(((kmh || 60) - 50) / 120, 0, 1) * 0.6);
+    smashFx.slam(x, y, power);
     dust(x, y, 1.6 * k);
     burst(x, y, 0.05, Math.round(18 * k), 5, 0xffb347);
     shake = Math.max(shake, 0.12 + 0.12 * k); zoomBoost = Math.max(zoomBoost, 0.4);
@@ -783,7 +841,7 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   // loading, the split-step cue and the end-of-point reaction.
   function athleteFrame(i, p, b, rv, dt, now) {
     const A = players[i], tick = rv.tick || 0;
-    const rec = rv.strokes && rv.strokes[i];
+    const rec = !rv.pointAt && rv.strokes && rv.strokes[i];
     let stroke = null;
     if (rec) {
       const u = (tick - rec.tick) / 60;
@@ -802,7 +860,7 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
     // reach), and the stroke a player readies for it: the charge loads that stroke, and before the
     // charge the player already turns and lifts the racket toward it (prep, by time to contact)
     let chargeKind = 'over', prep = null;
-    const icp = intercept(i, p, b);
+    const icp = rv.pointAt ? null : intercept(i, p, b);
     if (icp) {
       const ny = i ? -Math.PI / 2 : Math.PI / 2, cs = Math.cos(ny), sn = Math.sin(ny), dx = icp.x - p[0], dy = icp.y - p[1];
       const side = -(dx * cs - dy * sn), fwd = dx * sn + dy * cs, rz = icp.z - (p[14] || 0);
@@ -828,6 +886,7 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
     const ago = pt ? (tick - pt.tick) / 60 : null;
     return {
       p, ball: b, dt, t: now / 1000, frozen: !!rv.hitstop, stroke, chargeKind, prep, splitAgo,
+      celebration: pt?.variant || 0,
       won: pt && pt.p === i ? ago : null, lost: pt && pt.p !== i ? ago : null,
     };
   }
@@ -837,13 +896,25 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
   // a per-frame smoothing factor tuned at 60 fps, converted so it settles at the same rate at any fps
   const ease = k => 1 - Math.pow(1 - k, frameDt * 60);
   let lab = null; // the motion lab (motionlab.js, tools/motion_test.js) owns the athletes while it runs
+  let wasMatch = false;
   function frame(rv, now) {
+    swellZoom += ((rv.swell || 0) * 0.9 - swellZoom) * 0.05; // eased: never a lurch
     if (lab) { lastT = now; return; }
     const dtMs = now - lastT, dt = clamp(dtMs / 1000, 0, 0.1); lastT = now; frameDt = dt;
     adapt(dtMs, now);
     const world = rv.world, live = rv.live, my = rv.mySlot;
     if (rv.names) players.forEach((p, i) => p.setIdentity(rv.names[i], i));
-    hall.update(dt);
+    const effectDt = rv.paused ? 0 : dt;
+    hall.update(effectDt, rv);
+    if(!rv.match) {
+      heatVfx.reset();
+      if(wasMatch) {
+        players.forEach(p=>p.reset());netDynamics.reset();netActive=0;
+        netLook.sync();
+      }
+    }
+    wasMatch=!!rv.match;
+    if(netActive>0&&effectDt>0){netDynamics.step(effectDt);netActive=Math.max(0,netActive-effectDt);if(!netActive)netDynamics.reset();netLook.sync();}
     if (world) {
       // dbg.manual: a test harness drives that athlete itself (debugAthletes / debugAthleteFrame)
       // and may hold the shuttle where its case puts it (dbg.ball) or hide the other player
@@ -866,8 +937,10 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
         const pz = p[14] || 0;
         feet[i].scale.setScalar(1 / (1 + pz * 0.9)); feet[i].material.opacity = (hi ? 0.55 : 0.8) / (1 + pz * 1.5);
       }
+      heatVfx.update(effectDt, rv.heat, players, camera, !!rv.match);
       shuttle.position.set(...W2(b[0], b[1], b[2]));
       const sp = Math.hypot(b[3], b[4], b[5]);
+      shotVel.set(...W2(b[3], b[4], b[5]));
       // the shuttle turns over: after a hit it leaves skirt-first and flips to fly cork-first, so
       // its orientation chases the velocity at a finite rate rather than snapping to it
       if (sp > 0.5) {
@@ -880,45 +953,13 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       shuttle.scale.setScalar(Math.max(SH_SCALE, SH_PX / pxPerM / 0.075));
       const coming = rv.lh != null && rv.lh !== my && my >= 0;
       const bpx = m => m / pxPerM; // metres for this many pixels at the shuttle's distance
-      beaconGlow.position.copy(shuttle.position); beaconRing.position.copy(shuttle.position);
-      beaconGlow.scale.setScalar(bpx(44)); beaconRing.scale.setScalar(bpx(26));
-      const bc = coming ? 0xe4ff3c : 0x9fd4ff;
-      beaconGlow.material.color.setHex(bc); beaconRing.material.color.setHex(bc);
-      beaconGlow.material.opacity = live ? 0.55 : 0.25; beaconRing.material.opacity = live ? 0.85 : 0.35;
-      beaconRing.visible = !rv.oneRing; // (keyboard controls: the timing ring is the only ring)
       const dp = dropGeo.attributes.position;
       dp.setXYZ(0, b[0], b[2], b[1]); dp.setXYZ(1, b[0], 0.02, b[1]); dp.needsUpdate = true;
       dropLine.visible = live && b[2] > 0.35;
-      halo.position.copy(shuttle.position);
-      halo.material.opacity = live ? clamp(0.25 + sp / 40, 0.25, 0.7) : 0.2;
-      halo.scale.setScalar(0.3 + clamp(sp / 60, 0, 0.3));
       shadow.position.set(b[0], 0.012, b[1]);
       shadow.scale.setScalar(clamp(1.4 + b[2] * 0.2, 1.4, 2.6));
       shadow.material.opacity = clamp(0.7 - b[2] * 0.05, 0.35, 0.7);
-      if (sp > 1.5 && live) {
-        // the ribbon keeps a point per 1/60 s whatever the frame rate; the head follows every frame
-        trailAcc += dt;
-        if (trailN === 0 || trailAcc >= 1 / 60) {
-          trailAcc = trailN === 0 ? 0 : trailAcc % (1 / 60);
-          for (let i = TRAIL - 1; i > 0; i--) trailPts[i].copy(trailPts[i - 1]);
-          trailN = Math.min(TRAIL, trailN + 1);
-        }
-        trailPts[0].set(...W2(b[0], b[1], b[2]));
-        trailMat.uniforms.uOpacity.value = clamp(0.2 + sp / 40, 0.2, 0.95) * (1 + (rv.rally || 0) * 0.02);
-      } else { trailFade += dt * 120; const k = Math.floor(trailFade); trailFade -= k; trailN = Math.max(0, trailN - k); }
-      // rebuild the ribbon: each point pushed sideways, perpendicular to the path and the view
-      for (let i = 0; i < TRAIL; i++) {
-        const k = Math.min(i, Math.max(0, trailN - 1)), p = trailPts[k];
-        const q = trailPts[Math.min(k + 1, Math.max(0, trailN - 1))];
-        tmp.subVectors(k === 0 ? p : trailPts[k - 1], q);
-        if (tmp.lengthSq() < 1e-8) tmp.set(1, 0, 0);
-        side3.subVectors(camera.position, p).cross(tmp).normalize();
-        const f = trailN > 1 ? 1 - i / (trailN - 1) : 0, wdt = 0.045 * f;
-        ribPos.set([p.x + side3.x * wdt, p.y + side3.y * wdt, p.z + side3.z * wdt, p.x - side3.x * wdt, p.y - side3.y * wdt, p.z - side3.z * wdt], i * 6);
-        ribA[i * 2] = ribA[i * 2 + 1] = i < trailN ? f * f : 0;
-      }
-      ribGeo.attributes.position.needsUpdate = true; ribGeo.attributes.alpha.needsUpdate = true;
-      trail.visible = trailN > 1;
+      trail.visible = false; // (the trail is shuttle-fx.js's now)
       // (keyboard controls: one ring only, the timing ring at the contact point, drawn by the client)
       if (live && rv.pred && rv.pred.land && b[2] > 0.15 && !rv.oneRing) {
         const toMe = my >= 0 && Math.sign(rv.pred.land.x || 1) === (my ? 1 : -1);
@@ -935,9 +976,11 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       } else { marker.visible = false; countRing.visible = false; }
       // reach ring and the smash tell
       const mp = my >= 0 ? world.players[my] : null;
+      let beaconHit = false;
       if (mp && live) {
         const K = CT, me = mp, pz = me[14] || 0, d = Math.hypot(b[0] - me[0], b[1] - me[1]);
         const hittable = coming && d < K.REACH && b[2] >= pz && b[2] <= pz + K.MAX_Z && Math.sign(b[0] || 1) === (my ? 1 : -1);
+        beaconHit = hittable;
         reachRing.visible = !rv.oneRing;
         reachRing.position.set(me[0], 0.018, me[1]);
         reachRing.scale.setScalar(K.REACH);
@@ -949,6 +992,8 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
         tellRing.visible = tell;
         if (tell) { tellRing.position.set(opp[0], 0.02, opp[1]); tellRing.scale.setScalar(1 + 0.25 * Math.sin(now * 0.02)); tellRing.material.opacity = 0.5 + 0.35 * clamp((opp[6] - 18) / 24, 0, 1); }
       } else { reachRing.visible = false; tellRing.visible = false; }
+      // the beacon, trail and glint (keyboard controls: the timing ring is the only ring)
+      shuttleFx.update({ dt, camera, pos: shuttle.position, speed: sp, pxPerM, live, coming, hittable: beaconHit, ring: !rv.oneRing, host: renderer.domElement.parentElement });
       const me = my >= 0 ? world.players[my] : null;
       if (me && me[6] >= 0 && live) {
         const ch = clamp(me[6] / 42, 0, 1.2);
@@ -1015,9 +1060,122 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
       camera.position.add(shakeOff);
       shake *= Math.pow(0.86, dt * 60);
     } else shakeOff.set(0, 0, 0);
+    smashFx.update(dt, camera);
     const tr = performance.now();
+    portrait.work(!!rv.calm); // (the portrait's recording, only while play is calm: painted over by the render below)
     renderer.render(scene, camera);
+    smashFx.afterRender(camera, shotVel); // contact glass breaks the frame just drawn
     prof.render += performance.now() - tr; prof.n++;
+  }
+
+  // ---- the player card's portrait, pre-rendered (client: R.portraitPrepare(name), R.portraitFrames(slot)).
+  // A second athlete in the player's kit and look, posed in a small studio scene of its own (warm key,
+  // cool fill, a rim in the team colour, a deep backdrop), recorded ONCE into a few short clips: a
+  // breathing idle loop, a fist pump and a racket flourish, at twice the card's resolution; afterwards
+  // the card only plays the frames back. Recording borrows a corner of the canvas the main render then
+  // paints over, and lifting each frame off it stalls the GPU, so it runs ONE frame per render frame
+  // and only while nothing is being played: on the home screen (prepared there for your name in both
+  // kits, before you start a match) and between points. Never during a rally.
+  function createPortrait() {
+    const W = 224, H = 262, FPS = 20; // (about 130 frames a kit, ~30 MB)
+    const CLIPS = [{ name: 'idle', len: 2.0, cel: null }, { name: 'pump', len: 2.3, cel: 1 }, { name: 'flourish', len: 2.3, cel: 0 }];
+    const ps = new THREE.Scene();
+    ps.environment = A.env;
+    const cam = new THREE.PerspectiveCamera(21, W / H, 0.05, 20); ps.add(cam);
+    ps.add(new THREE.HemisphereLight(0xdfe8ff, 0x10141f, 0.35));
+    const key = new THREE.DirectionalLight(0xffe9d2, 3.0), fill = new THREE.DirectionalLight(0x9fb8ff, 0.45), rim = new THREE.DirectionalLight(0xff6b73, 4.2), top = new THREE.DirectionalLight(0xffffff, 0.8);
+    for (const l of [key, fill, rim, top]) { ps.add(l); ps.add(l.target); }
+    const plate = hex => canvasTex(256, 320, (g, w, h) => {
+      const c = new THREE.Color(hex);
+      const lin = g.createLinearGradient(0, 0, 0, h); lin.addColorStop(0, '#070b1c'); lin.addColorStop(1, '#0f1631');
+      g.fillStyle = lin; g.fillRect(0, 0, w, h);
+      const glow = g.createRadialGradient(w * 0.3, h * 1.05, 10, w * 0.3, h * 1.05, h);
+      glow.addColorStop(0, `rgba(${c.r * 255 | 0},${c.g * 255 | 0},${c.b * 255 | 0},.75)`); glow.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = glow; g.fillRect(0, 0, w, h);
+      const halo = g.createRadialGradient(w * 0.55, h * 0.32, 4, w * 0.55, h * 0.32, h * 0.5);
+      halo.addColorStop(0, 'rgba(160,185,255,.16)'); halo.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = halo; g.fillRect(0, 0, w, h);
+    });
+    const bgMat = new THREE.MeshBasicMaterial({ fog: false, toneMapped: false });
+    const bg = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bgMat); bg.position.z = -5; cam.add(bg);
+    { const bh = 2 * 5 * Math.tan(cam.fov * Math.PI / 360); bg.scale.set(bh * cam.aspect * 1.05, bh * 1.05, 1); }
+    const p = new Array(21).fill(0); p[0] = -4; p[1] = 0; p[4] = 1; p[6] = -1; p[9] = 100;
+    const head = new THREE.Vector3(), size = new THREE.Vector2();
+    const athletes = [null, null], done = new Map(), queue = [];
+    let ath = null, job = null;
+    function frame(f) { ath.update({ p, ball: null, dt: 1 / FPS, t: f.t, frozen: false, stroke: null, chargeKind: null, prep: null, splitAgo: null, won: f.won, lost: null, celebration: f.v }); }
+    function shoot(t) {
+      ath.h.root.updateMatrixWorld(true);
+      const hb = ath.h.bone && (ath.h.bone.head || ath.h.bone.Head);
+      if (hb) hb.getWorldPosition(head); else head.set(-4, 1.6, 0);
+      // a three-quarter view, head and shoulders, the camera drifting a little through the clip
+      const drift = Math.sin(t * 0.9) * 0.05;
+      cam.position.set(head.x + 1.32, head.y + 0.05, head.z + 0.58 + drift);
+      cam.lookAt(head.x, head.y - 0.03, head.z); // (head room above the hair)
+      key.position.set(head.x + 1.6, head.y + 1.4, head.z + 1.6); key.target.position.copy(head);
+      fill.position.set(head.x + 1.2, head.y - 0.2, head.z - 1.9); fill.target.position.copy(head);
+      rim.position.set(head.x - 1.7, head.y + 1.1, head.z - 1.0); rim.target.position.copy(head);
+      top.position.set(head.x, head.y + 3, head.z); top.target.position.copy(head);
+      cam.updateMatrixWorld(true);
+      // render into the canvas's bottom-left corner and lift the pixels straight off it
+      renderer.getSize(size);
+      const pr = renderer.getPixelRatio(), cw = W / pr, ch = H / pr;
+      renderer.setScissorTest(true); renderer.setScissor(0, 0, cw, ch); renderer.setViewport(0, 0, cw, ch);
+      const su = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
+      renderer.render(ps, cam);
+      renderer.shadowMap.autoUpdate = su;
+      renderer.setScissorTest(false); renderer.setViewport(0, 0, size.x, size.y);
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const gl = renderer.domElement;
+      c.getContext('2d').drawImage(gl, 0, gl.height - H, W, H, 0, 0, W, H);
+      return c;
+    }
+    return {
+      // a slot's clips for whoever plays it now (their name sets the look), or null while they are not
+      // recorded yet (then they are queued, first in line)
+      frames(slot) {
+        const live = players[slot], id = live && live.identity != null ? live.identity : '';
+        const key = slot + ':' + id, got = done.get(key);
+        if (got) return got;
+        if (id && !(job && job.key === key) && !queue.some(q => q.key === key)) queue.unshift({ slot, id, key });
+        return null;
+      },
+      // the home screen: record your look in both kits ahead of any match
+      prepare(name) {
+        if (!name) return;
+        for (const slot of [0, 1]) {
+          const key = slot + ':' + name;
+          if (!done.has(key) && !(job && job.key === key) && !queue.some(q => q.key === key)) queue.push({ slot, id: name, key });
+        }
+      },
+      debug: () => ({ job: job && { key: job.key, clip: job.clip, k: job.k }, queued: queue.map(q => q.key), done: [...done.keys()] }),
+      // before the main render, and only when the client says play is calm: one more recorded frame
+      work(calm) {
+        if (!calm) return;
+        if (!job) {
+          const next = queue.shift(); if (!next) return;
+          if (done.has(next.key)) return;
+          if (!athletes[next.slot]) { athletes[next.slot] = new Athlete(ps, KITS[next.slot], A, lookFor); return; } // (made one frame, used the next)
+          ath = athletes[next.slot];
+          for (const a of athletes) if (a) a.root.visible = a === ath;
+          ath.setIdentity(next.id, next.slot);
+          bgMat.map && bgMat.map.dispose(); bgMat.map = plate(next.slot ? 0x3d80f0 : 0xf0525c); bgMat.needsUpdate = true;
+          rim.color.setHex(next.slot ? 0x6aa0ff : 0xff6b73);
+          job = { key: next.key, clip: 0, k: -1, t: 0, out: {} };
+        }
+        const C = CLIPS[job.clip], total = Math.round(C.len * FPS);
+        if (job.k < 0) { // a clip begins: back to rest, settled for half a second, unrecorded
+          if (ath.reset) ath.reset();
+          for (let i = 0; i < 12; i++) { job.t += 1 / FPS; frame({ t: 100 + job.t, won: null, v: 0 }); }
+          job.out[C.name] = []; job.k = 0;
+          return;
+        }
+        job.t += 1 / FPS;
+        frame({ t: 100 + job.t, won: C.cel == null ? null : job.k / FPS, v: C.cel == null ? 0 : C.cel });
+        job.out[C.name].push(shoot(job.k / FPS));
+        if (++job.k >= total) { job.k = -1; if (++job.clip >= CLIPS.length) { done.set(job.key, { fps: FPS, w: W, h: H, clips: job.out }); job = null; } }
+      },
+    };
   }
 
   function project(x, y, z) {
@@ -1050,11 +1208,19 @@ export async function createRenderer(canvas, { tier = 'high', boot } = {}) {
     // builder, and a synchronous render of the current scene
     debugAthletes: () => players,
     debugAthleteFrame: (i, p, b, rv, dt, now) => athleteFrame(i, p, b, rv, dt, now),
-    debugRender: () => { if (dbg && dbg.camPos) { camera.position.set(...dbg.camPos); camera.lookAt(...dbg.camLook); } if (dbg && dbg.ball) { shuttle.position.set(...W2(dbg.ball[0], dbg.ball[1], dbg.ball[2])); shuttle.scale.setScalar(SH_SCALE); } const hid = [halo, beaconGlow, beaconRing, dropLine, marker, countRing].map(o => [o, o.visible]); if (dbg && dbg.ball) hid.forEach(([o]) => { o.visible = false; }); renderer.render(scene, camera); hid.forEach(([o, v]) => { o.visible = v; }); },
+    debugRender: () => { if (dbg && dbg.camPos) { camera.position.set(...dbg.camPos); camera.lookAt(...dbg.camLook); } if (dbg && dbg.ball) { shuttle.position.set(...W2(dbg.ball[0], dbg.ball[1], dbg.ball[2])); shuttle.scale.setScalar(SH_SCALE); } const hid = [halo, beaconGlow, beaconRing, shuttleFx.beacon, shuttleFx.glint, shuttleFx.trail, dropLine, marker, countRing].map(o => [o, o.visible]); if (dbg && dbg.ball) hid.forEach(([o]) => { o.visible = false; }); renderer.render(scene, camera); hid.forEach(([o, v]) => { o.visible = v; }); },
     strokes: STROKES,
     setSafeBottom: v => { safeBottom = v; },
     debugCam: () => ({ pos: camera.position.toArray(), target: camTarget.toArray() }),
-    debugScene: () => ({ children: scene.children.length, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, crowd: hall.people }),
+    debugScene: () => ({ children: scene.children.length, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, crowd: hall.people, heat: heatVfx.stats() }),
+    // the player card's portrait: slot -1 or no rect turns it off; rect in CSS px from the canvas's top left
+    // the player card's portrait: the slot's pre-rendered clips ({ fps, w, h, clips: { idle, pump,
+    // flourish } }, canvases), or null while they are still being recorded
+    portraitFrames: slot => (slot >= 0 ? portrait.frames(slot) : null),
+    portraitDebug: () => portrait.debug(),
+    portraitPrepare: name => portrait.prepare(name),
+    portraitWork: n => { for (let i = 0; i < n; i++) portrait.work(true); return portrait.debug(); }, // (support: run the recording without waiting for frames)
+    debugPresentation: () => ({netDynamics,net,netLook,heatVfx,floor,shuttleFx,smashFx,W2,lastSmash:()=>lastSmash}),
     prof: () => { const n = prof.n || 1, o = { players: +(prof.players / n).toFixed(2), render: +(prof.render / n).toFixed(2), n: prof.n }; prof.players = prof.render = prof.n = 0; return o; },
     stats: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, pr: renderer.getPixelRatio(), scale, fps: Math.round(1000 / avgMs) }),
   };

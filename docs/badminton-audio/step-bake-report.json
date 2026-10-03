@@ -1,0 +1,326 @@
+[
+  {
+    "file": "court-tap-01.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 2.93,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -32.77
+  },
+  {
+    "file": "court-tap-02.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 4.67,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -32.45
+  },
+  {
+    "file": "court-tap-03.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 8.47,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -33.31
+  },
+  {
+    "file": "court-tap-04.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 10.38,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -35.08
+  },
+  {
+    "file": "court-tap-05.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 11.35,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -35.57
+  },
+  {
+    "file": "court-tap-06.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 12.24,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -36.16
+  },
+  {
+    "file": "court-tap-07.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 14.95,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -31.4
+  },
+  {
+    "file": "court-tap-08.wav",
+    "kind": "tap",
+    "source": "rubber-shoes-dynamique-613723.mp3",
+    "onset": 6.48,
+    "duration": 0.16,
+    "peakDb": -15.0,
+    "rmsDb": -32.64
+  },
+  {
+    "file": "court-step-01.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 10.415,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -34.41
+  },
+  {
+    "file": "court-step-02.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 11.135,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -33.41
+  },
+  {
+    "file": "court-step-03.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 11.46,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -30.72
+  },
+  {
+    "file": "court-step-04.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 12.96,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -33.9
+  },
+  {
+    "file": "court-step-05.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 15.31,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -33.24
+  },
+  {
+    "file": "court-step-06.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 21.44,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -33.68
+  },
+  {
+    "file": "court-step-07.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 23.615,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -33.45
+  },
+  {
+    "file": "court-step-08.wav",
+    "kind": "step",
+    "source": "gym-footwork-source.mp3",
+    "onset": 24.365,
+    "duration": 0.18,
+    "peakDb": -11.0,
+    "rmsDb": -33.03
+  },
+  {
+    "file": "court-scuff-01.wav",
+    "kind": "scuff",
+    "source": "basketball-player-whi1ter1ce-708054.mp3",
+    "onset": 2.15,
+    "duration": 0.2,
+    "peakDb": -13.0,
+    "rmsDb": -38.14
+  },
+  {
+    "file": "court-scuff-02.wav",
+    "kind": "scuff",
+    "source": "basketball-player-whi1ter1ce-708054.mp3",
+    "onset": 2.68,
+    "duration": 0.2,
+    "peakDb": -13.0,
+    "rmsDb": -36.18
+  },
+  {
+    "file": "court-scuff-03.wav",
+    "kind": "scuff",
+    "source": "basketball-player-whi1ter1ce-708054.mp3",
+    "onset": 3.77,
+    "duration": 0.2,
+    "peakDb": -13.0,
+    "rmsDb": -34.63
+  },
+  {
+    "file": "court-scuff-04.wav",
+    "kind": "scuff",
+    "source": "basketball-player-whi1ter1ce-708054.mp3",
+    "onset": 4.68,
+    "duration": 0.2,
+    "peakDb": -13.0,
+    "rmsDb": -34.87
+  },
+  {
+    "file": "court-scuff-05.wav",
+    "kind": "scuff",
+    "source": "basketball-player-whi1ter1ce-708054.mp3",
+    "onset": 6.2,
+    "duration": 0.2,
+    "peakDb": -13.0,
+    "rmsDb": -38.11
+  },
+  {
+    "file": "court-scuff-06.wav",
+    "kind": "scuff",
+    "source": "basketball-player-whi1ter1ce-708054.mp3",
+    "onset": 8.77,
+    "duration": 0.2,
+    "peakDb": -13.0,
+    "rmsDb": -39.63
+  },
+  {
+    "file": "court-squeak-01.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 4.54,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -31.57
+  },
+  {
+    "file": "court-squeak-02.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 14.235,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -29.12
+  },
+  {
+    "file": "court-squeak-03.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 20.75,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -34.03
+  },
+  {
+    "file": "court-squeak-04.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 23.29,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -27.6
+  },
+  {
+    "file": "court-squeak-05.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 28.805,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -31.75
+  },
+  {
+    "file": "court-squeak-06.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 30.305,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -28.24
+  },
+  {
+    "file": "court-squeak-07.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 32.965,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -29.34
+  },
+  {
+    "file": "court-squeak-08.wav",
+    "kind": "squeak",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 40.78,
+    "duration": 0.26,
+    "peakDb": -14.0,
+    "rmsDb": -31.81
+  },
+  {
+    "file": "court-squeal-01.wav",
+    "kind": "squeal",
+    "source": "sneaker-squeak-shakaharu-88502.mp3",
+    "onset": 4.64,
+    "duration": 0.42,
+    "peakDb": -13.0,
+    "rmsDb": -25.95
+  },
+  {
+    "file": "court-squeal-02.wav",
+    "kind": "squeal",
+    "source": "sneaker-squeak-shakaharu-88502.mp3",
+    "onset": 5.77,
+    "duration": 0.42,
+    "peakDb": -13.0,
+    "rmsDb": -35.39
+  },
+  {
+    "file": "court-squeal-03.wav",
+    "kind": "squeal",
+    "source": "sneaker-squeak-shakaharu-88502.mp3",
+    "onset": 6.965,
+    "duration": 0.42,
+    "peakDb": -13.0,
+    "rmsDb": -26.59
+  },
+  {
+    "file": "court-squeal-04.wav",
+    "kind": "squeal",
+    "source": "sneaker-squeak-shakaharu-88502.mp3",
+    "onset": 8.65,
+    "duration": 0.42,
+    "peakDb": -13.0,
+    "rmsDb": -30.64
+  },
+  {
+    "file": "court-squeal-05.wav",
+    "kind": "squeal",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 16.25,
+    "duration": 0.42,
+    "peakDb": -13.0,
+    "rmsDb": -30.36
+  },
+  {
+    "file": "court-squeal-06.wav",
+    "kind": "squeal",
+    "source": "sneaker-skid-shakaharu-68247.mp3",
+    "onset": 49.015,
+    "duration": 0.42,
+    "peakDb": -13.0,
+    "rmsDb": -28.24
+  }
+]

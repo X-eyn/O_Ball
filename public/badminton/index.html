@@ -3,41 +3,55 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#070b12">
+<meta name="theme-color" content="#2453b8">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Office Badminton">
 <title>Office Badminton 🏸</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23070b12'/><path d='M16 6l6 10-6 10-6-10z' fill='%23e4ff3c'/></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231f86f0'/><path d='M9 5 16 16 23 5Z' fill='white' stroke='%230d1838' stroke-width='2'/><circle cx='16' cy='21' r='6.5' fill='%23fff3dc' stroke='%230d1838' stroke-width='2'/></svg>">
 <!--BOOT-->
 </head>
 <body>
 <!-- boot: a simple measured loading screen (see boot.js) -->
 <div id="boot" role="progressbar" aria-label="Loading Office Badminton" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
 <style>
-#boot{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#070b12;color:#f2f4f7;font-family:'Barlow Condensed','Arial Narrow',sans-serif;transition:opacity .4s cubic-bezier(.2,.8,.2,1)}
-#boot.out{opacity:0;pointer-events:none}
-#boot .bx{display:flex;flex-direction:column;align-items:center;gap:20px;width:min(360px,calc(100vw - 32px));text-align:center}
-#boot .brand{font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1}
-#boot .brand i{color:#e4ff3c;font-style:italic}
-#boot .ring{position:relative;width:120px;height:120px}
-#boot svg{width:100%;height:100%;transform:rotate(-90deg)}
-#boot .trk{fill:none;stroke:rgba(255,255,255,.09);stroke-width:5}
-#boot .bar{fill:none;stroke:#e4ff3c;stroke-width:5;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset .25s linear}
-#boot .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:32px;font-variant-numeric:tabular-nums}
-#boot .pct small{font-size:15px;color:#8b93a4;margin-left:2px}
-#boot .lbl{font-weight:700;font-size:14px;letter-spacing:.16em;text-transform:uppercase;min-height:17px}
-#boot .sub{font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:12px;color:#5c6475}
-#boot .err{display:none;font-family:'Barlow','Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.5;color:#ff6b6b}
+#boot{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse 70% 55% at 50% 0%,rgba(120,176,255,.35),transparent 70%),linear-gradient(180deg,#2f6cdc,#2453b8 50%,#18357f);color:#fff;font-family:'Fredoka','Nunito','Arial Rounded MT Bold',system-ui,sans-serif;transition:opacity .45s cubic-bezier(.2,.8,.2,1),transform .45s cubic-bezier(.2,.8,.2,1)}
+#boot.out{opacity:0;transform:scale(1.06);pointer-events:none}
+#boot .bx{display:flex;flex-direction:column;align-items:center;gap:14px;width:min(380px,calc(100vw - 32px));text-align:center}
+#boot .mascot{width:96px;height:96px;animation:bootHop .9s cubic-bezier(.34,1.56,.64,1) infinite alternate;filter:drop-shadow(0 6px 0 rgba(10,20,45,.25))}
+@keyframes bootHop{from{transform:translateY(0) rotate(-6deg)}to{transform:translateY(-14px) rotate(6deg)}}
+#boot .brand{font-weight:700;font-size:40px;line-height:1;paint-order:stroke fill;-webkit-text-stroke:8px #13204a;text-shadow:0 5px 0 #13204a;transform:rotate(-2deg)}
+#boot .brand i{color:#ffc83d;font-style:normal}
+#boot .ring{position:relative;width:118px;height:118px;background:#fffaf0;border:4px solid #13204a;border-radius:50%;box-shadow:0 6px 0 rgba(10,18,45,.35)}
+#boot svg.r{width:100%;height:100%;transform:rotate(-90deg)}
+#boot .trk{fill:none;stroke:#f0e6d0;stroke-width:12}
+#boot .bar{fill:none;stroke:#f5b62a;stroke-width:12;stroke-linecap:round;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset .25s linear}
+#boot .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:30px;color:#1a2347;font-variant-numeric:tabular-nums}
+#boot .pct small{font-size:15px;color:#6b7898;margin-left:2px}
+#boot .lbl{font-weight:600;font-size:17px;min-height:20px;background:rgba(10,18,45,.35);padding:4px 16px;border-radius:999px}
+#boot .sub{font-family:'Nunito',system-ui,sans-serif;font-weight:700;font-size:12px;color:rgba(255,255,255,.75)}
+#boot .err{display:none;font-family:'Nunito',system-ui,sans-serif;font-weight:700;font-size:14px;line-height:1.5;color:#fff;background:#ff4f5e;padding:10px 14px;border-radius:16px}
 #boot.failed .err{display:block}
-#boot.failed .bar{stroke:#ff6b6b}
-#boot button{margin-top:10px;background:#e4ff3c;color:#070b12;border:0;padding:9px 18px;font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-weight:800;font-size:14px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
-@media (max-height:480px){#boot .bx{gap:10px}#boot .ring{width:84px;height:84px}}
+#boot.failed .bar{stroke:#ff4f5e}
+#boot button{margin-top:10px;background:#ffc83d;color:#3b2600;border:3px solid #13204a;padding:9px 22px;border-radius:999px;font-family:inherit;font-weight:700;font-size:16px;cursor:pointer;box-shadow:0 4px 0 #13204a}
+@media (max-height:480px){#boot .bx{gap:8px}#boot .ring{width:84px;height:84px}#boot .mascot{width:64px;height:64px}#boot .brand{font-size:30px}}
 </style>
 <div class="bx">
-  <div class="brand">OFFICE <i>BADMINTON</i></div>
-  <div class="ring"><svg viewBox="0 0 120 120"><circle class="trk" cx="60" cy="60" r="52"/><circle class="bar" cx="60" cy="60" r="52"/></svg><div class="pct">0<small>%</small></div></div>
+  <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true">
+  <defs><linearGradient id="mskirt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dbe8f7"/></linearGradient>
+  <radialGradient id="mcork" cx=".38" cy=".32" r=".75"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#f2d9b8"/></radialGradient></defs>
+  <path d="M22 10 L50 50 L78 10 Q50 -2 22 10Z" fill="url(#mskirt)" stroke="#0d1838" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M36 6 L50 48 M50 3 L50 48 M64 6 L50 48" stroke="#9fb6d6" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="31" y="42" width="38" height="11" rx="5.5" fill="#ffc83d" stroke="#13204a" stroke-width="4"/>
+  <circle cx="50" cy="71" r="24" fill="url(#mcork)" stroke="#0d1838" stroke-width="4"/>
+  <ellipse cx="41" cy="69" rx="3.6" ry="4.8" fill="#0d1838"/><ellipse cx="59" cy="69" rx="3.6" ry="4.8" fill="#0d1838"/>
+  <circle cx="42.3" cy="67.3" r="1.3" fill="#fff"/><circle cx="60.3" cy="67.3" r="1.3" fill="#fff"/>
+  <ellipse cx="34" cy="78" rx="4.5" ry="2.8" fill="#ff8fa0" opacity=".7"/><ellipse cx="66" cy="78" rx="4.5" ry="2.8" fill="#ff8fa0" opacity=".7"/>
+  <path d="M44 79 Q50 85 56 79" fill="none" stroke="#0d1838" stroke-width="3.2" stroke-linecap="round"/>
+</svg>
+  <div class="brand">Office <i>Badminton</i></div>
+  <div class="ring"><svg class="r" viewBox="0 0 120 120"><circle class="trk" cx="60" cy="60" r="52"/><circle class="bar" cx="60" cy="60" r="52"/></svg><div class="pct">0<small>%</small></div></div>
   <div class="lbl">Starting</div>
   <div class="sub"></div>
   <div class="err"></div>
@@ -51,14 +65,13 @@
       <div class="hud-room"><span class="cap">Room</span><b id="roomCode"></b></div>
       <div id="subbug"></div>
     </div>
-    <div id="scorebug">
-      <div class="sb-side sb-l"><span class="sb-name" id="n0">RED</span><span class="sb-score" id="s0">0</span></div>
-      <div class="sb-mid">
-        <div class="sb-serve" id="serveIcon" title="serving">🏸</div>
-        <div class="sb-rally" id="rallyBadge"></div>
-        <div class="sb-target">first to 7</div>
-      </div>
-      <div class="sb-side sb-r"><span class="sb-score" id="s1">0</span><span class="sb-name" id="n1">BLUE</span></div>
+    <!-- the score as point pips: a dot per point, the last one the match point; each row is also
+         that player's heat meter (a glow line under the pips, the name lit when hot) -->
+    <div id="scorebug" aria-label="Score">
+      <div class="pb-row" id="heat0" data-p="0" data-tier="0" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="pb-nm"><span class="pb-name" id="n0">RED</span><svg class="pb-sv" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l6 10 6-10z" fill="#fffaf0" stroke="#13204a" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="17" r="4.5" fill="#ffc83d" stroke="#13204a" stroke-width="2"/></svg><span class="pb-tier" id="heatLabel0"></span></span><span class="pb-pips" id="pips0"></span><span class="pb-num" id="s0">0</span><b class="pb-hv" id="heatValue0">0</b></div>
+      <div class="pb-row" id="heat1" data-p="1" data-tier="0" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="pb-nm"><span class="pb-name" id="n1">BLUE</span><svg class="pb-sv" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l6 10 6-10z" fill="#fffaf0" stroke="#13204a" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="17" r="4.5" fill="#ffc83d" stroke="#13204a" stroke-width="2"/></svg><span class="pb-tier" id="heatLabel1"></span></span><span class="pb-pips" id="pips1"></span><span class="pb-num" id="s1">0</span><b class="pb-hv" id="heatValue1">0</b></div>
+      <!-- the rally, as the board's own footer line: it opens once a rally is worth counting -->
+      <div class="pb-foot" id="rallyBadge"></div>
     </div>
     <div class="hud-r">
       <span id="hudRight"></span>
@@ -74,6 +87,38 @@
     <div id="vignette"></div>
     <div id="flash"></div>
     <div id="labels"></div>
+    <!-- the player card, bottom left: the halo. Your pre-rendered portrait in a round glass frame, the
+         Fire charge a light trail running round it (segments brightening to a glowing head, the ticks
+         outside lighting as it passes), a team-colour accent; beside it your name, your perfect
+         streak, the charge readout (or FIRE READY and the A that fires it), and your last shot's grade -->
+    <div id="card" class="hidden" data-t="1">
+      <div class="cd-pool" aria-hidden="true"></div>
+      <div class="cd-halo" aria-hidden="true">
+        <i class="glow"></i>
+        <svg class="frame" viewBox="0 0 150 150">
+          <g class="ticks"></g>
+          <path class="accent" d=""/>
+        </svg>
+        <i class="track"></i>
+        <i class="trail"></i>
+        <i class="flame"></i>
+        <i class="head"><b></b></i>
+        <i class="comet"></i>
+        <div class="pic"><canvas class="cd-pic" width="224" height="262"></canvas><i class="glass"></i></div>
+        <i class="burst"></i>
+      </div>
+      <div class="cd-side">
+        <div class="cd-grade" aria-live="polite"><b id="cardWord"></b><span id="cardDetail"></span></div>
+        <div class="cd-id"><i class="dot"></i><b id="cardName">YOU</b></div>
+        <div class="cd-streak" id="cardStreak" data-n="0" aria-label="Perfect streak"><span class="pips"></span><b class="n"></b></div>
+        <div class="cd-read" role="meter" aria-label="Fire Shot charge" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="pct"><b id="cardPct" data-v="0"></b><span><i>%</i><em>FIRE</em></span></div>
+          <div class="ready"><kbd>A</kbd><span><b>FIRE</b><em>READY</em></span></div>
+        </div>
+      </div>
+    </div>
+    <!-- while the card's type is being chosen: switch it here -->
+    <div id="typePick" class="hidden"><span>TYPE</span><button data-t="1">1</button><button data-t="2">2</button><button data-t="3">3</button></div>
     <canvas id="swCv"></canvas>
     <div id="aimMark" class="hidden"><i></i><span></span></div>
     <div id="bigText"></div>
@@ -89,7 +134,21 @@
     <!-- main menu / home -->
     <div id="home" class="hidden">
       <div class="home-col">
-        <div class="logo"><span>Office</span><span>Badminton</span></div>
+        <div class="home-hero">
+          <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true">
+  <defs><linearGradient id="mskirt2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dbe8f7"/></linearGradient>
+  <radialGradient id="mcork2" cx=".38" cy=".32" r=".75"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#f2d9b8"/></radialGradient></defs>
+  <path d="M22 10 L50 50 L78 10 Q50 -2 22 10Z" fill="url(#mskirt2)" stroke="#0d1838" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M36 6 L50 48 M50 3 L50 48 M64 6 L50 48" stroke="#9fb6d6" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="31" y="42" width="38" height="11" rx="5.5" fill="#ffc83d" stroke="#13204a" stroke-width="4"/>
+  <circle cx="50" cy="71" r="24" fill="url(#mcork2)" stroke="#0d1838" stroke-width="4"/>
+  <ellipse cx="41" cy="69" rx="3.6" ry="4.8" fill="#0d1838"/><ellipse cx="59" cy="69" rx="3.6" ry="4.8" fill="#0d1838"/>
+  <circle cx="42.3" cy="67.3" r="1.3" fill="#fff"/><circle cx="60.3" cy="67.3" r="1.3" fill="#fff"/>
+  <ellipse cx="34" cy="78" rx="4.5" ry="2.8" fill="#ff8fa0" opacity=".7"/><ellipse cx="66" cy="78" rx="4.5" ry="2.8" fill="#ff8fa0" opacity=".7"/>
+  <path d="M44 79 Q50 85 56 79" fill="none" stroke="#0d1838" stroke-width="3.2" stroke-linecap="round"/>
+</svg>
+          <div class="logo"><span>Office</span><span>Badminton</span></div>
+        </div>
         <label class="as">
           <span class="cap">Playing as</span>
           <input id="nameInput" maxlength="16" placeholder="Your name" autocomplete="off" spellcheck="false">

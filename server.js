@@ -141,10 +141,10 @@ class Room {
     const name = clean(hello.name);
     if (m) {
       if (m.ws && m.ws !== ws) { try { m.ws.close(4000, 'replaced'); } catch { } }
-      Object.assign(m, { ws, connected: true, goneT: 0, name, needSync: true, practice: hello.practice === 'solo' ? 'solo' : 'bot', level: levelOf(hello.level) });
+      Object.assign(m, { ws, connected: true, goneT: 0, name, needSync: true, practice: ['solo'].includes(hello.practice) ? hello.practice : 'bot', level: levelOf(hello.level) });
       this.toast(`${m.name} is back`);
     } else {
-      m = { id: ++nextId, token: String(hello.token || crypto.randomUUID()).slice(0, 64), name, ws, connected: true, sitting: false, input: blankInput(), goneT: 0, emoteAt: 0, practice: hello.practice === 'solo' ? 'solo' : 'bot', level: levelOf(hello.level) };
+      m = { id: ++nextId, token: String(hello.token || crypto.randomUUID()).slice(0, 64), name, ws, connected: true, sitting: false, input: blankInput(), goneT: 0, emoteAt: 0, practice: ['solo'].includes(hello.practice) ? hello.practice : 'bot', level: levelOf(hello.level) };
       this.members.set(m.id, m);
       this.toast(`${m.name} joined`);
     }
@@ -537,7 +537,7 @@ class BadmintonRoom extends Room {
 // Game files are content-addressed (see assets.js): each URL names exactly one version of a file,
 // so it is sent once and kept by the browser for good. The page itself is always revalidated
 // (a cheap 304 when nothing changed), because it carries the manifest that points at the files.
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.webmanifest': 'application/manifest+json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.jpg': 'image/jpeg', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.glb': 'model/gltf-binary', '.webmanifest': 'application/manifest+json' };
 const IMMUTABLE = 'public, max-age=31536000, immutable', REVALIDATE = 'no-cache';
 function send(res, code, body, type = 'application/json') {
   res.writeHead(code, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' }); res.end(body);
@@ -595,6 +595,11 @@ function diag(req, res) {
 
 const server = http.createServer((req, res) => {
   let p, url;
+  // a doubled slash (localhost:3000//badminton/heat) parses as a host: send it to the single-slash path
+  if (/^\/{2,}/.test(req.url) || /^[^?]*\/\//.test(req.url)) {
+    const [path, q] = req.url.split(/\?(.*)/s);
+    res.writeHead(301, { Location: path.replace(/\/{2,}/g, '/') + (q !== undefined ? '?' + q : '') }); return res.end();
+  }
   try { url = new URL(req.url, 'http://x'); p = decodeURIComponent(url.pathname); } catch { return send(res, 400, 'Bad request', 'text/plain'); }
   const qSport = sportOf(url.searchParams.get('sport'));
   if (p === '/api/info') return send(res, 200, JSON.stringify({ port: PORT, ips: lanIps().map(i => i.address) }));
@@ -604,8 +609,8 @@ const server = http.createServer((req, res) => {
   if (p === '/api/build') return send(res, 200, JSON.stringify({ build: assets.manifest().build }));
   if (p === '/api/diag' && req.method === 'POST') return diag(req, res);
   if (p === '/' || /^\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'football').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
-  // (/badminton/anim: the animation player, the same page)
-  if (p === '/badminton' || p === '/badminton/anim' || /^\/badminton\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'badminton').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
+  // (/badminton/anim: the animation player, /badminton/heat: the heat lab, the same page)
+  if (p === '/badminton' || p === '/badminton/anim' || p === '/badminton/heat' || /^\/badminton\/r\/[A-Za-z0-9]{1,8}\/?$/.test(p)) return page(req, res, 'badminton').catch(e => { console.error(e); send(res, 500, 'Server error', 'text/plain'); });
   const abs = assets.resolveUrl(p);
   if (abs) return sendFile(req, res, assets.file(abs), IMMUTABLE).catch(() => send(res, 404, 'Not found', 'text/plain'));
   if (/^\/(app|asset|vendor)\//.test(p)) return send(res, 404, 'Not found (the game has been updated: reload)', 'text/plain');

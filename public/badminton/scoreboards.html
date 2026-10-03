@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scoreboard Variants</title>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+/* Four scoreboard directions for Office Badminton, in the game's palette. A mockup only: nothing
+   here is wired into the game. Space / the button scores a point, H heats up, S swaps the server. */
+:root { --navy: #13204a; --glass: rgba(16, 26, 62, .78); --cream: #fffaf0; --cream-2: #f3ead6; --accent: #ffc83d; --red: #f0525c; --red-2: #c43442; --blue: #3d80f0; --blue-2: #2659c6; --dim: #8b93ad; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #0b1024; color: #fff; font: 800 14px/1.3 Nunito, system-ui, sans-serif; }
+header { position: sticky; top: 0; z-index: 9; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 18px; background: #0b1024; border-bottom: 1px solid #1d2647; }
+header b { font: 600 18px Fredoka; margin-right: 8px; }
+header button { font: 700 14px Fredoka; background: #1b2550; color: #fff; border: 2px solid #2d3a70; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+header button:hover { border-color: #5a6aa8; }
+header span { color: var(--dim); font-size: 13px; }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 620px), 1fr)); gap: 16px; padding: 16px; }
+.cell { position: relative; aspect-ratio: 16 / 7; border-radius: 14px; overflow: hidden; border: 1px solid #1d2647;
+  /* a stand-in for the arena: dark stands with a crowd, the court below */
+  background:
+    radial-gradient(ellipse 60% 40% at 50% 115%, rgba(30, 140, 110, .9), transparent 70%),
+    linear-gradient(180deg, transparent 62%, #0f5a4b 62%, #127052 100%),
+    radial-gradient(circle, rgba(255,255,255,.08) 1.5px, transparent 2px) 0 0 / 14px 12px,
+    linear-gradient(180deg, #0a0f22, #141c3a 60%); }
+.cell .tag { position: absolute; left: 14px; bottom: 12px; font: 600 15px Fredoka; background: rgba(0,0,0,.45); padding: 4px 12px; border-radius: 999px; }
+.cell .tag i { font-style: normal; color: var(--accent); margin-right: 6px; }
+.num { font-variant-numeric: tabular-nums; }
+.bump { animation: bump .5s cubic-bezier(.34, 1.56, .64, 1); }
+@keyframes bump { 0% { transform: scale(1); } 35% { transform: scale(1.45); } 100% { transform: scale(1); } }
+
+/* ============================================================ A · Compact plate (top-left) */
+.A { position: absolute; left: 16px; top: 16px; display: grid; grid-template-columns: auto 1fr auto; background: var(--glass); backdrop-filter: blur(10px); border: 2px solid rgba(255,255,255,.1); border-radius: 14px; padding: 6px; gap: 4px 0; min-width: 230px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.A .row { display: contents; }
+.A .chip { width: 6px; border-radius: 3px; margin: 3px 10px 3px 4px; }
+.A .r0 .chip { background: var(--red); } .A .r1 .chip { background: var(--blue); }
+.A .who { display: flex; flex-direction: column; justify-content: center; padding: 4px 0; }
+.A .nm { font: 600 17px Fredoka; display: flex; align-items: center; gap: 6px; line-height: 1.1; }
+.A .sv { width: 18px; height: 18px; flex: none; opacity: 0; transition: opacity .2s; }
+.A .serving .sv { opacity: 1; }
+.A .flame { display: flex; gap: 3px; margin-top: 4px; }
+.A .flame i { width: 14px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.14); transition: background .3s; }
+.A .flame i.on { background: linear-gradient(90deg, #ffd27a, #ff8a3d); }
+.A .sc { font: 700 26px Fredoka; min-width: 46px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: rgba(255,255,255,.08); margin-left: 12px; }
+.A .serving .sc { background: var(--cream); color: var(--navy); }
+.A .foot { grid-column: 1 / -1; font: 600 11px Fredoka; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); padding: 4px 6px 2px 20px; border-top: 1px solid rgba(255,255,255,.08); margin-top: 2px; }
+
+/* ============================================================ B · Slim centre capsule */
+.B { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.B .cap { display: flex; align-items: stretch; height: 44px; border-radius: 999px; background: var(--navy); border: 3px solid var(--navy); box-shadow: 0 5px 0 rgba(0,0,0,.35); overflow: hidden; }
+.B .side { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 16px; min-width: 128px; font: 600 17px Fredoka; }
+.B .s0 { background: linear-gradient(var(--red), var(--red-2)); justify-content: flex-end; }
+.B .s1 { background: linear-gradient(var(--blue), var(--blue-2)); }
+.B .side .heat { position: absolute; left: 0; bottom: 0; height: 4px; background: linear-gradient(90deg, #ffd27a, #ff8a3d); width: 0; transition: width .4s; box-shadow: 0 0 8px #ff8a3d; }
+.B .s0 .heat { left: auto; right: 0; }
+.B .sv { width: 18px; height: 18px; flex: none; opacity: 0; } .B .serving .sv { opacity: 1; }
+.B .mid { display: flex; align-items: center; background: var(--cream); color: var(--navy); padding: 0 6px; gap: 2px; }
+.B .mid .num { font: 700 28px Fredoka; width: 38px; text-align: center; }
+.B .mid .dash { width: 8px; height: 3px; border-radius: 2px; background: var(--navy); opacity: .3; }
+.B .to { font: 600 11px Fredoka; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.7); background: rgba(0,0,0,.35); padding: 2px 10px; border-radius: 999px; }
+
+/* ============================================================ C · Corner player cards */
+.C { position: absolute; inset: 14px 14px auto 14px; display: flex; justify-content: space-between; pointer-events: none; }
+.C .card { display: flex; align-items: center; gap: 12px; background: var(--cream); color: var(--navy); border: 3px solid var(--navy); border-radius: 18px; padding: 6px 16px 6px 6px; box-shadow: 0 5px 0 var(--navy); }
+.C .card.c1 { flex-direction: row-reverse; padding: 6px 6px 6px 16px; }
+.C .ring { --h: 0; position: relative; width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(#ff8a3d calc(var(--h) * 1%), #e6dbc2 0); transition: --h .4s; }
+.C .ring::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; }
+.C .c0 .ring::before { background: var(--red); } .C .c1 .ring::before { background: var(--blue); }
+.C .ring b { position: relative; font: 700 27px Fredoka; color: #fff; }
+.C .info { display: flex; flex-direction: column; }
+.C .c1 .info { align-items: flex-end; }
+.C .nm { font: 600 17px Fredoka; line-height: 1.1; }
+.C .sub { font: 800 11px Nunito; color: #8a8270; letter-spacing: .06em; text-transform: uppercase; display: flex; gap: 6px; align-items: center; }
+.C .sv { width: 16px; height: 16px; flex: none; display: none; } .C .serving .sv { display: inline; }
+.C .serving .sub .lbl::after { content: ' · serving'; color: #c47a00; }
+
+/* ============================================================ D · Point pips (first to 7, shown) */
+.D { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; background: var(--glass); backdrop-filter: blur(10px); border: 2px solid rgba(255,255,255,.1); border-radius: 16px; padding: 9px 14px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.D .row { display: grid; grid-template-columns: 70px auto 34px; align-items: center; gap: 10px; }
+.D .nm { font: 600 16px Fredoka; display: flex; align-items: center; gap: 5px; }
+.D .sv { width: 17px; height: 17px; flex: none; opacity: 0; } .D .serving .sv { opacity: 1; }
+.D .pips { display: flex; gap: 5px; }
+.D .pips i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); transition: background .25s, border-color .25s, transform .3s cubic-bezier(.34, 1.56, .64, 1); }
+.D .r0 .pips i.on { background: var(--red); border-color: #ffb3b8; }
+.D .r1 .pips i.on { background: var(--blue); border-color: #b3cfff; }
+.D .pips i.on.new { transform: scale(1.5); }
+.D .pips i:last-child { border-style: dashed; border-color: rgba(255,200,61,.6); }
+.D .num { font: 700 22px Fredoka; text-align: right; }
+.D .row.hot .nm { color: #ffc27a; text-shadow: 0 0 10px rgba(255,138,61,.8); }
+.D .row.hot .num { color: #ffc27a; }
+</style>
+</head>
+<body>
+<header>
+  <b>Scoreboard variants</b>
+  <button id="pt0">Point: Zain <span style="opacity:.6">(Z)</span></button>
+  <button id="pt1">Point: Bot <span style="opacity:.6">(X)</span></button>
+  <button id="heat">Heat up <span style="opacity:.6">(H)</span></button>
+  <button id="reset">Reset</button>
+  <span>All four update together</span>
+</header>
+<main>
+  <div class="cell"><div class="A" id="vA"></div><div class="tag"><i>A</i>Compact plate · top-left</div></div>
+  <div class="cell"><div class="B" id="vB"></div><div class="tag"><i>B</i>Slim centre capsule</div></div>
+  <div class="cell"><div class="C" id="vC"></div><div class="tag"><i>C</i>Corner player cards</div></div>
+  <div class="cell"><div class="D" id="vD"></div><div class="tag"><i>D</i>Point pips · first to 7</div></div>
+</main>
+<script>
+const SV = `<svg class="sv" viewBox="0 0 24 24"><path d="M6 3l6 10 6-10z" fill="#fffaf0" stroke="#13204a" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="17" r="4.5" fill="#ffc83d" stroke="#13204a" stroke-width="2"/></svg>`;
+const S = { n: ['Zain', 'Bot'], s: [3, 1], h: [15, 0], sv: 0, last: -1 };
+function render() {
+  const [a, b] = S.s, hot = i => S.h[i] >= 60;
+  document.getElementById('vA').innerHTML = [0, 1].map(i => `<div class="row r${i} ${S.sv === i ? 'serving' : ''}"><span class="chip"></span><div class="who"><span class="nm">${S.n[i]}${SV}</span><span class="flame">${[20, 40, 60, 80, 100].map(t => `<i class="${S.h[i] >= t ? 'on' : ''}"></i>`).join('')}</span></div><span class="sc num ${S.last === i ? 'bump' : ''}">${S.s[i]}</span></div>`).join('') + `<div class="foot">First to 7 · vs Bot</div>`;
+  document.getElementById('vB').innerHTML = `<div class="cap"><div class="side s0 ${S.sv === 0 ? 'serving' : ''}">${SV}<span>${S.n[0]}</span><i class="heat" style="width:${S.h[0]}%"></i></div><div class="mid"><span class="num ${S.last === 0 ? 'bump' : ''}">${a}</span><span class="dash"></span><span class="num ${S.last === 1 ? 'bump' : ''}">${b}</span></div><div class="side s1 ${S.sv === 1 ? 'serving' : ''}"><span>${S.n[1]}</span>${SV}<i class="heat" style="width:${S.h[1]}%"></i></div></div><div class="to">First to 7</div>`;
+  document.getElementById('vC').innerHTML = [0, 1].map(i => `<div class="card c${i} ${S.sv === i ? 'serving' : ''}"><div class="ring" style="--h:${S.h[i]}"><b class="num ${S.last === i ? 'bump' : ''}">${S.s[i]}</b></div><div class="info"><span class="nm">${S.n[i]}</span><span class="sub">${SV}<span class="lbl">${i === 0 ? 'You' : 'Bot · Normal'}</span></span></div></div>`).join('');
+  document.getElementById('vD').innerHTML = [0, 1].map(i => `<div class="row r${i} ${S.sv === i ? 'serving' : ''} ${hot(i) ? 'hot' : ''}"><span class="nm">${S.n[i]}${SV}</span><span class="pips">${Array.from({ length: 7 }, (_, k) => `<i class="${k < S.s[i] ? 'on' : ''} ${S.last === i && k === S.s[i] - 1 ? 'new' : ''}"></i>`).join('')}</span><span class="num ${S.last === i ? 'bump' : ''}">${S.s[i]}</span></div>`).join('');
+  if (S.last >= 0) setTimeout(() => document.querySelectorAll('.D .pips i.new').forEach(e => e.classList.remove('new')), 300);
+}
+function point(i) { if (S.s[0] >= 7 || S.s[1] >= 7) { S.s = [0, 0]; } S.s[i]++; S.sv = i; S.last = i; S.h[i] = Math.min(100, S.h[i] + 12); S.h[1 - i] = Math.max(0, S.h[1 - i] - 15); render(); }
+document.getElementById('pt0').onclick = () => point(0);
+document.getElementById('pt1').onclick = () => point(1);
+document.getElementById('heat').onclick = () => { S.h[0] = Math.min(100, S.h[0] + 20); S.last = -1; render(); };
+document.getElementById('reset').onclick = () => { Object.assign(S, { s: [3, 1], h: [15, 0], sv: 0, last: -1 }); render(); };
+addEventListener('keydown', e => { const k = e.key.toLowerCase(); if (k === 'z') point(0); if (k === 'x') point(1); if (k === 'h') document.getElementById('heat').click(); });
+render();
+</script>
+</body>
+</html>

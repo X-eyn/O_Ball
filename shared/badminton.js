@@ -63,6 +63,17 @@
     // ticks before (the landing is ruled on ARC_GRACE ticks late for it)
     ARC_LATE: 8, ARC_GRACE: 12,
     POINTS: 7, PRE_T: 210, POINT_T: 110, OVER_T: 60 * 8, PAUSE_T: 60 * 12,
+    // ---- the hype system (one switch: HYPE false plays the game exactly as before it) ----
+    // tempo: a long rally speeds up. From hit TEMPO_FROM to TEMPO_FULL every flight plays up to
+    // TEMPO_MAX faster: the same line, the shuttle's own clock run quicker (the ball's w, which
+    // every flight model here reads), so it cannot go stale.
+    // pot: every hit past the first few adds to a pot the point's winner takes as heat.
+    // fire: at FIRE_AT heat the next attacking hit (A: smash, kill, drive, counter) is a Fire Shot,
+    // FIRE_SPEED faster; only a perfectly timed return survives it (and takes FIRE_PARRY heat),
+    // anything else is overpowered into the net. Firing spends all the heat.
+    // steal: winning a point off a player at STEAL_AT heat or more takes STEAL of it.
+    HYPE: true, TEMPO_FROM: 4, TEMPO_FULL: 24, TEMPO_MAX: 0.3,
+    FIRE_AT: 85, FIRE_SPEED: 1.25, FIRE_PARRY: 35, STEAL_AT: 60, STEAL: 25,
   };
   // Shot table. min/max: metres past the net the shot is aimed to land (court-scaled); ang: the
   // lowest launch elevation the solver tries; cap: the most racket speed the shot may use (m/s).
@@ -85,6 +96,27 @@
   // Drag bleeds a smash fast (74 m/s off the racket is ~13 by the time it arrives), so the bar is
   // just above a falling shuttle's own terminal speed (6.7·V = 7.7 m/s): still driven, not dropping.
   const FAST = { smash: 1, jsmash: 1, kill: 1 };
+  // ---- hype: rally tempo and pot (pure functions of the rally count, so the client shows them too)
+  const ATTACK = { smash: 1, jsmash: 1, kill: 1, drive: 1, counter: 1 };
+  function tempoOf(rally) {
+    if (!C.HYPE) return 1;
+    const t = Math.min(1, Math.max(0, (rally - C.TEMPO_FROM) / (C.TEMPO_FULL - C.TEMPO_FROM)));
+    return 1 + C.TEMPO_MAX * t * t * (3 - 2 * t);
+  }
+  function potOf(rally) {
+    if (!C.HYPE) return 0;
+    let pot = 0;
+    for (let h = 4; h <= rally; h++) pot += h < 10 ? 2 : h < 20 ? 3 : 4;
+    return pot;
+  }
+  // the shuttle's real speed: its velocity runs on its own clock (w: the hype tempo, 1 at rest)
+  const ballSpeed = b => Math.hypot(b.vx, b.vy, b.vz) * (b.w || 1);
+  // heat in or out, with an event when a player crosses into Fire Shot range
+  function addHeat(s, i, amt) {
+    const was = s.heat[i];
+    s.heat[i] = clamp(was + amt, 0, 100);
+    if (C.HYPE && was < C.FIRE_AT && s.heat[i] >= C.FIRE_AT) ev(s, 'armed', { p: i });
+  }
   const FAST_V = 8 * V;
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -118,7 +150,7 @@
     const s = {
       tick, players: [mkPlayer(0), mkPlayer(1)],
       ball: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, last: -1, stuck: 0, over: 0 },
-      score: [0, 0], server: 0, serveY: 1, serveLive: 0, serveHold: false,
+      score: [0, 0], heat: [0, 0], server: 0, serveY: 1, serveLive: 0, serveHold: false,
       phase: 'prematch', pt: 0, ps: tick, rally: 0, lastHitter: -1, lastKind: '',
       hitstop: 0, winner: -1, events: [], ready: [false, false],
       skill: opts.botSkill != null ? opts.botSkill : 0.62,
@@ -132,7 +164,10 @@
     return s;
   }
 
-  function setPhase(s, ph) { s.phase = ph; s.pt = 0; s.ps = s.tick; }
+  function setPhase(s, ph) {
+    s.phase = ph; s.pt = 0; s.ps = s.tick;
+    if (ph === 'prematch') { s.heat = [0, 0]; s.fire = null; }
+  }
   function ev(s, type, o) { if (!s.quiet) s.events.push(Object.assign({ type, tick: s.tick }, o)); }
 
   // ---------- serve ----------
@@ -148,7 +183,7 @@
     for (const p of s.players) p.stamina = Math.max(p.stamina, 62);
     s.bh = []; s.landAt = null;
     s.serveY = ry; s.serveLive = 0; s.serveHold = true; s.lastHitter = -1; s.lastKind = '';
-    Object.assign(s.ball, { x: sa.x - d * 0.5, y: sy, z: C.HOLD_Z, vx: 0, vy: 0, vz: 0, last: -1, stuck: 0, over: 0 });
+    Object.assign(s.ball, { x: sa.x - d * 0.5, y: sy, z: C.HOLD_Z, vx: 0, vy: 0, vz: 0, last: -1, stuck: 0, over: 0, w: 1 });
     setPhase(s, 'serve');
     ev(s, 'serve', { p: sv, y: r2(ry) });
   }
@@ -290,7 +325,7 @@
     const b = s.ball;
     if (s.phase === 'serve' && s.lastHitter === -1) return pctOf(ct) >= 0.7 ? 'serveh' : 'servel';
     const pct = pctOf(ct), rz = b.z - p.z, air = airborne(p);
-    const incoming = Math.hypot(b.vx, b.vy, b.vz);
+    const incoming = ballSpeed(b);
     if (FAST[s.lastKind] && incoming > FAST_V && !air) {
       if (lob) return 'lift';
       return ct < C.COUNTER_CT ? 'block' : 'counter';
@@ -311,7 +346,7 @@
     const b = s.ball;
     const serving = s.phase === 'serve' && s.lastHitter === -1;
     const pct = pctOf(ct), power = powerOf(ct), over = isOvercharge(ct);
-    const incoming = Math.hypot(b.vx, b.vy, b.vz);
+    const incoming = ballSpeed(b);
     let kind = shotKind(s, p, ct, lob);
     // no legs, no smash; a scuffed counter pops up instead
     // (on arcade controls stamina is hidden: it never takes a smash away, it only slows it; see below)
@@ -320,6 +355,13 @@
     // a parry: a counter met cleanly the instant the button came up (not a buffered late swing)
     const parry = kind === 'counter' && onTime && q >= 0.8 && !p.ez;
     let perfect = (p.swPerfect != null ? p.swPerfect && kind !== 'block' : power >= 1.25 && kind !== 'block' && kind !== 'counter') || parry;
+    // hype: a Fire Shot coming in is only survived by a perfectly timed return (any shot, a block
+    // too); the bot reads one some of the time. The Fire Shot is spent on this contact either way.
+    const fireIn = C.HYPE && !serving && s.fire && s.fire.by !== p.i;
+    const fireHeld = fireIn && ((p.swPerfect != null ? p.swPerfect : power >= 1.25) || parry || (p.ai && Math.random() < 0.2 + 0.35 * s.skill));
+    if (fireIn) s.fire = null;
+    // hype: at FIRE_AT heat an attacking hit goes out as a Fire Shot
+    const fireOut = C.HYPE && !serving && !fireIn && ATTACK[kind] && s.heat[p.i] >= C.FIRE_AT;
     const dir = sideOf(p), oppSign = -dir;
     // aim: facing decides the line; overcharge and bad contact smear it
     const f = { x: p.fx, y: p.fy };
@@ -361,6 +403,8 @@
     // hidden stamina: smash after smash, each comes off a little slower (up to 10%)
     if (p.arc && (kind === 'smash' || kind === 'jsmash')) speedMul *= 0.9 + 0.1 * clamp(p.stamina / C.ST_MAX, 0, 1);
     if (kind === 'counter') speedMul *= clamp(0.55 + incoming / (SHOTS.jsmash.cap * 1.6), 0.7, 1) * (parry ? 1.15 : 1); // it borrows the smash's pace
+    // hype: the rally's tempo, and a Fire Shot's pace on top, run the new flight's clock faster
+    const tempo = serving ? 1 : tempoOf(s.rally + 1);
     let { tx, ty } = plan(kind);
     let lv = null, res = null;
     // (an arcade jump smash from the ground is met at the top of the leap it makes: higher)
@@ -379,9 +423,11 @@
     // a really bad contact (stretched, late, diving, overcooked) can simply go wrong: into the
     // tape, long, or wide. The worse the contact, the likelier.
     let error = '';
-    if (!serving && q < 0.3 && Math.random() < (0.3 - q) / 0.3 * 0.75) {
+    // hype: a Fire Shot not met perfectly overpowers the racket: flat into the tape
+    const burned = fireIn && !fireHeld;
+    if (burned || (!serving && q < 0.3 && Math.random() < (0.3 - q) / 0.3 * 0.75)) {
       const r = Math.random();
-      error = r < 0.4 ? 'net' : r < 0.7 ? 'long' : 'wide';
+      error = burned ? 'net' : r < 0.4 ? 'net' : r < 0.7 ? 'long' : 'wide';
       if (error === 'net') { // off the frame, flat into the tape
         const az = Math.atan2(clamp(f.y, -0.5, 0.5) * 2 - b.y * 0.2, -b.x), sp = 6 + 4 * Math.random();
         lv = { vx: Math.cos(az) * sp, vy: Math.sin(az) * sp, vz: 0.5 };
@@ -396,7 +442,9 @@
       ({ tx, ty } = plan(kind));
       ({ lv, res } = launch(from, tx, ty, SHOTS[kind], kind === 'block' ? 1 : speedMul));
     }
-    const sp = Math.hypot(lv.vx, lv.vy, lv.vz);
+    const fire = fireOut && !error && ATTACK[kind];
+    b.w = tempo * (fire ? C.FIRE_SPEED : 1) * (fireIn && fireHeld ? 1.1 : 1);
+    const sp = Math.hypot(lv.vx, lv.vy, lv.vz) * b.w;
     const shot = SHOTS[kind];
     b.vx = lv.vx; b.vy = lv.vy; b.vz = lv.vz;
     b.last = p.i; b.stuck = 0;
@@ -417,13 +465,17 @@
     const hs = (shot.hs || 0) + (perfect && shot.hs ? (kind === 'jsmash' ? 3 : 2) : 0) + (parry ? 3 : 0);
     if (hs) s.hitstop = Math.max(s.hitstop, hs);
     if (perfect) { p.stamina = Math.min(C.ST_MAX, p.stamina + C.PERF_REGEN); p.st.perfects++; }
+    // Cosmetic momentum belongs to the simulation, including quiet prediction. Serves are
+    // free contacts; only a return without a generated mishit earns contact heat.
+    if (fire) { s.fire = { by: p.i }; s.heat[p.i] = 0; p.st.fires = (p.st.fires || 0) + 1; }
+    else if (!serving && !error) addHeat(s, p.i, 4 + (perfect ? 6 : 0) + (parry ? 8 : 0) + (fireIn && fireHeld ? C.FIRE_PARRY : 0));
     s.rally++;
     p.st.maxRally = Math.max(p.st.maxRally, s.rally);
     p.st.hits++;
     s.lastHitter = p.i; s.lastKind = kind;
     ev(s, 'hit', {
       p: p.i, kind, q: r2(q), perfect: perfect ? 1 : 0, g: p.swGrade != null ? p.swGrade : undefined, parry: parry ? 1 : 0, air: airborne(p) ? 1 : 0, err: error,
-      kmh: kmhOf(sp), in: kmhOf(incoming),
+      kmh: kmhOf(sp), in: kmhOf(incoming), fire: fire ? 1 : 0, fireHeld: fireIn && fireHeld ? 1 : 0, burned: burned ? 1 : 0, tempo: r2(tempo),
       x: r2(b.x), y: r2(b.y), z: r2(b.z), pz: r2(p.z), v: Math.round(sp), rally: s.rally, over: over ? 1 : 0, hs,
     });
   }
@@ -460,7 +512,7 @@
   // same player agree on it), read again only when the flight changes (off the net cord).
   // Returns { x, y: the standing spot, t: seconds to the meet, z, bx, by: the meet } or null.
   function meetPlan(s, p, d) {
-    const b = s.ball, dt = 1 / 60, top = (p.arc ? C.ARC_TOP : C.TOP) * 0.9;
+    const b = s.ball, dt = (b.w || 1) / 60, top = (p.arc ? C.ARC_TOP : C.TOP) * 0.9; // (dt: a tick on the shuttle's clock)
     let x = b.x, y = b.y, z = b.z, vx = b.vx, vy = b.vy, vz = b.vz;
     let high = null, easy = null, tight = null, late = null;
     for (let k = 1; k <= 300; k++) {
@@ -720,7 +772,7 @@
   function stepBall(s) {
     const b = s.ball;
     const px = b.x, py = b.y, pz = b.z;
-    const dt = 1 / 60;
+    const dt = (b.w || 1) / 60; // the shuttle's own clock (the hype tempo)
     const sp = Math.hypot(b.vx, b.vy, b.vz), dec = 1 / (1 + C.DRAG * sp * dt);
     b.vx *= dec; b.vy *= dec; b.vz = b.vz * dec - C.G * dt;
     b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
@@ -729,10 +781,11 @@
       const u = (0 - px) / (b.x - px), yc = py + (b.y - py) * u, zc = pz + (b.z - pz) * u;
       const nh = netAt(yc);
       if (zc < nh) {
+        const incoming = { vx: r2(b.vx), vy: r2(b.vy), vz: r2(b.vz), kmh: kmhOf(ballSpeed(b)) };
         b.x = -0.01 * Math.sign(b.vx || 1); b.y = yc; b.z = Math.max(0.02, zc); // dropped on the striker's side of the tape
         b.vx *= -0.06; b.vy *= 0.25; b.vz = Math.min(b.vz, -0.4);
         b.over = 0;
-        ev(s, 'net', { x: 0, y: r2(yc), z: r2(zc) });
+        ev(s, 'net', Object.assign({ x: 0, y: r2(yc), z: r2(zc) }, incoming));
       }
     }
     if (b.z <= 0) { b.z = 0; return true; }
@@ -745,10 +798,18 @@
     s.score[p]++;
     s.server = p;
     s.players[p].st.winners++;
+    // hype: winning off a hot player cools them (their heat comes over), and the rally's pot is won
+    const o = opp(p);
+    let steal = 0;
+    if (C.HYPE && s.heat[o] >= C.STEAL_AT) { steal = Math.min(C.STEAL, s.heat[o]); s.heat[o] -= steal; }
+    const pot = potOf(rally);
+    addHeat(s, p, 12 + pot + steal);
+    if (reason === 'out' || reason === 'own side' || reason === 'fault') s.heat[o] = clamp(s.heat[o] - 20, 0, 100);
+    s.fire = null;
     if (reason === 'out' || reason === 'own side') s.players[opp(p)].st.errors++;
     // a winner that came down hard: the floor takes the hit (the client shakes and dusts it)
     const slam = reason === 'winner' && FAST[s.lastKind] ? 1 : 0;
-    ev(s, 'point', { p, reason, rally, score: s.score.slice(), x: r2(b.x), y: r2(b.y), kind: s.lastKind, slam, kmh: kmhOf(Math.hypot(b.vx, b.vy, b.vz)) });
+    ev(s, 'point', { p, reason, rally, score: s.score.slice(), x: r2(b.x), y: r2(b.y), kind: s.lastKind, slam, kmh: kmhOf(ballSpeed(b)), pot, steal });
     s.rally = 0; s.serveLive = 0; s.serveHold = false; s.lastHitter = -1;
     s.players.forEach(q => { q.ch = false; q.ct = 0; q.pk = null; });
     if (s.score[p] >= C.POINTS) { s.winner = p; ev(s, 'end', { winner: p, score: s.score.slice() }); setPhase(s, 'over'); }
@@ -782,7 +843,7 @@
     s.players.forEach((p, i) => stepPlayer(s, p, inputs[i]));
     if (s.serveHold) {
       const sv = s.players[s.server], d = sideOf(sv);
-      Object.assign(s.ball, { x: sv.x - d * 0.5, y: sv.y, z: C.HOLD_Z, vx: 0, vy: 0, vz: 0 });
+      Object.assign(s.ball, { x: sv.x - d * 0.5, y: sv.y, z: C.HOLD_Z, vx: 0, vy: 0, vz: 0, w: 1 });
       return;
     }
     if (s.landAt != null) { // down by a swipe player: ruled on once their swipe has had time to arrive
@@ -804,6 +865,16 @@
 
   function stepSim(s, inputs) {
     s.tick++;
+    // The room freezes a pause by not stepping. Cool at the starting phase's rate so an
+    // impact or point reward in this tick is not immediately reduced by the next phase.
+    if (s.phase === 'prematch') s.heat[0] = s.heat[1] = 0;
+    else {
+      const cooling = (s.phase === 'rally' ? 2 : 8) / 60;
+      // (hype: a Fire Shot in hand does not cool away; it is spent, stolen or lost to a fault)
+      const hold = h => C.HYPE && h >= C.FIRE_AT;
+      if (!hold(s.heat[0])) s.heat[0] = Math.max(0, s.heat[0] - cooling);
+      if (!hold(s.heat[1])) s.heat[1] = Math.max(0, s.heat[1] - cooling);
+    }
     inputs = easyInputs(s, inputs);
     const kickPressed = s.players.map((p, i) => p.init && (inputs[i].kp !== p.lastKp || (inputs[i].sw | 0) !== (p.lastSw | 0)));
     switch (s.phase) {
@@ -839,9 +910,9 @@
   function predict(s) {
     const b = s.ball;
     let x = b.x, y = b.y, z = b.z, vx = b.vx, vy = b.vy, vz = b.vz;
-    const dt = 1 / 30;
+    const step = 1 / 30, dt = step * (b.w || 1); // t counts real seconds; dt is the shuttle's clock
     let high = null, land = null, air = null;
-    for (let t = 0; t < 5; t += dt) {
+    for (let t = 0; t < 5; t += step) {
       const sp = Math.hypot(vx, vy, vz), dec = 1 / (1 + C.DRAG * sp * dt);
       vx *= dec; vy *= dec; vz = vz * dec - C.G * dt;
       const nx = x + vx * dt, ny = y + vy * dt, nz = z + vz * dt;
@@ -1133,7 +1204,7 @@
   // from now, q, x, y, z } or null. The browser runs this on what is on screen to time a swipe.
   function contactPlan(b0, p, maxK = 240) {
     let x = b0.x, y = b0.y, z = b0.z, vx = b0.vx, vy = b0.vy, vz = b0.vz, best = null;
-    const dt = 1 / 60, pz = p.z || 0;
+    const dt = (b0.w || 1) / 60, pz = p.z || 0; // (k counts sim ticks; dt is the shuttle's clock)
     for (let k = 1; k <= maxK; k++) {
       const sp = Math.hypot(vx, vy, vz), dec = 1 / (1 + C.DRAG * sp * dt);
       vx *= dec; vy *= dec; vz = vz * dec - C.G * dt;
@@ -1176,7 +1247,7 @@
   // the shuttle and the players as they were this tick, for swipes played a moment in the past
   function recordHistory(s) {
     const b = s.ball;
-    s.bh.push({ k: s.tick, b: { x: b.x, y: b.y, z: b.z, vx: b.vx, vy: b.vy, vz: b.vz, last: b.last, stuck: b.stuck, over: b.over }, p: s.players.map(q => [q.x, q.y, q.z]) });
+    s.bh.push({ k: s.tick, b: { x: b.x, y: b.y, z: b.z, vx: b.vx, vy: b.vy, vz: b.vz, last: b.last, stuck: b.stuck, over: b.over, w: b.w || 1 }, p: s.players.map(q => [q.x, q.y, q.z]) });
     if (s.bh.length > SWIPE.REWIND + 2) s.bh.shift();
   }
 
@@ -1326,7 +1397,8 @@
       ph: s.phase, pt: s.pt, ps: s.ps, rc: s.rally, lh: s.lastHitter, lk: s.lastKind,
       sc: s.score, sv: s.server, sy: s.serveY, sl: s.serveLive, hold: s.serveHold ? 1 : 0,
       rd: s.ready.map(Number), hs: s.hitstop, w: s.winner,
-      b: [r2(b.x), r2(b.y), r2(b.z), r2(b.vx), r2(b.vy), r2(b.vz)],
+      ht: s.heat.map(Math.round), fi: s.fire ? s.fire.by : -1,
+      b: [r2(b.x), r2(b.y), r2(b.z), r2(b.vx), r2(b.vy), r2(b.vz), r2(b.w || 1)], // (6: the shuttle's clock, the hype tempo)
       // 0 x, 1 y, 2 vx, 3 vy, 4 fx, 5 fy (aim / intent: not the body's facing), 6 charge (-1 idle),
       // 7 (unused, was the dash), 8 diving, 9 stamina, 10 stunned, 11 recovering, 12 swing timer,
       // 13 hit cooldown, 14 z, 15 vz, 16 crouching to jump (ticks left), 17 landing (ticks left),
@@ -1341,5 +1413,5 @@
     };
   }
 
-  return { C, SHOTS, KIND_CODE, BOT_LEVELS, EZ, SWIPE, MAG, swipeCt, contactPlan, ringPlan, meetTarget, magnetDir, arcDive, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _launch: launch, _launchAngle: launchAngle, _quality: quality };
+  return { C, SHOTS, KIND_CODE, BOT_LEVELS, tempoOf, potOf, EZ, SWIPE, MAG, swipeCt, contactPlan, ringPlan, meetTarget, magnetDir, arcDive, run, bound, assistDir, createSim, stepSim, syncInputs, setPhase, botInput, netState, predict, fly, netAt, kmhOf, shotKind, _stepBall: stepBall, _launch: launch, _launchAngle: launchAngle, _quality: quality };
 });

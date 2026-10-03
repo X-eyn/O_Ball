@@ -514,7 +514,7 @@ console.log('\n16. snapshot shape');
   const s = BM.createSim(0, {});
   const st = BM.netState(s);
   ok(st.p.every(a => a.length === 23 && a.every(finite)), 'player entries are complete and finite');
-  ok(st.b.every(finite) && st.b.length === 6, 'shuttle entry is position + velocity');
+  ok(st.b.every(finite) && st.b.length === 7 && st.b[6] >= 1, 'shuttle entry is position + velocity + its clock (the hype tempo)');
   JSON.stringify(st);
   const bi = BM.botInput(s, 0);
   ok('dv' in bi && 'sp' in bi && 'jp' in bi && 'kn' in bi && 'lob' in bi, 'bot inputs carry the shared input shape');

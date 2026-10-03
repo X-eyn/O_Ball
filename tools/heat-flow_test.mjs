@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+const api = await import('../public/badminton/heat-flow.mjs').catch(() => ({}));
+assert.equal(typeof api.heatTier, 'function', 'heat tier behavior must exist');
+const { heatTier, smoothHeat } = api;
+assert.equal(heatTier(29, 0), 0);
+assert.equal(heatTier(30, 0), 1);
+assert.equal(heatTier(60, 1), 2);
+assert.equal(heatTier(85, 2), 3);
+assert.equal(heatTier(83, 3), 3, 'small fluctuations do not flicker the flame tier');
+assert.equal(heatTier(79, 3), 2);
+assert.equal(heatTier(0, 3), 0, 'a new match can reset every tier immediately');
+assert.equal(heatTier(NaN, 3), 0);
+assert.equal(smoothHeat(50, 100, 0), 50, 'pause freezes displayed heat');
+const one = smoothHeat(0, 100, 1 / 30);
+const two = smoothHeat(smoothHeat(0, 100, 1 / 60), 100, 1 / 60);
+assert.ok(Math.abs(one - two) < 1e-10, 'smoothing is independent of refresh rate');
+assert.ok(smoothHeat(90, 0, 10) >= 0);
+console.log('Heat thresholds, hysteresis, pause and frame-rate independence: PASS');

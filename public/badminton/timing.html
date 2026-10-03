@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timing Ring Variants</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,62..125,500..900;1,62..125,500..900&family=Fredoka:wght@600&display=swap" rel="stylesheet">
+<style>
+/* Five directions for the keyboard timing ring (client.js drawKeyRing), each on the game's real
+   timings: the approach closes over 600 ms, the count-in beats at 500 / 250 / 0 ms, and a press is
+   graded PERFECT / GREAT / GOOD inside 50 / 90 / 140 ms, early or late to 240, a whiff beyond.
+   A mockup only: nothing here is wired into the game. Space or J presses in "Try it" mode. */
+:root { --accent: #ffc83d; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #0b1024; color: #fff; font: 600 14px/1.3 'Archivo', system-ui, sans-serif; }
+header { position: sticky; top: 0; z-index: 9; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 18px; background: #0b1024; border-bottom: 1px solid #1d2647; }
+header b { font: 600 18px Fredoka, sans-serif; margin-right: 10px; }
+header button { font: 600 13px Fredoka, sans-serif; background: #1b2550; color: #fff; border: 2px solid #2d3a70; border-radius: 999px; padding: 5px 13px; cursor: pointer; }
+header button.on { background: var(--accent); border-color: var(--accent); color: #2a1a00; }
+header .sep { width: 1px; height: 22px; background: #2d3a70; margin: 0 6px; }
+header .hint { color: #8b93ad; font-size: 12.5px; }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; padding: 16px; }
+.cell { position: relative; aspect-ratio: 46 / 30; border-radius: 14px; overflow: hidden; border: 1px solid #1d2647;
+  background:
+    linear-gradient(104deg, transparent 0 30%, rgba(255,255,255,.5) 30.15% 30.4%, transparent 30.55%),
+    linear-gradient(176deg, transparent 0 63%, rgba(255,255,255,.4) 63.1% 63.35%, transparent 63.5%),
+    radial-gradient(ellipse 80% 70% at 55% 45%, #1d8a6a, #146a52 60%, #0f5643); }
+.cell canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cell .tag { position: absolute; left: 14px; top: 12px; font: 600 15px Fredoka, sans-serif; background: rgba(0,0,0,.5); padding: 5px 13px; border-radius: 999px; z-index: 2; }
+.cell .tag i { font-style: normal; color: var(--accent); margin-right: 6px; }
+.cell .note { position: absolute; left: 14px; right: 14px; bottom: 12px; font-size: 12px; line-height: 1.4; color: rgba(255,255,255,.85); background: rgba(0,0,0,.42); padding: 7px 11px; border-radius: 10px; z-index: 2; }
+</style>
+</head>
+<body>
+<header>
+  <b>Timing ring · five directions</b>
+  <button id="auto" class="on">Auto presses</button><button id="manual">Try it (Space / J)</button>
+  <span class="sep"></span>
+  <button id="slow">Slow motion</button>
+  <span class="hint">Auto cycles PERFECT, GREAT early, GOOD late, PERFECT, EARLY, a miss.</span>
+</header>
+<main>
+  <section class="cell" data-v="now"><span class="tag"><i>Now</i>Current</span><canvas></canvas><span class="note">The ring in the game today, for comparison.</span></section>
+  <section class="cell" data-v="iris"><span class="tag"><i>T1</i>Iris</span><canvas></canvas><span class="note">A fine double-hairline target. The approach thickens and warms from lime to gold as it closes, with a short motion trail. Each beat sends a pulse out from the target (the TOCK in gold). A press bursts in its grade's colour.</span></section>
+  <section class="cell" data-v="sweep"><span class="tag"><i>T2</i>Sweep</span><canvas></canvas><span class="note">No shrinking ring: a timer arc around the target sweeps closed, clockwise from 12, split in three by the beats. The notches flash as it passes them; when the arc is gone, hit.</span></section>
+  <section class="cell" data-v="reticle"><span class="tag"><i>T3</i>Lock-on</span><canvas></canvas><span class="note">Four brackets converge on the target and turn square as they close, like a camera locking focus. They nudge on each beat and lock gold in the perfect window. A miss lets them drift apart.</span></section>
+  <section class="cell" data-v="bands"><span class="tag"><i>T4</i>Precision</span><canvas></canvas><span class="note">The windows are drawn as bands: gold for perfect, green and blue for great and good. The ring keeps closing through them, and a press leaves a marker where you hit, with how many ms early or late.</span></section>
+  <section class="cell" data-v="ripple"><span class="tag"><i>T5</i>Glass</span><canvas></canvas><span class="note">The target is a smoked-glass disc with a lit rim that breathes on each beat. The approach is a soft luminous edge with a crisp core. A press drops a ripple: three rings spreading out in the grade's colour.</span></section>
+</main>
+<script>
+const LEAD = 600, BEATS = [500, 250, 0], WIN = [50, 90, 140, 240], CYCLE = 1750, R0 = 22;
+const LIME = [228, 255, 60], COOL = [226, 240, 255], GOLD = [255, 211, 77], WHITE = [255, 255, 255];
+const GRADE = [['PERFECT', GOLD], ['GREAT', [155, 232, 106]], ['GOOD', [127, 216, 255]], ['WEAK', [255, 154, 90]], ['MISS', [170, 178, 200]]];
+const cl = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x)), lerp = (a, b, t) => a + (b - a) * t;
+const mixc = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t), rgba = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const gradeOf = d => { const a = Math.abs(d); return a <= WIN[0] ? 0 : a <= WIN[1] ? 1 : a <= WIN[2] ? 2 : a <= WIN[3] ? 3 : 4; };
+function ring(x, cx, cy, r, w, col, a = 1, glow = 0) {
+  if (r <= 0) return; x.save(); x.lineWidth = w; x.strokeStyle = rgba(col, a);
+  if (glow) { x.shadowColor = rgba(col, Math.min(1, a)); x.shadowBlur = glow; }
+  x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.stroke(); x.restore();
+}
+// the count-in: ms since each beat (null if not within its life)
+const beatAges = (dt, life) => BEATS.map((b, i) => ({ i, age: b - dt, tock: i === BEATS.length - 1 })).filter(o => o.age >= 0 && o.age < life);
+function label(x, cx, cy, txt, col, a) { x.save(); x.globalAlpha = a; x.font = "italic 900 13px Archivo"; x.fontStretch = 'condensed'; x.textAlign = 'center'; x.fillStyle = rgba(col); x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowOffsetX = 1.5; x.shadowOffsetY = 1.5; x.fillText(txt, cx, cy); x.restore(); }
+
+const V = {
+  // the ring in the game today (client.js drawKeyRing)
+  now(x, cx, cy, dt, st) {
+    const u = cl(dt / LEAD), gold = Math.abs(dt) <= WIN[0] && !st.p;
+    ring(x, cx, cy, R0, gold ? 4 : 2.5, gold ? GOLD : WHITE, .9, gold ? 20 : 0);
+    if (dt > 0 && !st.p) ring(x, cx, cy, R0 * (1 + 3 * u), 3.5, gold ? GOLD : LIME, 1);
+  },
+  // T1 · Iris
+  iris(x, cx, cy, dt, st, now) {
+    const u = cl(dt / LEAD), inWin = Math.abs(dt) <= WIN[0];
+    const hot = st.p ? 0 : cl(1 - Math.abs(dt) / 120);
+    ring(x, cx, cy, R0 + 3.5, .75, WHITE, .35);
+    ring(x, cx, cy, R0, 1.6, mixc(WHITE, GOLD, hot), .95, hot * 16);
+    x.fillStyle = rgba(WHITE, .8); x.beginPath(); x.arc(cx, cy, 1.4, 0, 7); x.fill();
+    for (const b of beatAges(dt, 460)) { const k = b.age / 460; ring(x, cx, cy, R0 + 4 + 16 * easeOut(k), b.tock ? 2 : 1.2, b.tock ? GOLD : COOL, (1 - k) * (b.tock ? .9 : .6), b.tock ? 10 : 4); }
+    if (!st.p && dt > -20 && dt <= LEAD + 120) {
+      const fade = cl((LEAD + 120 - dt) / 120), col = mixc(COOL, GOLD, cl(1 - u * 1.3));
+      for (let k = 3; k >= 1; k--) { const uu = cl((dt + k * 22) / LEAD); ring(x, cx, cy, R0 * (1 + 3 * uu), lerp(4.5, 1.5, uu), col, .1 * (4 - k) * fade); }
+      ring(x, cx, cy, R0 * (1 + 3 * u), lerp(4.5, 1.5, u), col, fade, 12);
+    }
+    if (st.p) burst(x, cx, cy, st, now, 'iris');
+  },
+  // T2 · Sweep
+  sweep(x, cx, cy, dt, st, now) {
+    const u = cl(dt / LEAD), hot = st.p ? 0 : cl(1 - Math.abs(dt) / 120), R = R0 + 9;
+    ring(x, cx, cy, R0, 1.6, mixc(WHITE, GOLD, hot), .95, hot * 16);
+    ring(x, cx, cy, R, 4, WHITE, .1);
+    const a0 = -Math.PI / 2;
+    for (const b of BEATS.slice(0, 2)) { const a = a0 + (b / LEAD) * Math.PI * 2, passed = dt < b, age = b - dt, fl = passed && age < 300 ? 1 - age / 300 : 0; x.save(); x.strokeStyle = rgba(fl ? mixc(WHITE, COOL, 1) : WHITE, passed ? .25 + fl * .75 : .7); x.lineWidth = 1.5 + fl * 1.5; if (fl) { x.shadowColor = rgba(COOL); x.shadowBlur = 10 * fl; } x.beginPath(); x.moveTo(cx + Math.cos(a) * (R - 5), cy + Math.sin(a) * (R - 5)); x.lineTo(cx + Math.cos(a) * (R + 5), cy + Math.sin(a) * (R + 5)); x.stroke(); x.restore(); }
+    if (!st.p && dt > 0 && dt <= LEAD + 120) {
+      const fade = cl((LEAD + 120 - dt) / 120), col = mixc(COOL, GOLD, cl(1 - u * 1.3));
+      x.save(); x.lineCap = 'round'; x.lineWidth = 4; x.strokeStyle = rgba(col, fade); x.shadowColor = rgba(col); x.shadowBlur = 10;
+      x.beginPath(); x.arc(cx, cy, R, a0, a0 + u * Math.PI * 2); x.stroke();
+      const ae = a0 + u * Math.PI * 2; x.fillStyle = rgba(WHITE, fade); x.shadowBlur = 12; x.shadowColor = rgba(WHITE); x.beginPath(); x.arc(cx + Math.cos(ae) * R, cy + Math.sin(ae) * R, 2.6, 0, 7); x.fill(); x.restore();
+    }
+    for (const b of beatAges(dt, 380)) if (b.tock) { const k = b.age / 380; ring(x, cx, cy, R, 4 + 4 * (1 - k), GOLD, (1 - k) * .9, 16); }
+    if (st.p) burst(x, cx, cy, st, now, 'sweep');
+  },
+  // T3 · Lock-on
+  reticle(x, cx, cy, dt, st, now) {
+    const u = cl(dt / LEAD), lock = !st.p && Math.abs(dt) <= WIN[0];
+    let nudge = 0; for (const b of beatAges(dt, 140)) nudge = Math.max(nudge, (1 - b.age / 140) * (b.tock ? 0 : 3));
+    ring(x, cx, cy, R0, 1.4, lock ? GOLD : WHITE, .9, lock ? 14 : 0);
+    x.save(); x.strokeStyle = rgba(WHITE, .7); x.lineWidth = 1.2;
+    for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2; x.beginPath(); x.moveTo(cx + Math.cos(a) * (R0 - 6), cy + Math.sin(a) * (R0 - 6)); x.lineTo(cx + Math.cos(a) * (R0 - 2), cy + Math.sin(a) * (R0 - 2)); x.stroke(); }
+    x.restore();
+    let R, rot, col, a = 1;
+    if (st.p) { const k = cl((now - st.at) / 450); if (st.g <= 2) { R = lerp(st.R, R0 + 3, easeOut(cl(k * 3))); rot = 0; col = GRADE[st.g][1]; a = 1 - cl((k - .5) * 2); } else { R = st.R + 30 * easeOut(k); rot = .4 * k; col = GRADE[st.g][1]; a = 1 - k; } }
+    else if (dt <= LEAD + 120) { R = R0 + 3 + 2.4 * R0 * u - nudge; rot = Math.PI / 4 * u; col = lock ? GOLD : mixc(COOL, GOLD, cl(1 - u * 1.3)); a = cl((LEAD + 120 - dt) / 120) * (dt < 0 ? cl(1 + dt / WIN[3]) : 1); st.R = R; }
+    if (R != null && a > 0) {
+      x.save(); x.translate(cx, cy); x.rotate(rot); x.strokeStyle = rgba(col, a); x.lineWidth = 2.6; x.lineCap = 'square'; x.shadowColor = rgba(col); x.shadowBlur = lock || st.p ? 14 : 6;
+      const L = 8, d = R / Math.SQRT2;
+      for (let k = 0; k < 4; k++) { x.save(); x.rotate(k * Math.PI / 2); x.beginPath(); x.moveTo(d - L, -d); x.lineTo(d, -d); x.lineTo(d, -d + L); x.stroke(); x.restore(); }
+      x.restore();
+    }
+    if (st.p && st.g <= 2) { const k = cl((now - st.at) / 380); x.save(); const g = x.createRadialGradient(cx, cy, 0, cx, cy, R0); g.addColorStop(0, rgba(GRADE[st.g][1], .5 * (1 - k))); g.addColorStop(1, rgba(GRADE[st.g][1], 0)); x.fillStyle = g; x.beginPath(); x.arc(cx, cy, R0, 0, 7); x.fill(); x.restore(); }
+  },
+  // T4 · Precision
+  bands(x, cx, cy, dt, st, now) {
+    const k = (3 * R0) / LEAD, rad = d => R0 + k * d, inWin = !st.p && Math.abs(dt) <= WIN[0];
+    const band = (w, col, a) => { x.save(); x.fillStyle = rgba(col, a); x.beginPath(); x.arc(cx, cy, rad(w), 0, 7); x.arc(cx, cy, Math.max(.1, rad(-w)), 0, 7, true); x.fill(); x.restore(); };
+    band(WIN[2], [127, 216, 255], .07); band(WIN[1], [155, 232, 106], .1); band(WIN[0], GOLD, inWin ? .42 : .2);
+    ring(x, cx, cy, rad(WIN[0]), .7, GOLD, .7); ring(x, cx, cy, rad(-WIN[0]), .7, GOLD, .7);
+    ring(x, cx, cy, rad(WIN[1]), .5, [155, 232, 106], .45); ring(x, cx, cy, rad(-WIN[1]), .5, [155, 232, 106], .45);
+    ring(x, cx, cy, R0, .8, WHITE, .55);
+    for (const b of beatAges(dt, 300)) { const kk = b.age / 300; ring(x, cx, cy, rad(WIN[2]) + 2, b.tock ? 1.6 : 1, b.tock ? GOLD : WHITE, (1 - kk) * .7); }
+    if (!st.p && dt <= LEAD + 120 && dt > -WIN[3]) {
+      const R = rad(dt), fade = cl((LEAD + 120 - dt) / 120) * (dt < 0 ? cl(1 + dt / WIN[3]) : 1);
+      for (let j = 4; j >= 1; j--) ring(x, cx, cy, rad(dt + j * 14), 1.4, WHITE, .08 * (5 - j) * fade);
+      ring(x, cx, cy, R, 2, inWin ? GOLD : WHITE, fade, 8);
+    }
+    if (st.p) {
+      const kk = cl((now - st.at) / 900), col = GRADE[st.g][1], R = rad(st.d);
+      ring(x, cx, cy, Math.max(1, R), 2.4, col, 1 - kk * .8, 12);
+      const ms = Math.round(-st.d), txt = st.g === 4 ? 'MISS' : st.g === 0 ? `PERFECT  ${ms > 0 ? '+' : ''}${ms} ms` : `${ms < 0 ? 'EARLY' : 'LATE'}  ${ms > 0 ? '+' : ''}${ms} ms`;
+      label(x, cx, cy + rad(WIN[2]) + 16, txt, col, 1 - cl((kk - .6) / .4));
+    }
+  },
+  // T5 · Glass
+  ripple(x, cx, cy, dt, st, now) {
+    const u = cl(dt / LEAD), hot = st.p ? 0 : cl(1 - Math.abs(dt) / 120);
+    let br = 0; for (const b of beatAges(dt, 260)) br = Math.max(br, (1 - b.age / 260) * (b.tock ? 1 : .55));
+    const s = 1 + .07 * br, r = R0 * s;
+    x.save(); x.shadowColor = 'rgba(0,0,0,.4)'; x.shadowBlur = 10; x.shadowOffsetY = 3;
+    const g = x.createRadialGradient(cx - 6, cy - 8, 2, cx, cy, r); g.addColorStop(0, 'rgba(40,52,90,.55)'); g.addColorStop(1, 'rgba(6,10,26,.72)');
+    x.fillStyle = g; x.beginPath(); x.arc(cx, cy, r, 0, 7); x.fill(); x.restore();
+    x.save(); const rg = x.createLinearGradient(cx - r, cy - r, cx + r, cy + r); rg.addColorStop(0, rgba(mixc(WHITE, GOLD, hot), .95)); rg.addColorStop(.5, rgba(WHITE, .25)); rg.addColorStop(1, rgba(mixc(WHITE, GOLD, hot), .6));
+    x.strokeStyle = rg; x.lineWidth = 1.6; if (hot || br) { x.shadowColor = rgba(hot ? GOLD : COOL, .9); x.shadowBlur = 16 * Math.max(hot, br * .6); } x.beginPath(); x.arc(cx, cy, r, 0, 7); x.stroke(); x.restore();
+    x.save(); x.fillStyle = 'rgba(255,255,255,.18)'; x.beginPath(); x.ellipse(cx - 6, cy - 9, 9, 4, -.5, 0, 7); x.fill(); x.restore();
+    if (!st.p && dt > -10 && dt <= LEAD + 120) {
+      const fade = cl((LEAD + 120 - dt) / 120), R = R0 * (1 + 3 * u), col = mixc(COOL, GOLD, cl(1 - u * 1.3));
+      x.save(); x.filter = 'blur(5px)'; ring(x, cx, cy, R, 9, col, .35 * fade); x.restore();
+      ring(x, cx, cy, R, 1.6, mixc(col, WHITE, .3), fade, 6);
+    }
+    if (st.p) { const col = GRADE[st.g][1]; for (let j = 0; j < 3; j++) { const k = cl((now - st.at - j * 110) / 700); if (k <= 0 || k >= 1) continue; ring(x, cx, cy, R0 + 34 * easeOut(k), 2 - j * .5, col, (1 - k) * (st.g === 4 ? .4 : .9), 8); }
+      const k = cl((now - st.at) / 420); if (st.g <= 2) { x.save(); const fg = x.createRadialGradient(cx, cy, 0, cx, cy, R0); fg.addColorStop(0, rgba(col, .55 * (1 - k))); fg.addColorStop(1, rgba(col, 0)); x.fillStyle = fg; x.beginPath(); x.arc(cx, cy, R0, 0, 7); x.fill(); x.restore(); } }
+  },
+};
+// a press's burst (Iris, Sweep): a ring and sparks in the grade's colour; a perfect adds a shockwave and a flash
+function burst(x, cx, cy, st, now, kind) {
+  const k = cl((now - st.at) / 520), col = GRADE[st.g][1];
+  if (st.g === 4) { ring(x, cx, cy, R0 + 6 * k, 1.5, col, (1 - k) * .6); return; }
+  ring(x, cx, cy, R0 + 22 * easeOut(k), 2.4 * (1 - k) + .5, col, 1 - k, 14);
+  if (st.g === 0) { const k2 = cl((now - st.at - 90) / 520); if (k2 > 0) ring(x, cx, cy, R0 + 36 * easeOut(k2), 1.2, WHITE, (1 - k2) * .7, 8);
+    x.save(); const g = x.createRadialGradient(cx, cy, 0, cx, cy, R0 + 4); g.addColorStop(0, rgba(WHITE, .7 * (1 - k))); g.addColorStop(.6, rgba(col, .35 * (1 - k))); g.addColorStop(1, rgba(col, 0)); x.fillStyle = g; x.beginPath(); x.arc(cx, cy, R0 + 4, 0, 7); x.fill(); x.restore(); }
+  x.save(); x.strokeStyle = rgba(col, 1 - k); x.lineWidth = 1.6; x.lineCap = 'round'; x.shadowColor = rgba(col); x.shadowBlur = 8;
+  const n = st.g === 0 ? 12 : 8;
+  for (let j = 0; j < n; j++) { const a = j / n * Math.PI * 2 + .2, r0 = R0 + 6 + 18 * easeOut(k), r1 = r0 + 6 * (1 - k); x.beginPath(); x.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0); x.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1); x.stroke(); }
+  x.restore();
+}
+// the shuttle, flying in to meet the target on the moment (and back out when it is hit)
+function shuttle(x, cx, cy, dt, st, now) {
+  let px, py, dir;
+  if (st.p && st.g <= 3) { const k = (now - st.at) / 450; if (k > 1) return; const s = easeOut(k); px = cx + 250 * s; py = cy - 120 * s - 40 * Math.sin(Math.PI * s); dir = Math.atan2(-160, 250); }
+  else { const u = 1 - dt / 900; if (u < 0 || u > 1.25) return; const P0 = [cx - 270, cy - 110], P1 = [cx - 120, cy - 190], P2 = [cx, cy];
+    const b = (t, i) => (1 - t) * (1 - t) * P0[i] + 2 * (1 - t) * t * P1[i] + t * t * P2[i]; px = b(u, 0); py = b(u, 1); dir = Math.atan2(b(u + .01, 1) - py, b(u + .01, 0) - px); }
+  x.save(); x.translate(px, py); x.rotate(dir);
+  x.fillStyle = 'rgba(255,255,255,.95)'; x.beginPath(); x.moveTo(1, 0); x.lineTo(-10, -5); x.lineTo(-10, 5); x.closePath(); x.fill();
+  x.fillStyle = '#f2e6c8'; x.beginPath(); x.arc(2, 0, 2.6, 0, 7); x.fill(); x.restore();
+}
+
+// ---- the loop ----
+const cells = [...document.querySelectorAll('.cell')].map(el => ({ el, v: el.dataset.v, cv: el.querySelector('canvas') }));
+let manual = false, slow = false, clockT = 0, last = performance.now(), cycle = -1, st = {};
+const AUTO = [0, 70, -110, -20, 180, null]; // ms early (+) / late (-) of each auto press; null = no press (a miss)
+function press(dt, now) { if (st.p) return; st = { p: 1, d: dt, g: gradeOf(dt), at: now, R: st.R }; }
+addEventListener('keydown', e => { if (!manual || e.repeat) return; if (e.code === 'Space' || e.code === 'KeyJ') { e.preventDefault(); if (curDt <= LEAD + 150) press(curDt, clockT); } });
+let curDt = 0;
+function frame(nowReal) {
+  const d = (nowReal - last) * (slow ? .25 : 1); last = nowReal; clockT += d;
+  const ci = Math.floor(clockT / CYCLE), tc = clockT % CYCLE, dt = 850 - tc; curDt = dt;
+  if (ci !== cycle) { cycle = ci; st = {}; }
+  if (!manual) { const o = AUTO[cycle % AUTO.length]; if (o !== null && !st.p && dt <= o) press(dt, clockT); }
+  if (!st.p && dt < -WIN[3]) st = { p: 1, d: -WIN[3] - 1, g: 4, at: clockT, R: st.R };
+  for (const c of cells) {
+    const r = c.cv.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1) * 1.5;
+    if (c.cv.width !== Math.round(r.width * dpr)) { c.cv.width = Math.round(r.width * dpr); c.cv.height = Math.round(r.height * dpr); }
+    const x = c.cv.getContext('2d'), s = r.width / 460;
+    x.setTransform(dpr * s, 0, 0, dpr * s, 0, 0); x.clearRect(0, 0, 460, 300);
+    const cx = 250, cy = 132;
+    shuttle(x, cx, cy, dt, st, clockT);
+    V[c.v](x, cx, cy, dt, st, clockT);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+const btn = id => document.getElementById(id);
+btn('auto').onclick = () => { manual = false; btn('auto').classList.add('on'); btn('manual').classList.remove('on'); };
+btn('manual').onclick = () => { manual = true; btn('manual').classList.add('on'); btn('auto').classList.remove('on'); };
+btn('slow').onclick = () => { slow = !slow; btn('slow').classList.toggle('on', slow); };
+</script>
+</body>
+</html>

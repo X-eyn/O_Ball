@@ -1,0 +1,24 @@
+# Badminton presentation assets
+
+All third-party assets below are CC0. Source assets were downloaded on 2026-10-02. No remote fetches are required during gameplay.
+
+| Local file | Creator/source | Processing |
+|---|---|---|
+| mat-normal.jpg, mat-roughness.jpg | ambientCG Plastic 010, https://ambientcg.com/view?id=Plastic010 | OpenGL normal and roughness maps from 2K JPEG set, reduced to 1024 pixels; material tinted as indoor sports vinyl. |
+| fabric-normal.jpg, fabric-roughness.jpg | ambientCG Fabric 060, https://ambientcg.com/view?id=Fabric060 | OpenGL normal and roughness maps from 1K JPEG set, reduced to 512 pixels; plain-weave surface detail only. |
+| fire-flipbook.png (unused since the heat aura) | Thomas Iche / Unity Labs Paris, Flame02, https://unity.com/blog/engine-platform/free-vfx-image-sequences-flipbooks | Original Houdini-simulated 64-frame TGA repacked from 16×4 to 8×8 without upscaling. Each frame remains 128×256; final atlas 1024×2048 RGBA. Original: https://unity3d.com/files/labs/downloads/vfx/assets01/Flame02/Flame02-flipbooks.zip |
+| racket.mp3 | Breviceps, Hit a ball, https://freesound.org/people/Breviceps/sounds/457039/ | High-quality MP3 preview of the 0.185-second racket contact. https://cdn.freesound.org/previews/457/457039_9159316-hq.mp3 |
+| applause.mp3 | jessepash, Crowd.Yay.Applause.25ppl.Short.wav, https://freesound.org/people/jessepash/sounds/139972/ | High-quality MP3 preview trimmed to 4.5 seconds with a one-second fade and reduced level. https://cdn.freesound.org/previews/139/139972_968325-hq.mp3 |
+| rustle.mp3 | Rvgerxini, Multi-Cloth Interactions Mix 04-07, https://freesound.org/people/Rvgerxini/sounds/682990/ | High-quality MP3 preview, leading silence removed, trimmed to 0.45 seconds, high-pass 500 Hz, level +24 dB and fades; used as a soft material-contact layer, not represented as an actual recorded net collision. https://cdn.freesound.org/previews/682/682990_9453283-hq.mp3 |
+| court-tap-01..08.wav | dynamique, Quiet footsteps indoors rubber shoes, https://freesound.org/people/dynamique/sounds/613723/ | Soft rubber-sole touches for slow footwork. From the HQ MP3 preview. |
+| court-step-01..08.wav | martian, fancy foot work.WAV (gym footsteps with squeaks), https://freesound.org/people/martian/sounds/42204/ | Single running plants (no heel-toe double, low click). Landings reuse these pitched down. |
+| court-scuff-01..06.wav | whi1ter1ce, Basketball noises singular Person, https://freesound.org/people/whi1ter1ce/sounds/708054/ | Shoe scuffs on an indoor court for sharp cuts. Basketball dribbles (a pitched ~83 Hz ring) were measured and excluded. |
+| court-squeak-01..08.wav | shakaharu, sneaker_skid.wav, https://freesound.org/people/shakaharu/sounds/68247/ | Short rubber chirps for cuts and landings. |
+| court-squeal-01..06.wav | shakaharu, sneaker squeak rubber.wav, https://freesound.org/people/shakaharu/sounds/88502/ (01-04) and sneaker_skid.wav (05-06) | Long rubber squeals for lunges and hard stops. |
+| (all court-*.wav) | as above, all CC0 | 48 kHz mono PCM; high-pass, low-pass and light FFT denoise per kind, eased edges, peak-normalised with no limiter. Reproducible with tools/bake_badminton_steps.py; onsets and levels in docs/badminton-audio/step-bake-report.json; sources archived in docs/badminton-audio/sources/. |
+| docs/badminton-audio/linoleum-sneakers-source.mp3 (retired) | sturmankin, lino_10a_startassneakers_walk.wav, https://freesound.org/people/sturmankin/sounds/272516/ | Former step source: walking heel-toe on linoleum read as hard shoes. Not used. |
+| step.wav (unused legacy source) | Joseph Sardin / BigSoundBank, Footsteps Shoe on Concrete, https://bigsoundbank.com/footsteps-shoe-on-concrete-s0514.html | Old concrete recording, excluded from the runtime bank and playback. https://bigsoundbank.com/UPLOAD/bwf-en/0514.wav |
+
+`audio-bank.json` version 2 contains thirty-nine active recordings as exact base64 bytes with byte lengths and SHA-256 hashes, generated with `node tools/pack_badminton_audio.js`. Web Audio decodes and caches them once after activation. Loading content-addressed JSON game data avoids media-download interception; individual MP3/WAV URLs never reach the runtime. Secure origins also verify sample hashes before decoding; nonsecure LAN HTTP retains byte-length validation and the server's content-addressed bank. Regenerate the bank whenever source recordings change. The source recording stays in docs/badminton-audio/ and is not part of the game's public asset manifest.
+
+The white-paint pigment mask, garment campaign detailing, and fictional APEX COURT / FEATHER LAB signage are authored procedural textures baked at setup. They are not scans or official sponsor endorsements. Clothing folds are prepared geometry plus bounded shader movement, not a general real-time garment collision simulation.

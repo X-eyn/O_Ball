@@ -31,6 +31,9 @@ const FONTS = [
   { pkg: 'barlow-condensed', normal: [500, 600, 700, 800, 900], italic: [800, 900] },
   { pkg: 'barlow', normal: [400, 500, 600], italic: [] },
   { pkg: 'teko', normal: [600, 700], italic: [] },
+  // badminton's friendly, rounded UI type (display and body)
+  { pkg: 'fredoka', normal: [500, 600, 700], italic: [] },
+  { pkg: 'nunito', normal: [600, 700, 800, 900], italic: [] },
 ];
 
 // ---------------------------------------------------------------- file cache
@@ -132,7 +135,7 @@ const appFiles = () => {
   for (const n of fs.readdirSync(PUB)) if (/\.(js|css)$/.test(n)) out.push(path.join(PUB, n));
   for (const n of fs.readdirSync(SHARED)) if (/\.js$/.test(n)) out.push(path.join(SHARED, n));
   const bad = path.join(PUB, 'badminton');
-  if (fs.existsSync(bad)) for (const n of fs.readdirSync(bad)) if (/\.(js|css)$/.test(n)) out.push(path.join(bad, n));
+  if (fs.existsSync(bad)) for (const n of fs.readdirSync(bad)) if (/\.(m?js|css)$/.test(n)) out.push(path.join(bad, n));
   return out;
 };
 // One build id for the whole site (a hash over every code file), shared by both pages' manifests:
@@ -141,7 +144,9 @@ let lastBuild = '', last = {};
 function manifest(kind = 'football') {
   const g = game(kind);
   const code = appFiles().map(file);
-  const codeHash = crypto.createHash('sha256').update(code.map(f => f.abs + f.hash).join('|')).digest('hex').slice(0, 12);
+  const presentationDir = path.join(PUB, 'badminton', 'assets');
+  const presentationFiles = fs.existsSync(presentationDir) ? fs.readdirSync(presentationDir).filter(n => /\.(png|jpg|json)$/.test(n)).sort().map(n => [n, file(path.join(presentationDir, n))]) : [];
+  const codeHash = crypto.createHash('sha256').update([...code.map(f => f.abs + f.hash), ...presentationFiles.map(([n, f]) => n + f.hash)].join('|')).digest('hex').slice(0, 12);
   const models = fs.readdirSync(MODELS).filter(n => !/\.txt$/i.test(n)).sort().map(n => [n, file(path.join(MODELS, n))]);
   const key = codeHash + models.map(([n, f]) => n + f.hash).join('');
   if (last[kind] && last[kind].key === key) return last[kind].m;
@@ -168,6 +173,7 @@ function manifest(kind = 'football') {
     modules,
     fonts: fonts().map(f => { const x = file(f.abs); return { family: f.family, style: f.style, weight: f.weight, range: f.range, url: f.url, size: x.size, hash: x.hash, eager: f.eager }; }),
     assets,
+    presentation: kind === 'badminton' ? Object.fromEntries(presentationFiles.map(([n, f]) => [n, { url: `/asset/${f.hash}/badminton/${n}`, size: f.size, hash: f.hash }])) : {},
     // things the client computes once and keeps: named by the inputs they are computed from, so a
     // change to either input makes a new key and the old result is never used again.
     // kit: the kits fitted to the body (human.js buildKit) — from body.glb and the code that fits them
@@ -194,7 +200,7 @@ function resolveUrl(u) {
       return abs.startsWith(SHARED + path.sep) && /\.js$/.test(abs) ? abs : null;
     }
     const abs = path.normalize(path.join(PUB, m[2]));
-    return abs.startsWith(PUB + path.sep) && /\.(js|css)$/.test(abs) ? abs : null;
+    return abs.startsWith(PUB + path.sep) && /\.(m?js|css)$/.test(abs) ? abs : null;
   }
   if ((m = u.match(/^\/vendor\/three@([\w.-]+)\/((?:build|examples\/jsm)\/.+)$/))) {
     if (m[1] !== THREE_V) return null;
@@ -204,6 +210,10 @@ function resolveUrl(u) {
   if ((m = u.match(/^\/vendor\/@fontsource\/([a-z-]+)@([\w.-]+)\/files\/([\w.-]+\.woff2?)$/))) {
     if (!FONTS.some(F => F.pkg === m[1]) || m[2] !== version('@fontsource/' + m[1])) return null;
     return path.join(NM, '@fontsource', m[1], 'files', m[3]);
+  }
+  if ((m = u.match(/^\/asset\/([0-9a-f]{16})\/badminton\/([\w.-]+)$/))) {
+    const abs = path.join(PUB, 'badminton', 'assets', m[2]);
+    return /\.(png|jpg|json)$/.test(abs) && fs.existsSync(abs) && file(abs).hash === m[1] ? abs : null;
   }
   if ((m = u.match(/^\/asset\/([0-9a-f]{16})\/([\w.-]+)$/))) {
     const abs = path.join(MODELS, m[2]);

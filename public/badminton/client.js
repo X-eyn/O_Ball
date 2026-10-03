@@ -4,6 +4,7 @@
 // only predictions are its own swing animation and charge ring.
 import { createRenderer } from './render3d.js';
 import { Sound } from './audio.js';
+import { HEAT_LABELS, heatTier, smoothHeat } from './heat-flow.mjs';
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -65,7 +66,7 @@ let pointAt = null;
 function noteStroke(e, s) {
   if (e.type === 'hit') strokes[e.p] = { tick: e.tick, kind: e.kind, x: e.x, y: e.y, z: e.z, pz: e.pz || 0, air: e.air };
   else if (e.type === 'swing' && s.p && s.p[e.p]) { const q = s.p[e.p]; strokes[e.p] = { tick: e.tick, kind: '', x: q[0] + q[4] * 0.7, y: q[1] + q[5] * 0.7, z: (q[14] || 0) + 1.6, pz: q[14] || 0, air: q[14] > 0.02 ? 1 : 0 }; }
-  else if (e.type === 'point') pointAt = { p: e.p, tick: e.tick };
+  else if (e.type === 'point') pointAt = { p: e.p, tick: e.tick, variant: e.score[e.p] >= C.POINTS ? 0 : (e.tick + e.p) % 3 };
   else if (e.type === 'serve') pointAt = null;
 }
 function findIdx(tick) {
@@ -282,6 +283,7 @@ function updateCtrlUI() {
   $('view').classList.toggle('mouse-mode', ctrl === 'mouse');
   $('view').classList.toggle('trackpad-mode', ctrl === 'trackpad');
   $('touchui').classList.toggle('hidden', !(code && ctrl === 'touch'));
+  $('emoteBtn').classList.toggle('hidden', ctrl !== 'touch'); // the emote button is for touch play only
 }
 function setCtrl(mode, announce = true) {
   if (!CTRLS.includes(mode) || mode === ctrl) return;
@@ -469,7 +471,7 @@ let slowK = 1, slowUntil = 0;
 function slowmo(k, ms) { slowK = k; slowUntil = performance.now() + ms; }
 function banner(text, sub, color) {
   const b = $('banner'), band = b.querySelector('.bn-band');
-  band.style.setProperty('--c', color || '#e4ff3c');
+  band.style.setProperty('--c', color || '#ffc83d');
   $('bnText').textContent = text; $('bnSub').textContent = sub || '';
   b.classList.remove('on'); void b.offsetWidth; b.classList.add('on');
 }
@@ -479,14 +481,141 @@ function bigText(text, color = '#fff', hold = false) {
   el.classList.remove('show', 'hold'); void el.offsetWidth;
   el.classList.add(hold ? 'hold' : 'show');
 }
+// Shot callouts ("PERFECT", "GREAT · LATE", "FRAMED IT"...): yours go to your player card, lettered
+// beside your portrait and held until your next shot; the opponent's are left to the banners and
+// sounds (the big ones get a banner). A small label right after a grade adds its detail instead.
 function floatText(x, y, z, text, color, size = 34) {
-  if (!R) return;
-  const p = R.project(x, y, z);
-  const el = document.createElement('div'); el.className = 'float';
-  el.textContent = text; el.style.color = color; el.style.fontSize = size + 'px';
-  el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
-  $('labels').appendChild(el); setTimeout(() => el.remove(), 1150);
+  const ms = mySlot();
+  if (ms < 0 || (x < 0 ? 0 : 1) !== ms) return;
+  card.call(text, color, size);
 }
+const FLAME = '<svg viewBox="0 0 11 13" aria-hidden="true"><path d="M5.5 .6C6.3 3 9.8 4.6 9.8 8.3A4.3 4.3 0 0 1 1.2 8.3C1.2 6.4 2.5 5.4 3.2 4.2 3.6 5.6 4.4 6 4.9 6 4.6 4.2 4.9 2.3 5.5.6Z" fill="#ffc83d" stroke="#13204a" stroke-width="1.1"/></svg>';
+const SHOT_NAME = { smash: 'smash', jsmash: 'jump smash', kill: 'kill', drive: 'drive', clear: 'clear', lift: 'lift', drop: 'drop', net: 'net shot', block: 'block', counter: 'counter', servel: 'low serve', serveh: 'high serve' };
+// The player card (#card), bottom left, the halo: your pre-rendered portrait (R.portraitFrames) in
+// the Fire charge's ring, your name and perfect streak, the charge readout (FIRE READY and its A when
+// ready), your last shot's grade. Fed each frame (frame) and by your shots (call, hit); asks the
+// portrait for a celebration on a streak and on Fire. demo(on) runs every state on a loop (support).
+const card = (() => {
+  const el = $('card'), NS = 'http://www.w3.org/2000/svg';
+  const word = $('cardWord'), detail = $('cardDetail'), grade = el.querySelector('.cd-grade'), pct = $('cardPct'), pctBox = el.querySelector('.cd-read .pct'), read = el.querySelector('.cd-read');
+  const streakEl = $('cardStreak'), pips = streakEl.querySelector('.pips'), countEl = streakEl.querySelector('.n'), nameEl = $('cardName');
+  const burst = el.querySelector('.burst');
+  // the frame: forty ticks round the ring (every tenth a major), and the team accent arc low left
+  const tickG = el.querySelector('.cd-halo .ticks'), ticks = [];
+  for (let i = 0; i < 40; i++) {
+    const a = i / 40 * Math.PI * 2 - Math.PI / 2, major = i % 10 === 0, r0 = major ? 66.5 : 67.5, r1 = 71;
+    const l = document.createElementNS(NS, 'line');
+    l.setAttribute('x1', (75 + Math.cos(a) * r0).toFixed(2)); l.setAttribute('y1', (75 + Math.sin(a) * r0).toFixed(2));
+    l.setAttribute('x2', (75 + Math.cos(a) * r1).toFixed(2)); l.setAttribute('y2', (75 + Math.sin(a) * r1).toFixed(2));
+    if (major) l.setAttribute('class', 'major');
+    tickG.appendChild(l); ticks.push(l);
+  }
+  { const r = 74.5, a0 = 118 * Math.PI / 180, a1 = 152 * Math.PI / 180, P = a => `${(75 + Math.cos(a) * r).toFixed(2)} ${(75 + Math.sin(a) * r).toFixed(2)}`;
+    el.querySelector('.cd-halo .accent').setAttribute('d', `M${P(a0)} A${r} ${r} 0 0 1 ${P(a1)}`); }
+  let shown = false, ready = false, lastPct = -1, lastLit = -1, gradeAt = 0, settleT = 0, streak = 0, slotNow = -1, react = null, demo = null;
+  // the portrait: pre-rendered clips played back, the idle loop back and forth (seamless), a
+  // celebration once through when one is asked for
+  const pic = el.querySelector('.cd-pic'), pctx = pic.getContext('2d');
+  let clips = null, play = { name: 'idle', t0: performance.now() }, lastDrawn = null;
+  function drawPortrait(now) {
+    if (!clips) return;
+    const set = clips.clips[play.name] || clips.clips.idle, n = set.length;
+    let i = Math.floor((now - play.t0) / 1000 * clips.fps);
+    if (play.name !== 'idle' && i >= n) { play = { name: 'idle', t0: now }; return drawPortrait(now); }
+    if (play.name === 'idle') { const m = i % (2 * n - 2); i = m < n ? m : 2 * n - 2 - m; }
+    const img = set[Math.max(0, Math.min(n - 1, i))];
+    if (img !== lastDrawn) { lastDrawn = img; pctx.drawImage(img, 0, 0, pic.width, pic.height); }
+  }
+  // the grade word, letter by letter (each letter's --i staggers its reveal)
+  function setGrade(w, color, d) {
+    word.textContent = ''; [...w].forEach((ch, i) => { const s = document.createElement('span'); s.className = 'lt'; s.style.setProperty('--i', i); s.textContent = ch; word.appendChild(s); });
+    word.setAttribute('aria-label', w); word.style.setProperty('--gc', color || '#fff');
+    detail.textContent = d || '';
+    grade.classList.remove('fresh', 'settled'); void grade.offsetWidth; grade.classList.add('fresh');
+    gradeAt = performance.now();
+    clearTimeout(settleT); settleT = setTimeout(() => grade.classList.add('settled'), 4200);
+  }
+  // the charge as an odometer: each digit a strip of 0-9, moved to its value
+  const odo = document.createElement('span'); odo.className = 'odo'; pct.appendChild(odo);
+  function setOdo(v) {
+    const ds = String(v).split('');
+    while (odo.children.length < ds.length) { const dg = document.createElement('span'); dg.className = 'dg'; dg.innerHTML = '<span class="st">' + '0123456789'.split('').map(n => `<i>${n}</i>`).join('') + '</span>'; odo.insertBefore(dg, odo.firstChild); }
+    while (odo.children.length > ds.length) odo.firstChild.remove();
+    ds.forEach((d, i) => { odo.children[i].firstChild.style.transform = `translateY(${-d}em)`; });
+  }
+  setOdo(0);
+  // the type direction, chosen with the picker (while it is being chosen) and remembered
+  const typePick = $('typePick');
+  let typeV = '1'; try { const t = localStorage.getItem('obm_cardt'); if (/^[123]$/.test(t)) typeV = t; } catch { }
+  el.dataset.t = typeV;
+  const drawType = () => typePick.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.t === typeV));
+  typePick.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; typeV = b.dataset.t; el.dataset.t = typeV; try { localStorage.setItem('obm_cardt', typeV); } catch { } drawType(); b.blur(); });
+  drawType();
+  function drawStreak() {
+    streakEl.dataset.n = Math.min(streak, 9);
+    countEl.textContent = streak >= 2 ? '×' + streak : '';
+    const want = Math.min(streak, 6);
+    while (pips.children.length > want) pips.lastElementChild.remove();
+    while (pips.children.length < want) pips.appendChild(document.createElement('i'));
+  }
+  const api = {
+    frame(show, slot, heat, smooth, name) {
+      if (show !== shown) {
+        shown = show; el.classList.toggle('hidden', !show); $('view').classList.toggle('has-card', show); typePick.classList.toggle('hidden', !show);
+        if (show) { el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); setTimeout(() => el.classList.remove('enter'), 1400); }
+      }
+      if (!show) return;
+      if (slot !== slotNow) { slotNow = slot; el.classList.toggle('slot1', slot === 1); clips = null; lastDrawn = null; el.classList.remove('pic-ready'); }
+      if (clips && R && R.portraitFrames && R.portraitFrames(slot) !== clips) { clips = null; lastDrawn = null; }
+      if (nameEl.textContent !== name) nameEl.textContent = name;
+      const now = performance.now();
+      const FIRE_AT = (window.BM && window.BM.C.FIRE_AT) || 85, hype = !window.BM || window.BM.C.HYPE !== false;
+      if (demo) { // (support: the charge climbs for six seconds and holds ready for three; perfects every 1.4 s)
+        const t = ((now - demo.t0) / 1000) % 9;
+        smooth = t < 6 ? (t / 6) * FIRE_AT : FIRE_AT + 5; heat = smooth;
+        if (now - demo.lastHit > 1400) {
+          demo.lastHit = now; demo.n++;
+          const kinds = ['drive', 'clear', 'smash', 'drop', 'smash', 'kill'], k = kinds[demo.n % kinds.length];
+          if (demo.n % 7 === 6) { api.call('GREAT · LATE', '#9be86a', 34); api.hit({ kind: k, kmh: 140, perfect: 0 }); }
+          else { api.call('PERFECT', '#ffd34d', 46); api.hit({ kind: k, kmh: 120 + (demo.n * 37) % 220, perfect: 1 }); }
+        }
+      }
+      const p = Math.max(0, Math.min(1, smooth / FIRE_AT)), isReady = hype && heat >= FIRE_AT;
+      el.style.setProperty('--p', p.toFixed(4));
+      const v = Math.floor(p * 100);
+      if (v !== lastPct) {
+        if (v > lastPct && lastPct >= 0 && v % 10 === 0) { pctBox.classList.remove('tick'); void pctBox.offsetWidth; pctBox.classList.add('tick'); }
+        lastPct = v; setOdo(v); pct.dataset.v = v; read.setAttribute('aria-valuenow', v);
+      }
+      const lit = Math.floor(p * 40 + 1e-6);
+      if (lit !== lastLit) { lastLit = lit; ticks.forEach((t, i) => t.classList.toggle('lit', i < lit)); }
+      if (isReady !== ready) { ready = isReady; el.classList.toggle('fire', ready); if (ready) { burst.classList.remove('go'); void burst.offsetWidth; burst.classList.add('go'); react = 'flourish'; } }
+      if (!clips && R && R.portraitFrames) { clips = R.portraitFrames(slot); if (clips) el.classList.add('pic-ready'); }
+      if (react && clips) { play = { name: react, t0: now }; react = null; }
+      drawPortrait(now);
+    },
+    // a call about your shot: a grade (PERFECT, GREAT · LATE...) or, right after one, its detail
+    call(text, color, size) {
+      if (/FIRE SHOT READY/.test(text)) return; // (the readout says it)
+      const parts = text.split(' · ');
+      if (size < 30 && performance.now() - gradeAt < 500) { detail.textContent = [detail.textContent, text].filter(Boolean).join(' · '); return; }
+      setGrade(parts[0].replace(/!$/, ''), color, parts.slice(1).join(' · '));
+    },
+    // your hit: the streak, and the shot and its speed under the grade
+    hit(e) {
+      const nm = SHOT_NAME[e.kind] || e.kind, named = (word.getAttribute('aria-label') || '').toLowerCase().includes(nm);
+      const info = named ? `${e.kmh} km/h` : `${nm} · ${e.kmh} km/h`;
+      if (performance.now() - gradeAt < 500) { const t = detail.textContent; detail.textContent = t && !t.includes('km/h') ? `${t} · ${info}` : info; }
+      else setGrade(e.perfect ? 'PERFECT' : nm.toUpperCase(), e.perfect ? '#ffd34d' : '#ffffff', `${e.kmh} km/h`);
+      if (e.kind === 'servel' || e.kind === 'serveh') return; // (a serve neither builds nor breaks a streak)
+      const before = streak; streak = e.perfect ? streak + 1 : 0;
+      if (streak !== before) drawStreak();
+      if (streak > 0 && streak % 3 === 0) react = 'pump'; // (a fist pump every third in a row)
+    },
+    demo(on) { demo = on ? { t0: performance.now(), lastHit: 0, n: 0 } : null; if (!on) { streak = 0; drawStreak(); } return !!demo; },
+  };
+  return api;
+})();
 function lbHtml(list) {
   if (!list || !list.length) return '<div class="lb-empty">No ranked matches yet. Win one and the table starts.</div>';
   const me = myName().toLowerCase();
@@ -497,7 +626,7 @@ function showEmote(id, n) {
   const who = memberName(id);
   toast(`${who}: ${EMOTES[n] || '?'}`, 2200);
   const s = hist[hist.length - 1];
-  if (slot >= 0 && s && s.p && s.p[slot]) floatText(s.p[slot][0], s.p[slot][1], 2.6, EMOTES[n] || '?', '#e4ff3c', 26);
+  if (slot >= 0 && s && s.p && s.p[slot]) floatText(s.p[slot][0], s.p[slot][1], 2.6, EMOTES[n] || '?', '#ffc83d', 26);
 }
 function renderMembers() {
   if (!room) return;
@@ -606,11 +735,28 @@ function fireEvent(e) {
   if (window.__ob) { window.__ob.events++; if (e.type === 'hit') { window.__ob.hits++; if (isMine) window.__ob.myHits++; } }
   switch (e.type) {
     case 'serve': Sound.fx.serve(); break;
-    case 'swing': Sound.fx.swing(); break;
+    case 'swing': Sound.fx.swing(e); break;
     case 'hit': {
       Sound.fx.hit(e.kind, e.kmh, e.perfect, e);
       if (R) R.fx.hit(e);
+      if (isMine) queueMicrotask(() => card.hit(e)); // (after this hit's own call has named it)
       const zt = Math.max(1.2, e.z + 0.5);
+      // the hype system: a Fire Shot, one survived, one that overpowered the racket
+      if (e.fire) {
+        Sound.fx.fire(e); flash('#ff6a1a', 0.45);
+        banner('FIRE SHOT!', `${e.kmh} km/h · ${slotName(e.p)}`, '#ff6a1a');
+        break;
+      }
+      if (e.fireHeld) {
+        flash('#ffd34d', 0.35); Sound.fx.rally(20);
+        banner('FIRE PARRIED!', `${slotName(e.p)} takes the heat`, '#ffc83d');
+        break;
+      }
+      if (e.burned) {
+        Sound.fx.burned(e);
+        floatText(e.x, e.y, zt, 'OVERPOWERED!', '#ff7a3d', 44);
+        break;
+      }
       // the callout: the big moments get their name in lights, the rest a quiet label for you
       if (e.parry) { floatText(e.x, e.y, zt, 'PARRY!', '#ffd34d', 46); flash('#ffd34d', 0.35); }
       else if (e.kind === 'jsmash') { floatText(e.x, e.y, zt, `JUMP SMASH ${e.kmh} KM/H`, e.perfect ? '#ffd34d' : '#ff8f6b', e.perfect ? 44 : 38); if (e.perfect) flash('#ff8f6b', 0.28); }
@@ -629,21 +775,30 @@ function fireEvent(e) {
       if (e.perfect && (e.kind === 'smash' || e.kind === 'jsmash')) Sound.fx.rally(20);
       break;
     }
-    case 'jump': Sound.fx.jump(e.leap); if (R) R.fx.dust(e.x, e.y, 0.6); break;
-    case 'land': Sound.fx.land(e.hard, e.v); if (R) { R.fx.dust(e.x, e.y, e.hard ? 1.3 : 0.8); if (e.hard) R.fx.shake(0.05); } break;
+    case 'jump': Sound.fx.jump(e.leap, e); if (R) R.fx.dust(e.x, e.y, 0.6); break;
+    case 'armed': {
+      const me = e.p === mine();
+      Sound.fx.armed(me);
+      floatText(e.p === 0 ? -1 : 1, 0, 2, me ? 'FIRE SHOT READY! HIT A TO UNLEASH' : `${slotName(e.p).toUpperCase()} IS ON FIRE`, '#ff8a3d', 40);
+      break;
+    }
+    case 'land': Sound.fx.land(e.hard, e.v, e); if (R) { R.fx.dust(e.x, e.y, e.hard ? 1.3 : 0.8); if (e.hard) R.fx.shake(0.05); } break;
     case 'whiff': if (isMine) Sound.fx.swing(); break;
-    case 'net': Sound.fx.net(); if (R) R.fx.net(e.x, e.y, e.z); break;
+    case 'net': Sound.fx.net(e); if (R) R.fx.net(e.x, e.y, e.z, e); break;
     case 'dash': break;
-    case 'dive': Sound.fx.dive(); break;
+    case 'dive': Sound.fx.dive(e); break;
     case 'point': {
       Sound.fx.point(e.p === mySlot(), e.score[e.p] >= C.POINTS);
       const how = { jsmash: 'JUMP SMASH!', smash: 'SMASH!', kill: 'PUT AWAY!', counter: 'COUNTERED!', block: 'BLOCKED!' }[e.kind];
       const reason = (e.reason === 'winner' && how) || { ace: 'ACE!', winner: 'WINNER!', out: 'OUT!', fault: 'FAULT', 'own side': 'IN THE NET' }[e.reason] || 'POINT';
-      banner(reason, `${e.score[0]} – ${e.score[1]} · rally of ${e.rally}`, COLORS[e.p]);
+      banner(reason, `${e.score[0]} – ${e.score[1]} · rally of ${e.rally}${e.pot ? ` · +${e.pot} heat` : ''}`, COLORS[e.p]);
+      if (e.steal) { Sound.fx.cooled(); floatText(e.p === 0 ? -1 : 1, 0, 2, `COOLED DOWN! +${e.steal} HEAT`, '#7fd8ff', 40); }
+      // a long rally's end is played back slow for a beat (the winning point of a match already is)
+      if (window.BM && window.BM.C.HYPE && e.rally >= 14 && e.score[e.p] < C.POINTS) slowmo(0.45, 650);
       const sb = $('s' + e.p); if (sb) { sb.classList.remove('bump'); void sb.offsetWidth; sb.classList.add('bump'); }
       // a smash that kills comes down on the floor: crater, dust, the hall shakes; the winning
       // point of a match is played back slow for a moment
-      if (e.slam && R) { R.fx.slam(e.x, e.y, e.kmh); Sound.fx.slam(e.kmh); if (e.score[e.p] >= C.POINTS) slowmo(0.35, 900); }
+      if (e.slam && R) { R.fx.slam(e.x, e.y, e.kmh); Sound.fx.slam(e.kmh, e); if (e.score[e.p] >= C.POINTS) slowmo(0.35, 900); }
       if (R && R.fx.point) R.fx.point(e.p);
       break;
     }
@@ -779,7 +934,7 @@ function setupMenu() {
     ls.onchange = () => { try { localStorage.setItem('obm_level', ls.value); } catch { } d(); send({ t: 'level', v: ls.value }); ls.blur(); };
   }
 }
-function navigate(path) { if (location.pathname !== path) history.pushState(null, '', path); route(); }
+function navigate(path) { if (location.pathname + location.search !== path) history.pushState(null, '', path); route(); }
 function setupHome() {
   const nameInput = $('nameInput');
   nameInput.value = myName();
@@ -813,6 +968,7 @@ function enterRoom(c) {
   $('hud').classList.remove('hidden');
   $('roomCode').textContent = c; $('roomCode2').textContent = c;
   $('touchui').classList.toggle('hidden', ctrl !== 'touch');
+  $('emoteBtn').classList.toggle('hidden', ctrl !== 'touch');
   hist.length = 0; pendingEvents.length = 0; clock.reset();
   connect();
 }
@@ -831,6 +987,15 @@ function route() {
       route.anim = true;
       $('home').classList.add('hidden'); $('hud').classList.add('hidden');
       import('./animplayer.js').then(m => { window.__anim = m.startPlayer(R); }).catch(e => { console.error(e); toast('Animation player failed: ' + e.message, 8000); });
+    }
+    return;
+  }
+  // the heat lab (heatlab.js): the athlete and the heat aura, every look on a slider
+  if (/^\/badminton\/heat\/?$/i.test(location.pathname)) {
+    if (!route.heat) {
+      route.heat = true;
+      $('home').classList.add('hidden'); $('hud').classList.add('hidden');
+      import('./heatlab.js').then(m => { window.__heatLab = m.startHeatLab(R); }).catch(e => { console.error(e); toast('Heat lab failed: ' + e.message, 8000); });
     }
     return;
   }
@@ -879,7 +1044,7 @@ function selfStep(K, fresh, sp) {
     const sprinting = m0.sp && ctrl !== 'keyboard' && (sp[19] || sp[9] > K.SPRINT_MIN);
     const top = (sprinting ? K.SPRINT_V : ctrl === 'keyboard' ? K.ARC_TOP : K.TOP) * tired * (inp.kickDownAt !== null ? 0.6 : 1) * (sp[11] ? 0.5 : 1) * (sp[17] > 0 ? 0.35 : 1);
     // the same placement assist the server applies when nothing is held
-    const simOf = () => { const b = fresh.b; return { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } }; };
+    const simOf = () => { const b = fresh.b; return { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], w: b[6] || 1, last: fresh.lh } }; };
     if (m <= 0.05 && m0.as) {
       const a = window.BM.assistDir(simOf(), own);
       if (a) { ax = a.x; ay = a.y; m = Math.hypot(ax, ay); if (m > 0.12) { own.fx = ax / m; own.fy = ay / m; } }
@@ -940,8 +1105,19 @@ function predictSelf(p, dtMs, ms, now) {
 
 // ---------------------------------------------------------------- frame
 let cpuMs = 0, lastFrameAt = null, lastRenderTick = 0, lastWorld = null, lastPred = null;
+const shownHeat = [0,0], shownTiers = [0,0];
 const setText = (el, v) => { v = String(v); if (el.textContent !== v) el.textContent = v; };
 const setHTML = (el, v) => { if (el._html !== v) { el._html = v; el.innerHTML = v; } };
+// the score as pips: one per point to win, the last the match point; a newly won pip pops in
+const pipsShown = [-1, -1];
+function drawPips(i, n) {
+  if (pipsShown[i] === n) return;
+  const el = $('pips' + i), grew = pipsShown[i] >= 0 && n > pipsShown[i];
+  if (el.children.length !== C.POINTS) el.innerHTML = '<i></i>'.repeat(C.POINTS);
+  [...el.children].forEach((p, k) => { p.classList.toggle('on', k < n); p.classList.remove('new'); });
+  if (grew && n > 0) { const p = el.children[Math.min(n, C.POINTS) - 1]; void p.offsetWidth; p.classList.add('new'); }
+  pipsShown[i] = n;
+}
 function shotHint(f, ms, ct, lob) {
   const K = window.BM && window.BM.C, b = f.b, me = f.p && f.p[ms];
   if (!K || !me) return '';
@@ -978,16 +1154,21 @@ function frame(now) {
     setText($('n0'), slotName(0)); setText($('n1'), slotName(1));
     const sc = s.sc || [0, 0];
     setText($('s0'), sc[0]); setText($('s1'), sc[1]);
-    const si = $('serveIcon');
-    si.className = 'sb-serve ' + (s.sv === 0 ? 'l0' : 'l1');
-    setText($('rallyBadge'), s.rc >= 4 && s.rp !== 'over' ? `Rally ${s.rc}` : '');
-    setHTML($('subbug'), matchInfo ? (matchInfo.bot ? `Practice vs bot${matchInfo.level ? ' (' + matchInfo.level[0].toUpperCase() + matchInfo.level.slice(1) + ')' : ''}` : 'Ranked 1v1') + ' · first to ' + C.POINTS : 'Office Badminton');
+    drawPips(0, sc[0]); drawPips(1, sc[1]);
+    $('heat0').classList.toggle('serving', s.sv === 0); $('heat1').classList.toggle('serving', s.sv === 1);
+    { const pot = window.BM && window.BM.potOf ? window.BM.potOf(s.rc) : 0;
+      setHTML($('rallyBadge'), s.rc >= 4 && s.rp !== 'over' ? `Rally <b>${s.rc}</b>${pot ? `${FLAME}<em>+${pot}</em>` : ''}` : ''); }
+    setHTML($('subbug'), matchInfo ? (matchInfo.bot ? `vs Bot${matchInfo.level ? ' · ' + matchInfo.level[0].toUpperCase() + matchInfo.level.slice(1) : ''}` : 'Ranked 1v1') : '');
     $('subbug').className = matchInfo && matchInfo.bot ? 'bot' : '';
     const q = room ? room.queue.length : 0;
     setHTML($('hudRight'), q ? `<b>${q}</b> in line` : '');
     // rally escalation
     if (s.rc > lastRc) {
-      if (s.rc === 6 || s.rc === 11 || s.rc === 20) { Sound.fx.rally(s.rc); if (s.rc === 20) banner('RALLY!', `${s.rc} hits`, '#ffd34d'); }
+      // a long rally is celebrated in the score badge, never over the court while it is still live
+      if (s.rc === 6 || s.rc === 11 || s.rc === 20) {
+        Sound.fx.rally(s.rc);
+        const rb = $('rallyBadge'); if (rb) { rb.classList.remove('hot'); void rb.offsetWidth; rb.classList.add('hot'); rb.dataset.tier = s.rc >= 20 ? 3 : s.rc >= 11 ? 2 : 1; }
+      }
       lastRc = s.rc;
     } else if (s.rc < lastRc) lastRc = s.rc;
     // stamina + charge (own player)
@@ -1039,7 +1220,7 @@ function frame(now) {
   lastWorld = world;
   // prediction for the landing mark: from the freshest snapshot
   const fresh = hist[hist.length - 1];
-  lastPred = fresh && fresh.b && window.BM ? window.BM.predict({ ball: { x: fresh.b[0], y: fresh.b[1], z: fresh.b[2], vx: fresh.b[3], vy: fresh.b[4], vz: fresh.b[5] }, tick: 0 }) : null;
+  lastPred = fresh && fresh.b && window.BM ? window.BM.predict({ ball: { x: fresh.b[0], y: fresh.b[1], z: fresh.b[2], vx: fresh.b[3], vy: fresh.b[4], vz: fresh.b[5], w: fresh.b[6] || 1 }, tick: 0 }) : null;
   // steering on the chosen controls: the pointer on mouse controls, the keys on keyboard controls
   // (touch and gamepad set inp themselves)
   const live = !!(s && s.rp === 'match' && s.ph !== 'point' && s.ph !== 'over' && !menuOpen());
@@ -1070,18 +1251,41 @@ function frame(now) {
   drawAim(live, ms, fresh, now);
   const ringNow = planFrame(now, s, world, ms, live);
   lastWorld = world;
-  const hype = s ? clamp(s.rc / 20, 0, 1) + (s.hs > 0 ? 0.3 : 0) : 0;
+  // the hype system's swell: 0 at rest, 1 at a long rally's full tempo (the camera leans in, the
+  // crowd rises, the edges of the view darken)
+  const BMx = window.BM, swell = BMx && BMx.tempoOf && s && s.ph === 'rally' && s.rp === 'match' && !s.up ? (BMx.tempoOf(s.rc) - 1) / (BMx.C.TEMPO_MAX || 1) : 0;
+  // calm: nothing being played (the home screen, a lobby, between points, a finished match). The
+  // renderer records the card's portrait only then, never during a rally or the serve
+  const calm = !s || (s.rp !== 'match' && s.rp !== 'prematch') || s.ph === 'point' || s.ph === 'over';
+  if (R && R.portraitPrepare && !$('home').classList.contains('hidden')) R.portraitPrepare(myName());
   const rv = {
-    world, live, mySlot: ms, names: [slotName(0), slotName(1)], pred: lastPred,
-    rally: s ? s.rc : 0, hype, tick: lastRenderTick, strokes, pointAt, hitstop: !!(s && (s.hs > 0 || s.up)),
+    world, live, mySlot: ms, swell, calm, names: [slotName(0), slotName(1)], pred: lastPred,
+    heat: s?.rp==='over'?[0,0]:s?.ht || [0,0], score: s?.sc || [0,0], match: ['match','paused','over'].includes(s?.rp), paused: s?.rp==='paused' || !!s?.up || menuOpen(),
+    rally: s ? s.rc : 0, tick: lastRenderTick, strokes, pointAt, hitstop: !!(s && (s.hs > 0 || s.up)),
     lh: s ? s.lh : -1, predAge: fresh && fresh._at ? (now - fresh._at) / 1000 : 0,
     // keyboard controls show one ring only, the timing ring at the contact point (drawSwipeRing)
     oneRing: ctrl === 'keyboard',
   };
   if (R) R.frame(rv, now);
+  Sound.swell(rv.paused ? 0 : swell);
+  card.frame(!!(s && rv.match && ms >= 0 && ctrl !== 'touch' && !menuOpen()), ms, (rv.heat && rv.heat[ms]) || 0, ms >= 0 ? shownHeat[ms] : 0, ms >= 0 ? slotName(ms) : '');
+  { const v = $('stage'), k = swell.toFixed(2); if (v._swell !== k) { v._swell = k; v.style.setProperty('--swell', k); v.classList.toggle('swelling', swell > 0.05); } }
+  Sound.frame({dt:dtMs/1000,players:world?.players,athletes:R?.debugAthletes(),mySlot:ms,movement:live&&!rv.hitstop,camera:R?.debugCam(),live:!!rv.match,paused:rv.paused});
+  for(let i=0;i<2;i++) {
+    shownHeat[i]=smoothHeat(shownHeat[i],rv.match?rv.heat[i]:0,rv.paused?0:dtMs/1000);
+    const tier=heatTier(shownHeat[i],shownTiers[i]);
+    if(tier>shownTiers[i]&&i===ms&&live)Sound.fx.heat(tier);
+    shownTiers[i]=tier;
+    const meter=$('heat'+i), amount=(shownHeat[i]/100).toFixed(3), value=Math.round(shownHeat[i]), label=slotName(i)+' heat';
+    const paint=[tier,amount,value,label].join('|');
+    if(meter._heatPaint!==paint) {
+      meter._heatPaint=paint;meter.style.setProperty('--heat',amount);meter.dataset.tier=tier;
+      meter.setAttribute('aria-valuenow',value);meter.setAttribute('aria-label',label);
+      setText($('heatLabel'+i),HEAT_LABELS[tier]);setText($('heatValue'+i),value);
+    }
+  }
   // (after the frame: projected through this frame's camera, so it sits on the scene, not a frame behind)
   drawSwipeRing(now, ringNow, live);
-  Sound.crowd(hype);
 
   // name tags
   if (world && R && s && s.rp !== 'prematch' && ms >= 0) {
@@ -1268,7 +1472,7 @@ function gradeFx(g, off, ms) {
   const w = lastWorld, me = w && w.players[ms];
   if (!me) return;
   const side = off == null ? '' : off < 0 ? ' · EARLY' : ' · LATE'; // (which way it was off, to learn from)
-  const [txt, col, size] = g === 0 ? ['PERFECT', '#ffd34d', 46] : g === 1 ? ['GREAT' + side, '#e4ff3c', 34] : g === 2 ? ['GOOD' + side, '#7fd8ff', 28]
+  const [txt, col, size] = g === 0 ? ['PERFECT', '#ffd34d', 46] : g === 1 ? ['GREAT' + side, '#9be86a', 34] : g === 2 ? ['GOOD' + side, '#7fd8ff', 28]
     : g === 3 ? [off < 0 ? 'EARLY' : 'LATE', '#ff8f6b', 26] : [off == null ? 'SWING' : off < 0 ? 'TOO EARLY' : 'TOO LATE', '#8b93a4', 22];
   floatText(me[0], me[1], (me[14] || 0) + 3.3, txt, col, size); // (above the shot's callout, not on it)
   if (g === 0) flash('#ffd34d', 0.18);
@@ -1287,7 +1491,7 @@ function planFrame(now, s, world, ms, live) {
     if (fresh.k !== ringLock.k) {
       ringLock.k = fresh.k;
       const b = fresh.b, me = world.players[ms];
-      const sim = { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, hitstop: fresh.hs || 0, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], last: fresh.lh } };
+      const sim = { tick: fresh.k, phase: fresh.ph, serveHold: !!fresh.hold, hitstop: fresh.hs || 0, ball: { x: b[0], y: b[1], z: b[2], vx: b[3], vy: b[4], vz: b[5], w: b[6] || 1, last: fresh.lh } };
       // (one key per shot: the hitter, the rally count and the point)
       const key = fresh.lh + ':' + fresh.rc + ':' + (fresh.sc[0] + fresh.sc[1]);
       // (planned on the predicted player itself, so the ring is met from the very spot the magnet steers to)
@@ -1361,7 +1565,9 @@ function drawKeyRing(x, plan, dt) {
 }
 
 // read-only hooks for debugging and automated checks
-window.__ob = { own: () => own, swipe: () => ({ ctrl, swp: Object.assign({}, swp), frames: frames.length, ideal: frames.length ? frames[frames.length - 1].ideal : null }), state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, delay: () => clock.delay, tier: () => tier, project: (x, y, z) => R && R.project(x, y, z), stats: () => R && Object.assign(R.stats(), { cpuMs: +cpuMs.toFixed(2) }), r3d: () => R && R._dbg && R._dbg(), R: () => R, prof: () => R && R.prof(), events: 0, hits: 0, myHits: 0, input: () => ({ k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, lob: inp.lob, ax: inp.ax, ay: inp.ay, ws: ws ? ws.readyState : -1 }) };
+window.__ob = { own: () => own, swipe: () => ({ ctrl, swp: Object.assign({}, swp), frames: frames.length, ideal: frames.length ? frames[frames.length - 1].ideal : null }), state: () => hist[hist.length - 1], world: () => lastWorld, slot: mySlot, delay: () => clock.delay, tier: () => tier, project: (x, y, z) => R && R.project(x, y, z), stats: () => R && Object.assign(R.stats(), { cpuMs: +cpuMs.toFixed(2) }), r3d: () => R && R._dbg && R._dbg(), R: () => R, prof: () => R && R.prof(), events: 0, hits: 0, myHits: 0, fireEvent: e => fireEvent(Object.assign({ tick: 0 }, e)), // (support: play an event's presentation, e.g. a Fire Shot)
+  cardDemo: on => card.demo(on), // (support: run the player card through every state)
+   input: () => ({ k: inp.kickDownAt !== null, kp: inp.kp, kc: inp.kc, lob: inp.lob, ax: inp.ax, ay: inp.ay, ws: ws ? ws.readyState : -1 }) };
 
 // ---------------------------------------------------------------- start
 export async function start(api) {

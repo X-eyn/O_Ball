@@ -18,6 +18,8 @@
 import * as THREE from 'three';
 import { Human, Pose, MODEL_HEIGHT, boneIndex } from '../human.js';
 import { Footwork, diveBody, diveWeight, DIVE_TIME } from './footwork.js';
+import { BadmintonApparel } from './apparel.js';
+import { samplePointCelebration, setGripSpin } from './celebration.mjs';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -30,6 +32,7 @@ const LEGS = ['thighL', 'shinL', 'footL', 'toeL', 'thighR', 'shinR', 'footR', 't
 const ARM_R_I = ['clavR', 'armR', 'foreR', 'handR'].map(boneIndex);
 const TRUNK_I = ['hips', 'spine', 'chest'].map(boneIndex);
 const UPPER_I = UPPER.map(boneIndex), LEG_I = LEGS.map(boneIndex), ALL_I = [...UPPER_I, ...LEG_I];
+const CELEBRATION_I = ['chest', 'neck', 'armR', 'foreR', 'handR', 'armL', 'foreL', 'handL'].map(boneIndex);
 // the kinetic chain: how far ahead of the racket each segment runs through the stroke (seconds)
 const LEAD = { hips: 0.05, spine: 0.036, chest: 0.024, neck: 0.02, head: 0.02, clavR: 0.012, armR: 0.006, foreR: 0, handR: -0.012, clavL: 0.03, armL: 0.03, foreL: 0.03, handL: 0.03 };
 
@@ -540,6 +543,7 @@ export class Athlete {
     this.h = new Human(kit);
     this.root.add(this.h.group);
     this.h.init(A);
+    this.apparel = new BadmintonApparel(this.h, A);
     this.lookFor = lookFor;
     this.racket = makeRacket();
     // the grip (see GRIP_*): the handle's axis on GRIP_DIR through GRIP_CAP in the hand bone's frame,
@@ -547,15 +551,23 @@ export class Athlete {
     const hand = this.h.bone.hand_r;
     const ay = new THREE.Vector3(...GRIP_DIR).normalize(), az = new THREE.Vector3(1, 0, 0).addScaledVector(ay, -ay.x).normalize();
     this.racket.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(ay, az), ay, az));
+    this.racketBase = this.racket.quaternion.clone();
     this.racket.position.set(...GRIP_CAP).addScaledVector(ay, 0.04); // racket y = -0.04 is the top of the butt cap
     hand.add(this.racket);
     this.h.fingerPose = fingerPose(this.h);
+    const fistEuler = new THREE.Euler();
+    this.fist = this.h.fingers.filter(([bone]) => /_l$/.test(bone.name)).map(([bone, open]) => {
+      const thumb = /^thumb/.test(bone.name), joint = Number(bone.name.match(/_(\d+)_/)[1]);
+      const flex = thumb ? [0.5, 0.45, 0.2][joint - 1] : [1.02, 1.4, 0.96][joint - 1];
+      return [bone, open.clone().multiply(new THREE.Quaternion().setFromEuler(fistEuler.set(flex, 0, 0, 'ZYX')))];
+    });
     this.sweet = out => this.racket.localToWorld(out.copy(this.racket.userData.sweet));
     this.Q = new Pose(); this.T = new Pose(); this.AD = new Pose(); this.W = new Float32Array(this.Q.r.length / 3);
     this.fast = new Float32Array(this.W.length);
     this.yaw = 0; this.speed = 0; this.identity = null; this.look = null;
     this.hop = 0; this.land = 0; this.lungeW = 0; this.lungeSide = 1; this.diveW = 0; this.jumpW = 0;
     this.stroke = null; this.whoosh = [];
+    this.celebrationDelay = null; this.wonAge = null; this.celebrationCancelled = false;
     this.tmp = [0, 0, 0];
     // what reset() returns to: the fields a fresh athlete has, and their plain values
     this._freshKeys = new Set([...Object.keys(this), '_freshKeys', '_freshVals']);
@@ -567,6 +579,8 @@ export class Athlete {
     for (const k of Object.keys(this)) if (!this._freshKeys.has(k)) delete this[k];
     Object.assign(this, this._freshVals);
     this.whoosh.length = 0;
+    this.racket.quaternion.copy(this.racketBase);
+    this.apparel.reset();
     const h = this.h;
     h.filt = null; h.spw = null; h.mixQ = null; if (h.env) h.env.length = 0; h.groundY = 0; h.phase = 0; h._elbAb = null; h._clearA = 0;
     h.group.quaternion.identity(); h.group.position.set(0, 0, 0);
@@ -661,6 +675,8 @@ export class Athlete {
     const { t } = f;
     const dt = f.frozen || !(f.dt > 0) ? 0 : Math.min(f.dt, 1);
     const Q = this.Q, W = this.W, AD = this.AD, h = this.h;
+    // Always clear the flourish before stroke planning/IK, including interrupted wins and replay.
+    this.racket.quaternion.copy(this.racketBase);
     // the snapshot row, every field finite (a missing or broken field reads as its resting value)
     const fw = this.fw || (this.fw = new Footwork(h));
     const p = fw.row(f.p);
@@ -875,7 +891,26 @@ export class Athlete {
     // ---- reactions
     if (stun) { AD.add('neck', 0.18, Math.sin(t * 4.1) * 0.2, 0); AD.add('head', 0.1, Math.sin(t * 5.3) * 0.25, 0); AD.add('spine', 0.12); }
     if (recover && !st) AD.add('spine', 0.06);
-    if (f.won != null && f.won < 2.2) { const k = bump(f.won - 0.6, 0.6); AD.add('armL', -1.6 * k, 0, 1.2 * k); AD.add('foreL', -1.4 * k); AD.add('chest', -0.12 * k); AD.add('neck', -0.2 * k); }
+    const canCelebrate = !inStroke && !f.prep && !charging && !dive && !recover && z < 0.04 && sp < 0.7;
+    const celebration = samplePointCelebration(this, f.won,
+      Number.isInteger(f.celebration) ? ((f.celebration % 3) + 3) % 3 : 0, canCelebrate);
+    if (celebration.weight > 0) {
+      const k = celebration.weight, a = celebration.anticipation, beat = celebration.accent;
+      // Upper body only: Footwork keeps its planted feet and hips under the athlete.
+      T.zero();
+      if (celebration.variant === 0) {
+        T.set('armR', -0.65 + a * 0.16, 0.12, -0.64); T.set('foreR', -1.15 - a * 0.2, 0, 0);
+        T.set('handR', -0.08, 0, -0.04); T.set('armL', -0.22, 0, 0.28); T.set('foreL', -1.0, 0, 0);
+        T.set('chest', -0.055, 0.08, 0); T.set('neck', -0.08, 0, 0);
+      } else if (celebration.variant === 1) {
+        T.set('armL', -0.85 - 0.22 * beat, 0, 0.86); T.set('foreL', -1.55 - 0.24 * beat, 0, 0);
+        T.set('handL', 0.06, 0, -0.12); T.set('chest', -0.07 - 0.04 * beat, 0, 0); T.set('neck', -0.12, 0, 0);
+      } else {
+        T.set('armR', -0.8, 0.2, -1.18); T.set('foreR', -1.12, 0, 0); T.set('handR', -0.16, 0, -0.05);
+        T.set('armL', -0.12, 0, 0.32); T.set('foreL', -0.8, 0, 0); T.set('chest', -0.09, 0.07, 0); T.set('neck', -0.14, 0, 0);
+      }
+      blend(T, k, CELEBRATION_I);
+    }
     if (f.lost != null && f.lost < 2.2) { const k = bump(f.lost - 0.9, 0.9); AD.add('spine', 0.22 * k); AD.add('neck', 0.35 * k); AD.add('head', 0.2 * k); }
     // head and eyes on the shuttle: the direction from the eyes, in the frame the neck turns in
     // (the chest as it is, so a trunk twisted into a stroke is allowed for), split between neck and
@@ -913,6 +948,9 @@ export class Athlete {
     }
     if (this._liftOn) { h.group.position.y -= this._liftOn; this._liftOn = 0; } // (last frame's reaching hop: not the pose's)
     h.animate(dt, t, fw.animSpeed, Q, W, { pose: AD, lift: 0, clips: {}, serverPhase: null, dir: 1, cadence: fw.cadence, floorOnly: fw.feetBy === 'free', fast: this.fast, spring: !inStroke && !f.prep && this.lungeW < 0.05 && this.diveW < 0.05 });
+    if (celebration.variant === 1 && celebration.weight > 0) {
+      for (const [bone, q] of this.fist) bone.quaternion.slerp(q, celebration.weight);
+    }
     // (springs - human.js _spring - only while no shot is coming: moving and waiting. From the
     // moment a shot is prepared the stroke layer drives the arm exactly as it is tuned to)
     // the feet on the floor (planned steps, locked strides, leg IK) and nothing through the floor
@@ -1070,6 +1108,9 @@ export class Athlete {
       // frame and eases back when the pose is clear, so it never snaps and never flips sides.
       clearBody(h, this.sweet, st.contact);
     } else { this.ikU = null; h._clearA = 0; h._elbAb = null; }
+    setGripSpin(this.racket.quaternion, this.racketBase, celebration.angle);
+    this.racket.updateMatrixWorld(true);
+    this.apparel.update(dt, sp, inStroke ? 1 : celebration.weight * 0.4);
     // the racket head's recent path, for the swing trail
     const head = this.sweet(new THREE.Vector3());
     this.whoosh.unshift({ p: head, t }); if (this.whoosh.length > 10) this.whoosh.pop();

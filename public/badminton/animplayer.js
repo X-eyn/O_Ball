@@ -10,6 +10,7 @@
 import { MOTION_CASES, strokeCases } from './labcases.js';
 import { motionFrames, resetAthlete } from './motionlab.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CELEBRATION_DURATION } from './celebration.mjs';
 
 const SPEEDS = [0.05, 0.1, 0.25, 0.5, 1, 2];
 const DT = 1 / 60;
@@ -26,6 +27,7 @@ export function startPlayer(R, opts = {}) {
   const cases = [
     ...MOTION_CASES.map(c => ({ group: 'Movement', name: c.name, kind: 'motion', def: c })),
     ...SC.CASES.map(c => ({ group: 'Strokes', name: c.name, kind: 'stroke', def: c })),
+    ...['Grip-axis 360 flourish', 'Compact fist pump', 'Racket salute'].map((name, variant) => ({ group: 'Celebrations', name, kind: 'celebration', def: { variant, slot: 0 } })),
   ];
   const byName = new Map(cases.map(c => [c.kind + ':' + c.name, c]));
 
@@ -59,6 +61,15 @@ export function startPlayer(R, opts = {}) {
 
   // ---------------------------------------------------------------- loading a case
   function build(c) {
+    if (c.kind === 'celebration') {
+      const p = new Array(21).fill(0); p[0] = -4; p[4] = 1; p[6] = -1; p[9] = 100;
+      return Array.from({ length: Math.ceil((CELEBRATION_DURATION + 0.65) / DT) }, (_, k) => {
+        const t = k * DT, elapsed = t - 0.2, won = elapsed >= 0 && elapsed < CELEBRATION_DURATION ? elapsed : null;
+        return { t, label: `t ${fmt(t)} s${won == null ? ' · ready' : ' · celebration'}`, ball: null,
+          sim: { x: p[0], y: p[1], z: 0 }, row: p, motion: true,
+          f: { p, ball: null, dt: DT, t, won, celebration: c.def.variant } };
+      });
+    }
     if (c.kind === 'motion') return motionFrames(c.def).map(fr => ({ t: fr.t, label: `t ${fmt(fr.t)} s`, ball: fr.ball, sim: fr.p, row: fr.row, f: fr.f, motion: true }));
     if (!built.has(c.name)) built.set(c.name, SC.build(c.def));
     const cs = built.get(c.name), slot = cs.slot;
@@ -112,6 +123,7 @@ export function startPlayer(R, opts = {}) {
     const A = athlete();
     const b = fr.ball;
     if (b && shuttle) { shuttle.position.set(b[0], b[2], b[1]); shuttle.visible = true; }
+    else if (shuttle) shuttle.visible = false;
     if (fr.sim) simMk.position.set(fr.sim.x, 0.012, fr.sim.y);
     ring.position.set(A.root.position.x, 0.011, A.root.position.z);
     if (feet) { const sl = S.cur.def.slot || 0; feet[sl].position.set(A.root.position.x, 0.008, A.root.position.z); }

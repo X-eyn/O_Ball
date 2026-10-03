@@ -54,8 +54,7 @@ class CDP {
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const profile = path.join(os.tmpdir(), 'obm-animplayer-profile');
-  fs.rmSync(profile, { recursive: true, force: true });
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'obm-animplayer-profile-'));
   const proc = spawn(findBrowser(), ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--disable-extensions', '--mute-audio', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--window-size=1400,820', '--hide-scrollbars', 'about:blank'], { stdio: 'ignore' });
   let cdp = null; const fails = [];
@@ -73,7 +72,7 @@ class CDP {
     check(ok, 'the player starts and loads its first case');
     if (!ok) throw new Error('player never started');
     const n = await cdp.ev(`document.querySelectorAll('#ap .it').length`);
-    check(n === 118, `every case listed (${n} of 88 movement + 30 strokes)`);
+    check(n === 121, `every case listed (${n} of 88 movement + 30 strokes + 3 celebrations)`);
     // a movement case: step, scrub back, compare
     const pose = `(() => { const A = window.__ob.R().debugAthletes()[window.__anim.S.cur.def.slot || 0]; return ['pelvis','thigh_l','calf_r','upperarm_r','hand_r'].map(n => A.h.bone[n].getWorldPosition(new A.root.position.constructor()).toArray().map(v => +v.toFixed(5))).flat(); })()`;
     await cdp.ev(`(() => { const a = window.__anim, c = [...document.querySelectorAll('#ap .it')].find(e => e.textContent === 'run 90'); c.click(); return 1; })()`);
@@ -104,9 +103,22 @@ class CDP {
     const miss = (sinfo.match(/racket→shuttle\s*([\d.]+) cm/) || [])[1];
     check(miss != null && +miss < 5, `at the contact frame the racket is on the shuttle (${miss} cm)`);
     await cdp.ev(`window.__anim.seek(${kc - 12}), 1`); await sleep(200); await cdp.shot('smash_windup.png');
+    for (const name of ['Grip-axis 360 flourish','Compact fist pump','Racket salute']) {
+      await cdp.ev(`([...document.querySelectorAll('#ap .it')].find(e=>e.textContent===${JSON.stringify(name)}).click(),1)`);
+      await sleep(350);
+      await cdp.ev(`window.__anim.seek(40),1`);
+      const middle = await cdp.ev(`(() => {const A=window.__ob.R().debugAthletes()[0];return {finite:A.racket.quaternion.toArray().every(Number.isFinite),angle:2*Math.acos(Math.min(1,Math.abs(A.racket.quaternion.dot(A.racketBase)))),kind:window.__anim.S.cur.kind};})()`);
+      check(middle.kind==='celebration' && middle.finite, `${name} builds and plays a finite pose`);
+      if(name==='Grip-axis 360 flourish')check(middle.angle>0.3,'the flourish turns the racket during the celebration');
+      await cdp.shot(name.toLowerCase().replace(/[^a-z0-9]+/g,'_')+'.png');
+      await cdp.ev(`window.__anim.seek(window.__anim.S.frames.length-1),1`);
+      const restored=await cdp.ev(`(() => {const A=window.__ob.R().debugAthletes()[0];return 1-Math.abs(A.racket.quaternion.dot(A.racketBase));})()`);
+      check(restored<1e-7,`${name} returns to the neutral racket grip`);
+    }
     // --reload: change a code file; the player must reload itself onto the same case and frame
     if (process.argv.includes('--reload')) {
       await sleep(400); // (the place is saved on the next interaction tick)
+      const place = await cdp.ev(`({c:window.__anim.S.cur.name,i:window.__anim.S.i})`);
       await cdp.ev(`(window.__probe = 1, 1)`);
       const f = path.join(__dirname, '..', 'public', 'badminton', 'animplayer.js'), src = fs.readFileSync(f, 'utf8');
       try {
@@ -116,7 +128,7 @@ class CDP {
           await sleep(500);
           back = await cdp.ev(`(!window.__probe && window.__anim && !window.__anim.S.building && window.__anim.S.cur) ? { c: window.__anim.S.cur.name, i: window.__anim.S.i } : null`).catch(() => null);
         }
-        check(!!back && back.c === 'clear-fh-smash' && back.i === kc - 12, `a code change reloads the player onto the same case and frame (${back ? back.c + ' @ ' + back.i : 'no reload'})`);
+        check(!!back && back.c === place.c && back.i === place.i, `a code change reloads the player onto the same case and frame (${back ? back.c + ' @ ' + back.i : 'no reload'})`);
       } finally { fs.writeFileSync(f, src); }
     }
     for (const l of cdp.logs) if (/uncaught/.test(l)) fails.push(l);
@@ -125,8 +137,13 @@ class CDP {
   } catch (e) {
     fails.push(e.message); console.error('ANIMATION PLAYER CHECK FAILED:', e.message);
   } finally {
+    try { if (cdp) await Promise.race([cdp.send('Browser.close'), sleep(1000)]); } catch { }
     try { if (cdp) cdp.ws.close(); } catch { }
     try { proc.kill(); } catch { }
+    const abs = path.resolve(profile), temp = path.resolve(os.tmpdir()) + path.sep;
+    if (abs.startsWith(temp) && path.basename(abs).startsWith('obm-animplayer-profile-')) {
+      for (let i=0;i<8;i++) { try {fs.rmSync(abs,{recursive:true,force:true});break;} catch {await sleep(250);} }
+    }
     console.log(fails.length ? 'RESULT: FAIL' : 'RESULT: PASS');
     process.exitCode = fails.length ? 1 : 0;
   }

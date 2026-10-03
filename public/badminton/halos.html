@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halo Variants</title>
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Barlow:wght@600;700&family=Barlow+Condensed:wght@700;800;900&family=Fredoka:wght@600&family=Saira+Extra+Condensed:wght@600;700;800&family=Saira+Condensed:wght@500;600;700&family=Saira:wght@500;600&family=Archivo:ital,wdth,wght@0,62..125,500..900;1,62..125,500..900&family=Big+Shoulders+Display:wght@700;800;900&family=Big+Shoulders+Text:wght@600;700;800&family=JetBrains+Mono:wght@500;700&family=Chakra+Petch:ital,wght@0,500;0,600;0,700;1,600;1,700&display=swap" rel="stylesheet">
+<style>
+/* Four directions for the player card's halo (bottom left), each built on the current one: the round
+   glass portrait, the forty-segment Fire charge ring, the ticks, the side column. A mockup only:
+   nothing here is wired into the game. The portrait is the real recorded clip set (assets/halo-sheet.webp). */
+:root { --red: #f0525c; --blue: #3d80f0; --accent: #ffc83d; --fire1: #ff4a10; --fire2: #ff9a2e; --fire3: #ffe9b0; --tk: 'Teko', 'Barlow Condensed', sans-serif; --lb: 'Barlow', system-ui, sans-serif; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #0b1024; color: #fff; font: 600 14px/1.3 var(--lb); }
+header { position: sticky; top: 0; z-index: 9; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 18px; background: #0b1024; border-bottom: 1px solid #1d2647; }
+header b { font: 600 18px Fredoka, sans-serif; margin-right: 10px; }
+header button { font: 600 13px Fredoka, sans-serif; background: #1b2550; color: #fff; border: 2px solid #2d3a70; border-radius: 999px; padding: 5px 13px; cursor: pointer; }
+header button.on { background: var(--accent); border-color: var(--accent); color: #2a1a00; }
+header .sep { width: 1px; height: 22px; background: #2d3a70; margin: 0 6px; }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 600px), 1fr)); gap: 16px; padding: 16px; }
+.cell { position: relative; height: calc(230px * var(--z, 1.5) + 60px); border-radius: 14px; overflow: hidden; border: 1px solid #1d2647;
+  background:
+    radial-gradient(ellipse 70% 60% at 70% 30%, rgba(255,255,255,.07), transparent 70%),
+    linear-gradient(100deg, transparent 0 34%, rgba(255,255,255,.55) 34.2% 34.5%, transparent 34.7%),
+    linear-gradient(180deg, #0c1530 0 18%, #136a55 18%, #1a8366 70%, #157559 100%); }
+.cell .tag { position: absolute; left: 16px; top: 14px; font: 600 15px Fredoka, sans-serif; background: rgba(0,0,0,.5); padding: 5px 13px; border-radius: 999px; }
+.cell .tag i { font-style: normal; color: var(--accent); margin-right: 6px; }
+.cell .note { position: absolute; right: 16px; top: 14px; max-width: 46%; text-align: right; font-size: 12.5px; line-height: 1.4; color: rgba(255,255,255,.82); background: rgba(0,0,0,.42); padding: 7px 11px; border-radius: 10px; }
+.stage { position: absolute; left: 20px; bottom: 18px; zoom: var(--z, 1.5); }
+
+/* ================= shared: the card, the side column (type 1 · Pro, as in the game) ================= */
+@property --p { syntax: '<number>'; inherits: true; initial-value: 0; }
+@property --spec { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+.card { --pc: var(--red); --p: 0; position: relative; width: 340px; height: 180px; color: #fff; }
+.card.blue { --pc: var(--blue); }
+.halo { position: absolute; left: 0; bottom: 0; width: 150px; height: 150px; }
+.halo > i, .halo > div, .halo > svg { position: absolute; }
+.halo svg.frame { inset: 0; width: 100%; height: 100%; overflow: visible; }
+.ticks line { stroke: rgba(255,255,255,.2); stroke-width: 1; stroke-linecap: round; transition: stroke .3s; }
+.ticks line.major { stroke: rgba(255,255,255,.38); stroke-width: 1.6; }
+.ticks line.lit { stroke: rgba(255,255,255,.9); }
+.card.fire .ticks line.lit { stroke: #ffc27a; }
+.pic { left: 21px; top: 21px; width: 108px; height: 108px; border-radius: 50%; overflow: hidden; background: #0a0f24; }
+.pic canvas { position: absolute; left: -6px; top: -8px; width: 120px; height: 140px; filter: contrast(1.06) saturate(1.08); }
+.glass { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(ellipse 70% 45% at 32% 12%, rgba(255,255,255,.22), transparent 70%), radial-gradient(circle, transparent 58%, rgba(4,7,20,.5) 100%); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16), inset 0 -16px 22px rgba(4,7,20,.45); }
+.burst { inset: 4px; border-radius: 50%; border: 2px solid #ffc27a; opacity: 0; }
+.burst.go { animation: burst .9s cubic-bezier(.16,.9,.3,1); }
+@keyframes burst { from { opacity: 1; transform: scale(.92); } to { opacity: 0; transform: scale(1.7); border-width: .5px; } }
+@keyframes turn { to { transform: rotate(360deg); } }
+@keyframes breathe { 50% { opacity: .55; transform: scale(.96); } }
+
+.side { position: absolute; left: 162px; bottom: 0; width: 176px; height: 180px; }
+.side > * { position: absolute; left: 0; }
+.grade { bottom: 122px; display: flex; flex-direction: column; gap: 4px; white-space: nowrap; transition: opacity 1.2s; }
+.grade b { font: 700 31px/1 var(--tk); letter-spacing: .03em; color: var(--gc, #fff); text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 0 18px rgba(0,0,0,.35); margin-bottom: -6px; }
+.grade span { font: 600 9.5px/1 var(--lb); letter-spacing: .3em; text-transform: uppercase; color: rgba(255,255,255,.76); text-shadow: 0 1px 4px rgba(0,0,0,.75); }
+.grade.fresh b { animation: gIn .45s cubic-bezier(.16,.9,.3,1); }
+.grade.settled { opacity: .45; }
+@keyframes gIn { from { clip-path: inset(0 100% 0 0); transform: translateX(-8px); } to { clip-path: inset(0 -10% 0 0); } }
+.id { bottom: 92px; display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.id .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pc); box-shadow: 0 0 8px var(--pc); }
+.id b { font: 600 24px/1 var(--tk); letter-spacing: .05em; padding-top: 3px; text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 0 18px rgba(0,0,0,.35); }
+.streak { bottom: 74px; display: flex; align-items: center; gap: 5px; transition: opacity .3s; }
+.streak[data-n="0"] { opacity: 0; }
+.streak .pips { display: flex; gap: 4px; padding-left: 1px; }
+.streak .pips i, .beads i { display: block; width: 7px; height: 7px; background: var(--accent); transform: rotate(45deg); box-shadow: 0 0 6px rgba(255,200,61,.75); animation: pipIn .4s cubic-bezier(.16,.9,.3,1); }
+@keyframes pipIn { from { opacity: 0; transform: rotate(45deg) scale(.2); } }
+.streak .n { font: 600 17px/1 var(--tk); color: var(--accent); letter-spacing: .04em; padding-top: 2px; }
+.read { bottom: 14px; height: 52px; width: 176px; }
+.read::before { content: ''; position: absolute; left: 0; top: -9px; width: 132px; height: 1px; background: linear-gradient(90deg, rgba(255,255,255,.55), transparent); }
+.read > div { position: absolute; left: 0; bottom: 0; display: flex; align-items: flex-end; transition: opacity .25s, transform .4s cubic-bezier(.16,.9,.3,1), filter .25s; }
+.read .pct b { font: 700 58px/1 var(--tk); font-variant-numeric: tabular-nums; margin-bottom: -11px; text-shadow: 0 2px 3px rgba(0,0,0,.45), 0 0 22px rgba(0,0,0,.3); }
+.read .pct > span, .read .ready > span { display: flex; flex-direction: column; margin: 0 0 4px 4px; gap: 2px; line-height: 1; }
+.read .pct > span > i { font: 700 15px/1 var(--tk); font-style: normal; }
+.read em { font: 600 8.5px/1 var(--lb); font-style: normal; letter-spacing: .32em; opacity: .58; }
+.read .ready { opacity: 0; transform: translateX(-8px); filter: blur(3px); }
+.read .ready kbd { font: 800 15px var(--lb); color: #12182f; background: linear-gradient(#fff, #e6e9f2); border-radius: 6px; padding: 3px 9px 4px; box-shadow: 0 3px 0 rgba(0,0,0,.35), 0 0 16px rgba(255,140,40,.7); }
+.read .ready b { font: 700 38px/1 var(--tk); color: #ffc27a; letter-spacing: .03em; margin-bottom: -7px; text-shadow: 0 0 14px rgba(255,110,30,.85), 0 2px 6px rgba(0,0,0,.5); }
+.read .ready em { color: #ffd9a8; opacity: .85; }
+.card.fire .read .pct { opacity: 0; transform: translateX(8px); filter: blur(3px); }
+.card.fire .read .ready { opacity: 1; transform: none; filter: none; transition-delay: .12s; }
+
+/* the standard segmented ring (B and D build on it) */
+.ring { --r0: 60px; --r1: 63.5px; inset: 0; border-radius: 50%;
+  -webkit-mask: radial-gradient(circle, transparent calc(var(--r0) - .5px), #000 var(--r0), #000 var(--r1), transparent calc(var(--r1) + .5px)), repeating-conic-gradient(#000 0 8.1deg, transparent 8.1deg 9deg);
+  -webkit-mask-composite: source-in;
+  mask: radial-gradient(circle, transparent calc(var(--r0) - .5px), #000 var(--r0), #000 var(--r1), transparent calc(var(--r1) + .5px)), repeating-conic-gradient(#000 0 8.1deg, transparent 8.1deg 9deg); mask-composite: intersect; }
+.ring.track { background: rgba(255,255,255,.13); }
+.ring.trail { background: conic-gradient(rgba(255,255,255,.18) 0deg, rgba(255,255,255,.98) calc(var(--p) * 360deg), transparent calc(var(--p) * 360deg)); filter: drop-shadow(0 0 3px rgba(255,255,255,.55)); transition: opacity .35s; }
+.ring.flame { background: conic-gradient(var(--fire1), var(--fire2), var(--fire3), var(--fire2), var(--fire1), var(--fire2), var(--fire3), var(--fire2), var(--fire1)); opacity: 0; transition: opacity .45s; filter: drop-shadow(0 0 5px rgba(255,120,30,.9)); }
+.head { inset: 0; transform: rotate(calc(var(--p) * 360deg)); opacity: clamp(0, calc(var(--p) * 30), 1); transition: opacity .3s; }
+.head b { position: absolute; left: 50%; top: 13.25px; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: #fff; box-shadow: 0 0 6px 2px rgba(255,255,255,.85), 0 0 16px 4px rgba(170,200,255,.55); }
+.card.fire .ring.trail, .card.fire .head { opacity: 0; }
+.card.fire .ring.flame { opacity: 1; animation: turn 4s linear infinite; }
+
+/* =========================================================================================
+   A · FORGED BEZEL: the ring becomes an object. A brushed-metal bezel with a slow specular sweep;
+   the charge runs in a recessed groove cut into it, team colour at its tail to white-hot at the
+   head; the head throws a horizontal lens streak; the ticks are engraved and light up. Every 10%
+   a glint crosses the glass. Ready: the bezel goes molten and the glass takes the heat.
+   ========================================================================================= */
+.A .bezel { --r0: 55px; --r1: 74px; inset: 0; border-radius: 50%;
+  background: conic-gradient(from var(--spec), #262c48, #9aa3c6 7%, #1c2240 18%, #59638c 34%, #141a32 48%, #b8c0e2 63%, #232a48 76%, #6c76a0 88%, #262c48);
+  -webkit-mask: radial-gradient(circle, transparent 55px, #000 55.5px, #000 73.5px, transparent 74px); mask: radial-gradient(circle, transparent 55px, #000 55.5px, #000 73.5px, transparent 74px);
+  animation: spec 14s linear infinite; filter: drop-shadow(0 6px 14px rgba(0,0,0,.6)); }
+@keyframes spec { to { --spec: 360deg; } }
+/* bevel edges: a bright lip outside, a dark lip inside */
+.A .lip { inset: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.35), 0 0 0 1px rgba(0,0,0,.5); }
+.A .lip2 { inset: 19px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(0,0,0,.65), 0 0 0 2.5px rgba(255,255,255,.18); }
+.A .groove { inset: 0; border-radius: 50%; background: radial-gradient(circle, transparent 58.5px, #050816 59px, #0b1028 63px, #02040c 66px, transparent 66.5px); }
+.A .cells { --r0: 59.5px; --r1: 65.5px; background: conic-gradient(var(--pc) 0deg, color-mix(in srgb, var(--pc), #fff 55%) calc(var(--p) * 250deg), #fff calc(var(--p) * 360deg), transparent calc(var(--p) * 360deg)); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--pc), #fff 40%)); transition: opacity .35s; }
+.A .ticks line { stroke: rgba(0,0,0,.55); stroke-width: 1.2; }
+.A .ticks line.major { stroke: rgba(0,0,0,.75); stroke-width: 2; }
+.A .ticks line.lit { stroke: #fff; filter: drop-shadow(0 0 2px #fff); }
+.A .head b { top: 12.5px; width: 10px; height: 10px; margin: -5px 0 0 -5px; box-shadow: 0 0 6px 2px #fff, 0 0 18px 6px color-mix(in srgb, var(--pc), #fff 50%); }
+.A .head s { position: absolute; left: 50%; top: 12.5px; width: 0; height: 0; transform: rotate(calc(var(--p) * -360deg)); }
+.A .head s::before { content: ''; position: absolute; left: -34px; top: -1px; width: 68px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, transparent, rgba(200,220,255,.9), #fff, rgba(200,220,255,.9), transparent); filter: blur(.4px); }
+.A .molten { inset: 0; border-radius: 50%; opacity: 0; transition: opacity .6s; mix-blend-mode: color-dodge;
+  background: conic-gradient(var(--fire1), var(--fire3), var(--fire2), var(--fire1), var(--fire3), var(--fire1));
+  -webkit-mask: radial-gradient(circle, transparent 55px, #000 55.5px, #000 73.5px, transparent 74px); mask: radial-gradient(circle, transparent 55px, #000 55.5px, #000 73.5px, transparent 74px); }
+.A .heat { inset: -16px; border-radius: 50%; background: radial-gradient(circle, rgba(255,120,30,.5), rgba(255,90,20,.15) 55%, transparent 70%); opacity: 0; transition: opacity .5s; }
+.A .pic { left: 22px; top: 22px; width: 106px; height: 106px; }
+.A .rim { position: absolute; inset: 0; border-radius: 50%; box-shadow: inset 7px -2px 12px -5px var(--pc), inset -3px 0 8px -4px rgba(170,200,255,.5); mix-blend-mode: screen; }
+.A .glint { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; }
+.A .glint::before { content: ''; position: absolute; top: -20%; left: -60%; width: 34%; height: 140%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent); transform: rotate(18deg) translateX(-40px); opacity: 0; }
+.A .glint.go::before { animation: glint .7s cubic-bezier(.3,.6,.2,1); }
+@keyframes glint { 0% { opacity: 1; transform: rotate(18deg) translateX(-40px); } 100% { opacity: 1; transform: rotate(18deg) translateX(230px); } }
+.A.fire .cells, .A.fire .head { opacity: 0; }
+.A.fire .molten { opacity: .85; animation: turn 3.2s linear infinite; }
+.A.fire .heat { opacity: 1; animation: breathe 1.6s ease-in-out infinite; }
+.A.fire .groove { background: radial-gradient(circle, transparent 58.5px, #3a0d00 59px, #ffb347 62px, #4a1200 66px, transparent 66.5px); }
+.A.fire .glass { box-shadow: inset 0 0 0 1.5px rgba(255,180,100,.85), inset 0 -18px 26px rgba(255,90,20,.5); }
+.A .id { gap: 0; }
+.A .id .dot { width: 3px; height: 20px; border-radius: 2px; margin-right: 8px; }
+
+/* =========================================================================================
+   B · REACTOR: the charge fills the portrait too. Behind the ring's trail, light in your team
+   colour rises inside the glass like liquid, its surface rolling, with a bright meniscus and
+   bubbles; the athlete glows through it. Ready: it turns to fire, boils, and embers spill out
+   over the top of the ring.
+   ========================================================================================= */
+.B .pic { box-shadow: 0 10px 24px rgba(0,0,0,.55), 0 0 0 1.5px rgba(255,255,255,.28); }
+.B .liquid { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; }
+.B .liquid i { position: absolute; left: -66px; width: 240px; height: 240px; border-radius: 41%; top: calc(108px - var(--p) * 84px - 6px); transition: top .5s cubic-bezier(.16,.9,.3,1); }
+.B .liquid .w1 { background: linear-gradient(180deg, color-mix(in srgb, var(--pc), #fff 55%), color-mix(in srgb, var(--pc), #fff 10%) 18%, color-mix(in srgb, var(--pc), #000 30%) 45%); opacity: .78; mix-blend-mode: hard-light; box-shadow: inset 0 0 0 2.5px rgba(255,255,255,.95), inset 0 0 18px 6px rgba(255,255,255,.45); animation: turn 6s linear infinite; }
+.B .liquid .w2 { background: color-mix(in srgb, var(--pc), #fff 40%); opacity: .35; mix-blend-mode: screen; border-radius: 44%; margin-top: -5px; animation: turn 9s linear infinite reverse; }
+.B .bubbles { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--p) * 84px + 2px); overflow: hidden; transition: height .5s; }
+.B .bubbles b { position: absolute; bottom: -6px; width: 4px; height: 4px; border-radius: 50%; border: 1px solid rgba(255,255,255,.7); animation: rise 2.6s linear infinite; }
+@keyframes rise { to { transform: translateY(-96px); opacity: 0; } }
+.B .core { inset: 18px; border-radius: 50%; box-shadow: 0 0 calc(var(--p) * 26px) calc(var(--p) * 4px) color-mix(in srgb, var(--pc), transparent 45%); }
+.B .embers { left: 0; top: 0; width: 150px; height: 150px; pointer-events: none; opacity: 0; transition: opacity .4s; }
+.B .embers b { position: absolute; left: var(--x); top: 22px; width: 3px; height: 3px; border-radius: 50%; background: #ffd27a; box-shadow: 0 0 6px 1px #ff8a2a; animation: ember 1.4s ease-out infinite; animation-delay: var(--d); }
+@keyframes ember { 0% { transform: translate(0, 0) scale(1); opacity: 0; } 15% { opacity: 1; } 100% { transform: translate(var(--dx), -46px) scale(.3); opacity: 0; } }
+.B.fire .liquid .w1 { background: linear-gradient(180deg, #ffe9b0, var(--fire2) 18%, var(--fire1) 55%); box-shadow: inset 0 0 0 2px #fff3d0, inset 0 0 16px 5px rgba(255,220,150,.6); opacity: .55; animation-duration: 2.2s; }
+.B.fire .liquid .w2 { background: var(--fire1); animation-duration: 3s; }
+.B.fire .core { box-shadow: 0 0 30px 6px rgba(255,120,30,.6); }
+.B.fire .embers { opacity: 1; }
+.B.fire .glass { box-shadow: inset 0 0 0 1.5px rgba(255,180,100,.85), inset 0 -18px 26px rgba(255,90,20,.35); }
+
+/* =========================================================================================
+   C · OPEN GAUGE: the ring opens into a 270° gauge, like a rev counter: it climbs up the left,
+   over the top and down the right, its segments thickening as it goes, team colour to white to
+   gold. The charge number docks in the gap, where the arc ends, so ring and readout are one
+   instrument. Ready: the segments chase with fire.
+   ========================================================================================= */
+.C svg.gauge { inset: 0; width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 3px rgba(255,255,255,.35)); }
+.C .seg { fill: rgba(255,255,255,.12); transition: fill .25s; }
+.C .seg.lit { fill: var(--c); }
+.C .seg.hot { fill: #fff; }
+.C.fire .seg { animation: chase .8s linear infinite; animation-delay: calc(var(--i) * -22ms); }
+@keyframes chase { 0%, 100% { fill: var(--fire1); } 35% { fill: var(--fire3); } 65% { fill: var(--fire2); } }
+.C.fire svg.gauge { filter: drop-shadow(0 0 5px rgba(255,120,30,.9)); }
+.C .scale { font: 600 7.5px/1 var(--lb); letter-spacing: .14em; fill: rgba(255,255,255,.5); }
+.C .chead { width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px 3px rgba(255,255,255,.85), 0 0 22px 6px color-mix(in srgb, var(--pc), #fff 40%); transition: opacity .3s; }
+.C.fire .chead { opacity: 0; }
+.C .pic { left: 24px; top: 24px; width: 102px; height: 102px; box-shadow: 0 10px 24px rgba(0,0,0,.55), 0 0 0 1.5px rgba(255,255,255,.28), 0 0 0 5px rgba(5,8,22,.55); }
+.C .glow { inset: -14px; border-radius: 50%; background: radial-gradient(circle, rgba(255,120,30,.55), rgba(255,90,20,.2) 50%, transparent 70%); opacity: 0; transition: opacity .5s; }
+.C.fire .glow { opacity: 1; animation: breathe 1.6s ease-in-out infinite; }
+.C .side { left: 156px; }
+.C .grade { bottom: 132px; }
+.C .id { bottom: 104px; }
+.C .streak { bottom: 86px; }
+.C .read { left: -18px; bottom: 2px; height: 70px; }
+.C .read::before { display: none; }
+.C .read .pct b { font-size: 76px; margin-bottom: -15px; }
+.C .read .pct > span { margin-bottom: 8px; }
+.C .read .ready { bottom: 12px; }
+.C .end { width: 26px; height: 1.5px; left: 137px; top: 74px; background: linear-gradient(90deg, rgba(255,255,255,.55), transparent); transform-origin: 0 50%; transform: rotate(90deg); }
+
+/* =========================================================================================
+   D · BROADCAST PLATE: the medallion docks onto a slanted glass plate, so the text sits on a
+   surface instead of floating over the court; a team stripe runs under it. Your perfect streak
+   moves onto the halo, gold beads orbiting the top of the ring. Ready: a heat sweep crosses the
+   plate.
+   ========================================================================================= */
+.D .plate { position: absolute; left: 74px; bottom: 16px; width: 262px; height: 104px; transform: skewX(-14deg); transform-origin: 0 100%; overflow: hidden; border-radius: 4px;
+  background: linear-gradient(90deg, rgba(9,13,32,.9), rgba(9,13,32,.72) 62%, rgba(9,13,32,0)); box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
+.D .plate::before { content: ''; position: absolute; left: 0; bottom: 0; width: 82%; height: 3px; background: linear-gradient(90deg, var(--pc), transparent); }
+.D .plate::after { content: ''; position: absolute; top: 0; bottom: 0; left: -40%; width: 30%; background: linear-gradient(90deg, transparent, rgba(255,150,60,.35), transparent); opacity: 0; }
+.D.fire .plate::after { opacity: 1; animation: sweep 1.8s ease-in-out infinite; }
+@keyframes sweep { from { transform: translateX(0); } to { transform: translateX(500%); } }
+.D.fire .plate::before { background: linear-gradient(90deg, var(--fire1), var(--fire2), transparent); }
+.D .backing { inset: -6px; border-radius: 50%; background: radial-gradient(circle, rgba(9,13,32,.95) 66%, rgba(9,13,32,0) 72%); }
+.D .pic { box-shadow: 0 0 0 1.5px rgba(255,255,255,.28); }
+.D .beads { inset: 0; }
+.D .beads i { position: absolute; left: 50%; top: 50%; margin: -3.5px; }
+.D .glow { inset: -14px; border-radius: 50%; background: radial-gradient(circle, rgba(255,120,30,.55), rgba(255,90,20,.2) 50%, transparent 70%); opacity: 0; transition: opacity .5s; }
+.D.fire .glow { opacity: 1; animation: breathe 1.6s ease-in-out infinite; }
+.D .side { left: 168px; }
+.D .grade { bottom: 128px; }
+.D .id { bottom: 88px; }
+.D .id .dot { display: none; }
+.D .id small { font: 600 8.5px/1 var(--lb); letter-spacing: .32em; opacity: .55; margin-left: 4px; padding-top: 4px; }
+.D .streak { display: none; }
+.D .read { bottom: 26px; }
+.D .read::before { top: -7px; }
+
+/* =========================================================================================
+   C+ · the gauge, refined. The number sits in the pocket the open arc leaves. A needle sweeps with
+   the charge. An engraved outer scale
+   (25 / 50 / 75) lights as it passes. The last five segments are a redline zone, faintly amber
+   before you reach it; inside it the number warms. Ready: the arc stays 270°, its segments chasing with
+   fire; the gap is left for the readout.
+   ========================================================================================= */
+.C2 svg.gauge { filter: drop-shadow(0 0 3px rgba(255,255,255,.3)); }
+.C2 .seg.red { fill: rgba(255,130,50,.26); }
+.C2 .seg.lit, .C2 .seg.red.lit { fill: var(--c); }
+.C2 .seg.hot { fill: #fff; }
+.C2 .tk { stroke: rgba(255,255,255,.2); stroke-width: 1; stroke-linecap: round; }
+.C2 .tk.major { stroke: rgba(255,255,255,.45); stroke-width: 1.6; }
+.C2 .tk.lit { stroke: rgba(255,255,255,.95); }
+.C2 .tk.red { stroke: rgba(255,150,70,.5); }
+.C2 .tk.red.lit { stroke: #ffc27a; }
+.C2.fire .tk { stroke: #ffc27a; }
+.C2 .lbl { font: 600 6.5px/1 var(--lb); letter-spacing: .06em; fill: rgba(255,255,255,.42); text-anchor: middle; dominant-baseline: middle; transition: fill .3s; }
+.C2 .lbl.lit { fill: rgba(255,255,255,.85); }
+.C2 .chead, .C2 .end { display: none; }
+.C2 .needle { inset: 0; transform: rotate(calc(180deg + var(--p) * 270deg)); transition: opacity .3s; }
+.C2 .needle b { position: absolute; left: 50%; top: 3px; width: 2px; height: 22px; margin-left: -1px; border-radius: 1px; background: linear-gradient(180deg, rgba(255,255,255,0), #fff 25%, #fff 70%, rgba(255,255,255,0)); box-shadow: 0 0 6px rgba(255,255,255,.8); }
+.C2 .needle b::after { content: ''; position: absolute; left: 50%; top: 8px; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px 3px rgba(255,255,255,.85), 0 0 22px 6px color-mix(in srgb, var(--pc), #fff 40%); }
+.C2.fire .needle { opacity: 0; }
+.C2 .read { left: -36px; bottom: 15px; height: 70px; }
+.C2 .read .pct b { font-size: 72px; margin-bottom: -14px; transition: color .4s, text-shadow .4s; }
+.C2.redline .read .pct b { color: #ffd59a; text-shadow: 0 2px 3px rgba(0,0,0,.45), 0 0 20px rgba(255,140,40,.55); }
+.C2 .read .ready { bottom: 6px; left: 42px; }
+.C2 .grade { bottom: 130px; }
+.C2 .id { bottom: 102px; }
+.C2 .streak { bottom: 84px; }
+
+/* =========================================================================================
+   Typography trials on C+. Shared refinements in every trial: tabular figures (the number never
+   jitters as it climbs), the speed's figures set apart from their unit, the % and FIRE stacked on
+   the number's cap height, and the gauge's numerals in the card's own face.
+   ========================================================================================= */
+.grade span .num { color: #fff; font-weight: 700; }
+.grade span .u { opacity: .6; margin-left: .25em; }
+.grade span .sep { font-style: normal; opacity: .45; margin: 0 .5em; }
+.ty .read .pct b, .ty .streak .n { font-variant-numeric: tabular-nums; }
+
+/* 1 · Motorsport: Saira. Made for instruments; extra-condensed figures that suit a rev counter */
+.ty1 .grade b { font: 800 33px/1 'Saira Extra Condensed', sans-serif; letter-spacing: .01em; margin-bottom: -3px; }
+.ty1 .grade span { font: 600 10px/1 'Saira Condensed', sans-serif; letter-spacing: .2em; }
+.ty1 .id b { font: 700 21px/1 'Saira Condensed', sans-serif; letter-spacing: .14em; padding-top: 0; }
+.ty1 .streak .n { font: 700 16px/1 'Saira Extra Condensed', sans-serif; }
+.ty1 .read .pct b { font: 800 84px/.8 'Saira Extra Condensed', sans-serif; letter-spacing: -.015em; margin-bottom: -3px; }
+.ty1 .read .pct > span > i { font: 700 17px/1 'Saira Condensed', sans-serif; }
+.ty1 .read em { font: 600 7.5px/1 'Saira', sans-serif; letter-spacing: .36em; }
+.ty1 .read .ready b { font: 800 44px/.8 'Saira Extra Condensed', sans-serif; margin-bottom: 0; }
+.ty1 .lbl { font: 600 7px/1 'Saira Condensed', sans-serif; }
+
+/* 2 · Broadcast Black: Archivo at its narrowest, heavy italic, like a TV sports package */
+.ty2 .grade b { font: italic 900 31px/1 'Archivo', sans-serif; font-stretch: 66%; letter-spacing: -.005em; margin-bottom: -2px; }
+.ty2 .grade span { font: 600 9.5px/1 'Archivo', sans-serif; font-stretch: 90%; letter-spacing: .2em; }
+.ty2 .id b { font: italic 800 19px/1 'Archivo', sans-serif; font-stretch: 78%; letter-spacing: .1em; padding-top: 0; }
+.ty2 .streak .n { font: italic 800 15px/1 'Archivo', sans-serif; font-stretch: 70%; }
+.ty2 .read .pct b { font: italic 900 80px/.8 'Archivo', sans-serif; font-stretch: 62%; letter-spacing: -.035em; margin-bottom: -2px; padding-right: 3px; }
+.ty2 .read .pct > span > i { font: italic 800 17px/1 'Archivo', sans-serif; font-stretch: 70%; }
+.ty2 .read em { font: 600 7.5px/1 'Archivo', sans-serif; font-stretch: 100%; letter-spacing: .34em; }
+.ty2 .read .ready b { font: italic 900 42px/.8 'Archivo', sans-serif; font-stretch: 64%; margin-bottom: 0; }
+.ty2 .lbl { font: italic 700 7px/1 'Archivo', sans-serif; font-stretch: 80%; }
+
+/* 3 · Scoreboard: Big Shoulders (tall, Chicago-condensed display figures) with data set in mono */
+.ty3 .grade b { font: 800 34px/1 'Big Shoulders Display', sans-serif; letter-spacing: .04em; margin-bottom: -4px; }
+.ty3 .grade span { font: 500 9px/1 'JetBrains Mono', monospace; letter-spacing: .08em; }
+.ty3 .id b { font: 800 22px/1 'Big Shoulders Text', sans-serif; letter-spacing: .12em; padding-top: 0; }
+.ty3 .streak .n { font: 700 11px/1 'JetBrains Mono', monospace; }
+.ty3 .read .pct b { font: 900 84px/.78 'Big Shoulders Display', sans-serif; letter-spacing: 0; margin-bottom: 2px; }
+.ty3 .read .pct > span > i { font: 800 18px/1 'Big Shoulders Display', sans-serif; }
+.ty3 .read em { font: 500 7.5px/1 'JetBrains Mono', monospace; letter-spacing: .2em; }
+.ty3 .read .ready b { font: 900 46px/.8 'Big Shoulders Display', sans-serif; margin-bottom: 0; letter-spacing: .03em; }
+.ty3 .read .ready em { letter-spacing: .2em; }
+.ty3 .lbl { font: 500 6.5px/1 'JetBrains Mono', monospace; }
+
+/* 4 · Tech: Chakra Petch, cut corners on every letter, slanted; an esports instrument panel */
+.ty4 .grade b { font: italic 700 27px/1 'Chakra Petch', sans-serif; letter-spacing: .02em; margin-bottom: -1px; }
+.ty4 .grade span { font: 500 9.5px/1 'Chakra Petch', sans-serif; letter-spacing: .18em; }
+.ty4 .id b { font: 600 18px/1 'Chakra Petch', sans-serif; letter-spacing: .16em; padding-top: 0; }
+.ty4 .streak .n { font: italic 700 14px/1 'Chakra Petch', sans-serif; }
+.ty4 .read .pct b { font: italic 700 66px/.8 'Chakra Petch', sans-serif; letter-spacing: -.05em; margin-bottom: -1px; padding-right: 4px; }
+.ty4 .read .pct > span > i { font: italic 700 15px/1 'Chakra Petch', sans-serif; }
+.ty4 .read em { font: 500 7.5px/1 'Chakra Petch', sans-serif; letter-spacing: .32em; }
+.ty4 .read .ready b { font: italic 700 36px/.8 'Chakra Petch', sans-serif; margin-bottom: 0; }
+.ty4 .lbl { font: 600 6.5px/1 'Chakra Petch', sans-serif; }
+
+/* =========================================================================================
+   Broadcast Black, refined: five takes on Archivo. Shared by all five (.ax): the % and FIRE hang
+   from the number's cap height instead of its foot, a hard broadcast drop shadow (offset, no blur)
+   under the heavy italics, and true italic punctuation in the speed line.
+   ========================================================================================= */
+.ax .read .pct { align-items: flex-start; }
+.ax .read .pct > span { margin: 4px 0 0 3px; }
+.ax .read .pct b, .ax .grade b, .ax .read .ready b { text-shadow: 2px 2px 0 rgba(0,0,0,.3), 0 0 18px rgba(0,0,0,.28); }
+.ax.redline .read .pct b { text-shadow: 2px 2px 0 rgba(90,30,0,.35), 0 0 20px rgba(255,140,40,.5); }
+.ax .read .ready b { text-shadow: 2px 2px 0 rgba(90,30,0,.4), 0 0 14px rgba(255,110,30,.8); }
+
+/* a · Tight: everything one notch narrower and heavier, kerned tight; the name in the same black italic */
+.a1 .grade b { font: italic 900 35px/1 'Archivo', sans-serif; font-stretch: 62%; letter-spacing: -.015em; }
+.a1 .grade span { font: 600 9px/1 'Archivo', sans-serif; font-stretch: 100%; letter-spacing: .24em; }
+.a1 .id b { font: italic 900 21px/1 'Archivo', sans-serif; font-stretch: 66%; letter-spacing: .05em; }
+.a1 .read .pct b { font-size: 86px; letter-spacing: -.045em; }
+
+/* b · Echo: an outlined ghost of the number and the grade, offset up and back, the double-print of a TV graphic */
+.a2 .side { isolation: isolate; }
+.a2 .read .pct b, .a2 .grade b, .a2 .read .ready b { position: relative; }
+.a2 .read .pct b::before, .a2 .grade b::before, .a2 .read .ready b::before { content: attr(data-w); position: absolute; left: -5px; top: -4px; z-index: -1; color: transparent; -webkit-text-stroke: 1px rgba(255,255,255,.4); text-shadow: none; pointer-events: none; }
+.a2 .grade b::before { left: -3px; top: -3px; -webkit-text-stroke-color: color-mix(in srgb, var(--gc), transparent 45%); }
+.a2.redline .read .pct b::before { -webkit-text-stroke-color: rgba(255,170,80,.6); }
+.a2 .read .ready b::before { -webkit-text-stroke-color: rgba(255,150,60,.7); }
+.a2 .id b { font-stretch: 72%; }
+
+/* c · Width contrast: condensed black italic for what moves (number, grade), extra-wide upright for what labels it */
+.a3 .id b { font: 700 13px/1 'Archivo', sans-serif; font-style: normal; font-stretch: 125%; letter-spacing: .3em; }
+.a3 .grade span { font: 600 8px/1 'Archivo', sans-serif; font-stretch: 125%; letter-spacing: .26em; }
+.a3 .read em { font: 600 7px/1 'Archivo', sans-serif; font-stretch: 125%; letter-spacing: .3em; }
+.a3 .read .pct > span > i { font-style: normal; font-stretch: 100%; }
+.a3 .lbl { font-style: normal; font-stretch: 125%; }
+.a3 .grade b { font-size: 34px; }
+.a3 .id { bottom: 104px; }
+
+/* d · Slab: the grade knocked out of a slanted solid slab in its colour, the name on a dark tag with the team bar */
+.a4 .grade { gap: 6px; }
+.a4 .grade b { align-self: flex-start; font: 900 25px/1 'Archivo', sans-serif; font-style: normal; font-stretch: 66%; letter-spacing: .01em; color: #0b1024; text-shadow: none; padding: 3px 9px 1px 7px; margin: 0 0 0 4px; background: var(--gc); transform: skewX(-14deg); box-shadow: 3px 3px 0 rgba(0,0,0,.3); }
+.a4 .grade span { font-stretch: 100%; }
+.a4 .id { gap: 0; padding: 4px 10px 3px 0; background: rgba(9,13,32,.82); transform: skewX(-14deg); box-shadow: 3px 3px 0 rgba(0,0,0,.25); }
+.a4 .id .dot { width: 4px; height: 20px; border-radius: 0; margin: -4px 9px -3px 0; box-shadow: none; }
+.a4 .id b { font: 800 16px/1 'Archivo', sans-serif; font-style: normal; font-stretch: 85%; letter-spacing: .14em; text-shadow: none; }
+.a4 .grade { bottom: 134px; }
+.a4 .id { bottom: 100px; left: 4px; }
+.a4 .streak { bottom: 80px; left: 4px; }
+
+/* e · Chrome: the number filled with a cool metal gradient (warming to gold in the redline), the grade lit from above */
+.a5 .read .pct b { color: transparent; background: linear-gradient(180deg, #fff 0%, #fff 38%, #b9c4e4 62%, #e9eeff 100%); -webkit-background-clip: text; background-clip: text; text-shadow: none; filter: drop-shadow(2px 2px 0 rgba(0,0,0,.32)) drop-shadow(0 0 10px rgba(0,0,0,.25)); padding: 0 4px 0 2px; }
+.a5.redline .read .pct b { background-image: linear-gradient(180deg, #fff6dc 0%, #ffd890 40%, #ff9a3c 70%, #ffd18a 100%); filter: drop-shadow(2px 2px 0 rgba(90,30,0,.35)) drop-shadow(0 0 12px rgba(255,140,40,.45)); }
+.a5 .grade b { color: transparent; background: linear-gradient(180deg, color-mix(in srgb, var(--gc), #fff 60%) 0%, var(--gc) 55%, color-mix(in srgb, var(--gc), #000 18%) 100%); -webkit-background-clip: text; background-clip: text; text-shadow: none; filter: drop-shadow(2px 2px 0 rgba(0,0,0,.3)); padding-right: 4px; }
+.a5 .read .ready b { color: transparent; background: linear-gradient(180deg, #fff3d6, #ffc27a 50%, #ff8a3a); -webkit-background-clip: text; background-clip: text; text-shadow: none; filter: drop-shadow(2px 2px 0 rgba(90,30,0,.4)) drop-shadow(0 0 10px rgba(255,110,30,.7)); padding-right: 4px; }
+
+/* =========================================================================================
+   Slab, refined: five takes. Shared by all five (.sx): every plate slants from its bottom-left
+   corner, so stacked plates share one slanted left edge; the slab has a lit top edge; a new grade
+   wipes the slab in along the slant with a white flash, the line under it following a beat later.
+   ========================================================================================= */
+.sx .grade b, .sx .grade > span, .sx .id { transform-origin: 0 100%; }
+.sx .grade b { position: relative; background: linear-gradient(180deg, color-mix(in srgb, var(--gc), #fff 45%) 0 1.5px, var(--gc) 1.5px, color-mix(in srgb, var(--gc), #000 10%)); }
+.sx .grade.fresh b { animation: slabIn .42s cubic-bezier(.2,.9,.25,1) both; }
+.sx .grade.fresh b::after { content: ''; position: absolute; inset: 0; background: #fff; animation: slabFlash .55s ease-out both; }
+.sx .grade.fresh > span { animation: stripIn .36s .1s cubic-bezier(.2,.9,.25,1) both; }
+@keyframes slabIn { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(-10px -20px -20px -10px); } }
+@keyframes stripIn { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(-10px -20px -20px -10px); } }
+@keyframes slabFlash { 0%, 30% { opacity: .9; } 100% { opacity: 0; } }
+
+/* 1 · Stacked plates: the speed drops onto its own dark plate under the slab; slab, speed and name share one slanted edge */
+.s1 .grade { gap: 3px; left: 8px; bottom: 126px; }
+.s1 .grade b { margin-left: 5px; }
+.s1 .grade > span { align-self: flex-start; padding: 4px 9px 3px 7px; background: rgba(9,13,32,.84); transform: skewX(-14deg); box-shadow: 3px 3px 0 rgba(0,0,0,.25); font-stretch: 100%; color: rgba(255,255,255,.82); text-shadow: none; }
+.s1 .id { left: 0; bottom: 96px; }
+.s1 .streak { left: -4px; bottom: 77px; }
+
+/* 2 · Plates everywhere: as 1, and the readout speaks the same language: the % tag turns into an amber slab in the redline; ready is a fire slab with FIRE knocked out */
+.s2.redline .read .pct > span { padding: 3px 6px 2px 5px; background: #ffb347; color: #2a1200; transform: skewX(-14deg); transform-origin: 0 100%; box-shadow: 2px 2px 0 rgba(0,0,0,.3); }
+.s2.redline .read .pct > span em { opacity: .8; color: #2a1200; }
+.s2 .read .ready > span { gap: 4px; }
+.s2 .read .ready b { font-style: normal; color: #1f0b00; padding: 4px 12px 2px 8px; background: linear-gradient(90deg, var(--fire1), var(--fire2) 55%, var(--fire3)); transform: skewX(-14deg); transform-origin: 0 100%; text-shadow: none; box-shadow: 3px 3px 0 rgba(0,0,0,.3), 0 0 18px rgba(255,110,30,.6); }
+
+/* 3 · One-line slab: grade and speed on a single slab, the speed in a darker section of the grade's colour */
+.s3 .grade { flex-direction: row; align-items: stretch; gap: 0; left: 6px; bottom: 130px; }
+.s3 .grade b { box-shadow: none; padding-right: 10px; margin-left: 0; font-size: 22px; }
+.s3 .grade > span { display: flex; align-items: center; padding: 1px 11px 0 9px; background: color-mix(in srgb, var(--gc), #0b1024 74%); transform: skewX(-14deg); color: #fff; font-size: 8.5px; font-stretch: 100%; letter-spacing: .16em; text-shadow: none; box-shadow: 3px 3px 0 rgba(0,0,0,.3); }
+.s3 .grade > span .u { opacity: .7; }
+.s3 .id { left: 0; bottom: 100px; }
+
+/* 4 · Layered: the slab casts a team-colour plate behind it, speed lines trail it, the name tag inverts to white */
+.s4 .grade b { box-shadow: 4px 4px 0 var(--pc), 7px 7px 0 rgba(0,0,0,.22); }
+.s4 .grade b::before { content: ''; position: absolute; right: 100%; top: 4px; bottom: 4px; width: 20px; margin-right: 5px; background: repeating-linear-gradient(180deg, color-mix(in srgb, var(--gc), transparent 25%) 0 2px, transparent 2px 5.5px); -webkit-mask: linear-gradient(90deg, transparent, #000); mask: linear-gradient(90deg, transparent, #000); }
+.s4 .id { background: #fff; }
+.s4 .id b { color: #0b1024; }
+
+/* 5 · Earned fill: only a PERFECT fills the slab (and glows); anything less is the slab's outline in its colour */
+.s5 .grade b { transition: none; }
+.s5 .grade:not(.top) b { background: rgba(9,13,32,.6); color: var(--gc); box-shadow: inset 0 0 0 2px var(--gc), 3px 3px 0 rgba(0,0,0,.25); }
+.s5 .grade.top b { box-shadow: 3px 3px 0 rgba(0,0,0,.3), 0 0 18px color-mix(in srgb, var(--gc), transparent 45%); }
+
+/* ---- gauge renderers on canvas (.cv): drawn each frame at 3x, with bloom, light decay and motion ---- */
+.gcv { position: absolute; left: -20px; top: -20px; width: 190px; height: 190px; pointer-events: none; }
+.cv svg.gauge, .cv .needle { display: none; }
+
+</style>
+</head>
+<body>
+<header>
+  <b>Halo · final</b>
+  <button data-m="loop" class="on">Loop</button><button data-m="mid">Hold 45%</button><button data-m="red">Hold 92%</button><button data-m="fire">Hold ready</button>
+  <span class="sep"></span>
+  <button data-z="1">1×</button><button data-z="1.5" class="on">1.5×</button><button data-z="2">2×</button>
+  <span class="sep"></span>
+  <button id="team">Team: red</button>
+</header>
+<main>
+  <section class="cell"><span class="tag"><i>Final</i>C+ · d1 Stacked plates · F4 Liquid + warm</span><span class="note">The picked combination: the 270° open gauge, Broadcast Black in stacked slanted plates, and the F4 smooth fill (soft liquid edge, flowing sheen, fresh charge glowing warm and cooling).</span><div class="stage"><div class="card C C2 ty ty2 ax a4 sx s1 cv" data-v="C2" data-g="f4"></div></div></section>
+</main>
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const SIDE = `<div class="side">
+  <div class="grade"><b></b><span></span></div>
+  <div class="id"><i class="dot"></i><b>ZAN</b></div>
+  <div class="streak" data-n="0"><span class="pips"></span><b class="n"></b></div>
+  <div class="read"><div class="pct"><b class="v">0</b><span><i>%</i><em>FIRE</em></span></div><div class="ready"><kbd>A</kbd><span><b data-w="FIRE">FIRE</b><em>READY</em></span></div></div>
+</div>`;
+const PIC = extra => `<div class="pic"><canvas width="168" height="196"></canvas>${extra}<i class="glass"></i></div>`;
+const STD = `<svg class="frame" viewBox="0 0 150 150"><g class="ticks"></g></svg><i class="ring track"></i><i class="ring trail"></i><i class="ring flame"></i><i class="head"><b></b></i>`;
+const HALO = {
+  A: `<i class="heat"></i><i class="bezel"></i><i class="molten"></i><i class="lip"></i><i class="lip2"></i><i class="groove"></i><i class="ring cells"></i><svg class="frame" viewBox="0 0 150 150"><g class="ticks"></g></svg><i class="head"><b></b><s></s></i>${PIC('<i class="rim"></i><i class="glint"></i>')}<i class="burst"></i>`,
+  B: `<i class="core"></i>${STD}${PIC('<div class="liquid"><i class="w2"></i><i class="w1"></i></div><div class="bubbles"></div>')}<i class="embers"></i><i class="burst"></i>`,
+  C: `<i class="glow"></i><svg class="gauge" viewBox="0 0 150 150"><g class="segs"></g><text class="scale" x="64" y="146">0</text><text class="scale" x="143" y="86">100</text></svg>${PIC('')}<i class="chead"></i><i class="burst"></i>`,
+  C2: `<i class="glow"></i><svg class="gauge" viewBox="0 0 150 150"><g class="scale2"></g><g class="segs"></g></svg>${PIC('')}<i class="needle"><b></b></i><i class="burst"></i>`,
+  D: `<i class="glow"></i><i class="backing"></i>${STD}${PIC('')}<i class="beads"></i><i class="burst"></i>`,
+};
+
+const sheet = new Image(); sheet.src = 'assets/halo-sheet.webp';
+const FW = 168, FH = 196, COLS = 12, FPS = 20, CLIP = { idle: [0, 40], pump: [40, 46], flourish: [86, 46] };
+
+const cards = [...document.querySelectorAll('.card')].map(el => {
+  const v = el.dataset.v;
+  el.innerHTML = (v === 'D' ? '<div class="plate"></div>' : '') + `<div class="halo">${HALO[v]}</div>` + SIDE;
+  if (v === 'D') el.querySelector('.id').insertAdjacentHTML('beforeend', '<small>P1</small>');
+  const c = { el, v, ctx: el.querySelector('canvas').getContext('2d'), grade: el.querySelector('.grade'), pctEl: el.querySelector('.pct .v'), streakEl: el.querySelector('.streak'), lastFrame: -1, lit: -1, ticks: [], segs: [], burst: el.querySelector('.burst') };
+  // ticks: forty round the ring, every tenth a major
+  const tg = el.querySelector('.ticks');
+  if (tg) for (let i = 0; i < 40; i++) {
+    const a = i / 40 * Math.PI * 2 - Math.PI / 2, major = i % 10 === 0, r0 = v === 'A' ? (major ? 66.5 : 68) : (major ? 66.5 : 67.5), r1 = v === 'A' ? 72 : 71;
+    const l = document.createElementNS(NS, 'line');
+    l.setAttribute('x1', 75 + Math.cos(a) * r0); l.setAttribute('y1', 75 + Math.sin(a) * r0); l.setAttribute('x2', 75 + Math.cos(a) * r1); l.setAttribute('y2', 75 + Math.sin(a) * r1);
+    if (major) l.setAttribute('class', 'major'); tg.appendChild(l); c.ticks.push(l);
+  }
+  // C: 36 tapering segments over 270°, from the bottom, up the left, over the top, down to the right
+  if (v === 'C' || v === 'C2') {
+    const g = el.querySelector('.segs'), P = (r, d) => { const a = d * Math.PI / 180; return `${(75 + Math.cos(a) * r).toFixed(2)} ${(75 + Math.sin(a) * r).toFixed(2)}`; };
+    const sector = (a0, a1, rI, rO) => `M${P(rO, a0)} A${rO} ${rO} 0 0 1 ${P(rO, a1)} L${P(rI, a1)} A${rI} ${rI} 0 0 0 ${P(rI, a0)}Z`;
+    for (let i = 0; i < 36; i++) {
+      const a0 = 90 + i * 7.5 + .6, a1 = a0 + 6.3, rI = 58, rO = 61 + 6.5 * (i / 35);
+      const s = document.createElementNS(NS, 'path');
+      s.setAttribute('d', sector(a0, a1, rI, rO));
+      const t = i / 35;
+      let col = t < .6 ? 'rgb(255,255,255)' : t < .85 ? mix([255, 255, 255], [255, 226, 140], (t - .6) / .25) : mix([255, 226, 140], [255, 196, 70], (t - .85) / .15);
+      if (v === 'C2' && i >= 31) col = mix([255, 196, 90], [255, 120, 40], (i - 31) / 4);
+      s.setAttribute('class', 'seg' + (v === 'C2' && i >= 31 ? ' red' : '')); s.style.setProperty('--i', i); s.style.setProperty('--c', i < 8 ? 'var(--pc)' : col);
+      g.appendChild(s); c.segs.push(s);
+    }
+    c.head = el.querySelector('.chead');
+    if (v === 'C2') {
+      // the engraved outer scale: a tick per segment, majors at the quarters, numerals at 25 / 50 / 75
+      const sg = el.querySelector('.scale2');
+      for (let i = 0; i <= 36; i++) {
+        const d = 90 + i * 7.5, a = d * Math.PI / 180, major = i % 9 === 0, r0 = major ? 70 : 71.5, r1 = major ? 76 : 74;
+        const l = document.createElementNS(NS, 'line');
+        l.setAttribute('x1', 75 + Math.cos(a) * r0); l.setAttribute('y1', 75 + Math.sin(a) * r0); l.setAttribute('x2', 75 + Math.cos(a) * r1); l.setAttribute('y2', 75 + Math.sin(a) * r1);
+        l.setAttribute('class', 'tk' + (major ? ' major' : '') + (i >= 31 ? ' red' : '')); sg.appendChild(l); c.ticks.push(l);
+        if (major && i > 0 && i < 36) { const tx = document.createElementNS(NS, 'text'); tx.setAttribute('x', 75 + Math.cos(a) * 83); tx.setAttribute('y', 75 + Math.sin(a) * 83); tx.setAttribute('class', 'lbl'); tx.textContent = i / 36 * 100; tx.dataset.i = i; sg.appendChild(tx); (c.lbls = c.lbls || []).push(tx); }
+      }
+    }
+  }
+  if (v === 'B') {
+    const bb = el.querySelector('.bubbles');
+    for (let i = 0; i < 7; i++) { const b = document.createElement('b'); b.style.left = (14 + i * 12) + 'px'; b.style.animationDelay = (-i * .37) + 's'; b.style.animationDuration = (2 + (i % 3) * .5) + 's'; bb.appendChild(b); }
+    const em = el.querySelector('.embers');
+    for (let i = 0; i < 10; i++) { const b = document.createElement('b'); b.style.setProperty('--x', (40 + i * 7) + 'px'); b.style.setProperty('--d', (-i * .14) + 's'); b.style.setProperty('--dx', ((i % 5) - 2) * 7 + 'px'); em.appendChild(b); }
+  }
+  return c;
+});
+function mix(a, b, t) { return `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(',')})`; }
+
+// the demo: the charge climbs for 6.5 s and holds ready for 3.5; a hit every 1.4 s, mostly perfect
+let mode = 'loop', t0 = performance.now(), lastHit = 0, n = 0, streak = 0, wasReady = false, lastV = -1;
+let play = { name: 'idle', t0: performance.now() };
+function setGrade(c, w, color, d) {
+  const b = c.grade.querySelector('b'); b.textContent = w; b.dataset.w = w; c.grade.classList.toggle('top', w === 'PERFECT'); b.style.setProperty('--gc', color); c.grade.querySelector('span').innerHTML = d.replace(' · ', '<i class="sep">·</i>').replace(/(\d+)\s*km\/h/, '<span class="num">$1</span><span class="u">km/h</span>');
+  c.grade.classList.remove('fresh', 'settled'); void c.grade.offsetWidth; c.grade.classList.add('fresh');
+  clearTimeout(c.st); c.st = setTimeout(() => c.grade.classList.add('settled'), 4200);
+}
+function drawStreak(c) {
+  c.streakEl.dataset.n = Math.min(streak, 9);
+  c.streakEl.querySelector('.n').textContent = streak >= 2 ? '×' + streak : '';
+  const want = Math.min(streak, 6), pips = c.streakEl.querySelector('.pips');
+  while (pips.children.length > want) pips.lastElementChild.remove();
+  while (pips.children.length < want) pips.appendChild(document.createElement('i'));
+  if (c.v === 'D') { // the beads: on the ring's top arc, outside the ticks
+    const bd = c.el.querySelector('.beads');
+    while (bd.children.length > want) bd.lastElementChild.remove();
+    while (bd.children.length < want) bd.appendChild(document.createElement('i'));
+    [...bd.children].forEach((b, i) => { const a = (-90 - (want - 1) * 7 + i * 14) * Math.PI / 180; b.style.left = (75 + Math.cos(a) * 80) + 'px'; b.style.top = (75 + Math.sin(a) * 80) + 'px'; });
+  }
+}
+const kinds = ['drive', 'clear', 'smash', 'drop', 'smash', 'kill'];
+// ================= the gauges, on canvas =================
+// The charge now arrives the way the game gives it: in steps, one per hit, and each card's display
+// follows the step with a spring (a little overshoot). Each renderer draws the 270° arc from the
+// bottom, up the left, over the top, down to the right.
+const GS = 3, CX = 95, CY = 95, A0 = Math.PI / 2, SW = Math.PI * 1.5, RED = 0.86;
+const ang = t => A0 + SW * t, lerp = (a, b, t) => a + (b - a) * t, cl = x => Math.max(0, Math.min(1, x));
+const hex = h => { h = h.trim().replace('#', ''); return [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16)); };
+const mixc = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
+const rgba = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const WHITE = [255, 255, 255], GOLD = [255, 220, 150], AMBER = [255, 170, 70], HOT = [255, 104, 40], F1 = [255, 74, 16], F2 = [255, 154, 46], F3 = [255, 233, 176];
+function ramp(t, pc) { // team colour at the foot, white through the middle, gold, then the redline's amber to hot orange
+  const S = [[0, pc], [.2, mixc(pc, WHITE, .65)], [.42, WHITE], [.72, GOLD], [RED, AMBER], [1, HOT]];
+  for (let i = 1; i < S.length; i++) if (t <= S[i][0]) return mixc(S[i - 1][1], S[i][1], (t - S[i - 1][0]) / (S[i][0] - S[i - 1][0]));
+  return HOT;
+}
+function fireAt(t, time) { const k = .5 + .5 * Math.sin(t * 22 - time * 9); return k < .5 ? mixc(F1, F2, k * 2) : mixc(F2, F3, (k - .5) * 2); }
+function grad(ctx, fn, a = 1) { const g = ctx.createConicGradient(A0, CX, CY); for (let i = 0; i <= 24; i++) { const t = i / 24; g.addColorStop(t * .75, rgba(fn(t), a)); } g.addColorStop(1, rgba(fn(1), a)); return g; }
+// a band along the arc between t0 and t1, centred on radius rc, its width tapering from w0 (foot) to w1 (end)
+function band(ctx, t0, t1, rc, w0, w1) {
+  const n = Math.max(2, Math.ceil((t1 - t0) * 160)); ctx.beginPath();
+  for (let i = 0; i <= n; i++) { const t = t0 + (t1 - t0) * i / n, a = ang(t), r = rc + lerp(w0, w1, t) / 2; i ? ctx.lineTo(CX + Math.cos(a) * r, CY + Math.sin(a) * r) : ctx.moveTo(CX + Math.cos(a) * r, CY + Math.sin(a) * r); }
+  for (let i = n; i >= 0; i--) { const t = t0 + (t1 - t0) * i / n, a = ang(t), r = rc - lerp(w0, w1, t) / 2; ctx.lineTo(CX + Math.cos(a) * r, CY + Math.sin(a) * r); }
+  ctx.closePath();
+}
+function sector(ctx, a0, a1, r0, r1) { ctx.beginPath(); ctx.arc(CX, CY, r1, a0, a1); ctx.arc(CX, CY, r0, a1, a0, true); ctx.closePath(); }
+function glow(ctx, px, alpha, draw) { ctx.save(); ctx.filter = `blur(${px}px)`; ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha; draw(); ctx.restore(); }
+// the engraved scale outside the arc: 48 fine ticks, majors at the quarters, numerals at 25 / 50 / 75; lit as the charge passes
+function scale(ctx, p, ready, flash, flick) {
+  ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i <= 48; i++) {
+    const t = i / 48, a = ang(t), major = i % 12 === 0, r0 = major ? 70 : 71.2, r1 = major ? 76 : 73.6, lk = cl((p - t) / .02 + 1), red = t >= RED;
+    let col = red ? AMBER : WHITE, al = lerp(major ? .38 : .17, major ? .95 : .7, lk);
+    if (ready) { col = [255, 194, 122]; al = major ? .95 : .7; }
+    let r1x = r1;
+    if (flash && t > flash.from - 1e-4 && t <= flash.to + 1e-4) { al = Math.min(1, al + flash.k * .6); col = mixc(col, WHITE, flash.k); r1x += (flick || 0) * 3.5; }
+    ctx.strokeStyle = rgba(col, al); ctx.lineWidth = major ? 1.3 : .7;
+    ctx.beginPath(); ctx.moveTo(CX + Math.cos(a) * r0, CY + Math.sin(a) * r0); ctx.lineTo(CX + Math.cos(a) * r1x, CY + Math.sin(a) * r1x); ctx.stroke();
+  }
+  ctx.font = "italic 700 7px Archivo"; ctx.fontStretch = 'condensed'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const q of [.25, .5, .75]) { const a = ang(q); ctx.fillStyle = rgba(WHITE, p >= q || ready ? .85 : .4); ctx.fillText(Math.round(q * 100), CX + Math.cos(a) * 84, CY + Math.sin(a) * 84); }
+  ctx.restore();
+}
+// the instrument's seat: a soft smoked-glass band behind the arc, and a recessed groove with a lit lip,
+// so the light reads against any court
+function seat(ctx) {
+  ctx.save(); ctx.lineCap = 'round';
+  ctx.filter = 'blur(5px)'; ctx.strokeStyle = 'rgba(5,9,24,.55)'; ctx.lineWidth = 24; ctx.beginPath(); ctx.arc(CX, CY, 66, ang(0), ang(1)); ctx.stroke();
+  ctx.filter = 'none'; ctx.lineCap = 'butt'; ctx.strokeStyle = 'rgba(0,0,0,.38)'; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.09)'; ctx.lineWidth = .6; ctx.beginPath(); ctx.arc(CX, CY, 68.7, ang(0), ang(1)); ctx.stroke();
+  ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.beginPath(); ctx.arc(CX, CY, 58.3, ang(0), ang(1)); ctx.stroke();
+  ctx.restore();
+}
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+function lastGain(c, now, ms) { const g = c.gains[c.gains.length - 1]; if (!g) return null; const age = now - g.t0; return age < ms ? { from: g.from, to: g.to, age, k: 1 - age / ms } : null; }
+
+const GAUGES = {
+  // 1 · Precision: a hairline track and one continuous tapered ribbon, colour flowing along it; a crisp
+  // cap at the head instead of a blob; each gain flashes white over just the part it added and fades
+  precision(c, ctx, s) {
+    seat(ctx);
+    const { p, ready, time, now } = s, g = lastGain(c, now, 700);
+    scale(ctx, p, ready, g && { from: g.from, to: g.to, k: g.k * g.k });
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.13)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,150,70,.4)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(RED), ang(1)); ctx.stroke();
+    if (p < .002 && !ready) return;
+    const fill = ready ? grad(ctx, t => fireAt(t, time)) : grad(ctx, t => ramp(t, c.pc));
+    const P = ready ? 1 : p, draw = () => { band(ctx, 0, P, 63.5, 3, 8); ctx.fillStyle = fill; ctx.fill(); };
+    draw(); glow(ctx, ready ? 7 : 5, ready ? .9 : .55, draw);
+    if (g && !ready) { const dg = () => { band(ctx, g.from, Math.min(g.to, p), 63.5, 2.6, 7.5); ctx.fillStyle = rgba(WHITE, .9 * g.k * g.k); ctx.fill(); }; dg(); glow(ctx, 6, g.k, dg); }
+    if (!ready) {
+      const a = ang(p), dx = Math.cos(a), dy = Math.sin(a), cap = () => { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(CX + dx * 57, CY + dy * 57); ctx.lineTo(CX + dx * 70.5, CY + dy * 70.5); ctx.stroke(); };
+      cap(); glow(ctx, 3, .9, cap);
+    }
+  },
+  // 2 · LED: real light cells. Each lights with a white strike that settles to its colour, glows into
+  // its neighbours, and unlit cells are dark glass with a faint lip; the leading cell breathes
+  led(c, ctx, s) {
+    seat(ctx);
+    const { p, ready, time, now, dt } = s, N = 36, lit = ready ? N : Math.floor(p * N + 1e-6);
+    if (!c.cells) { c.cells = new Float32Array(N); c.onAt = new Float64Array(N); }
+    scale(ctx, p, ready, null);
+    const geo = i => { const a0 = ang(i / N) + .011, a1 = ang((i + 1) / N) - .011; return [a0, a1, 58.5, 61 + 6.5 * (i / (N - 1))]; };
+    for (let i = 0; i < N; i++) {
+      const on = i < lit; if (on && c.cells[i] < .05) c.onAt[i] = now;
+      c.cells[i] += ((on ? 1 : 0) - c.cells[i]) * Math.min(1, dt * (on ? 30 : 10));
+    }
+    for (let i = 0; i < N; i++) { const [a0, a1, r0, r1] = geo(i); sector(ctx, a0, a1, r0, r1); ctx.fillStyle = i / N >= RED - .02 ? 'rgba(255,140,60,.13)' : 'rgba(255,255,255,.07)'; ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = .5; ctx.stroke(); }
+    const colOf = i => { if (ready) return fireAt(i / N, time); const strike = Math.max(0, 1 - (now - c.onAt[i]) / 280); let col = mixc(ramp(i / (N - 1), c.pc), WHITE, strike * .9); if (i === lit - 1) col = mixc(col, WHITE, .25 + .2 * Math.sin(time * 8)); return col; };
+    const drawLit = (cells) => { for (let i = 0; i < N; i++) { const k = c.cells[i]; if (k < .02) continue; const [a0, a1, r0, r1] = geo(i), col = colOf(i), am = (a0 + a1) / 2, rm = (r0 + r1) / 2;
+      const rg = ctx.createRadialGradient(CX + Math.cos(am) * rm, CY + Math.sin(am) * rm, 0, CX + Math.cos(am) * rm, CY + Math.sin(am) * rm, 6);
+      rg.addColorStop(0, rgba(mixc(col, WHITE, .35), k)); rg.addColorStop(1, rgba(mixc(col, [0, 0, 0], .12), k));
+      sector(ctx, a0, a1, r0, r1); ctx.fillStyle = cells ? rg : rgba(col, k); ctx.fill(); } };
+    drawLit(true); glow(ctx, ready ? 8 : 6, ready ? 1 : .9, () => drawLit(false));
+  },
+  // 3 · Plasma: the filled arc is a moving current: streaks of light run along it from the foot to the
+  // head, a white-hot core down its middle, sparks shed off the head
+  plasma(c, ctx, s) {
+    seat(ctx);
+    const { p, ready, time, now, dt } = s, P = ready ? 1 : p;
+    if (!c.parts) { c.parts = Array.from({ length: 54 }, () => ({ u: Math.random(), sp: .35 + Math.random() * .9, len: .025 + Math.random() * .05, r: (Math.random() - .5) * 5, a: .25 + Math.random() * .75, w: .7 + Math.random() * 1.3 })); c.sparks = []; }
+    scale(ctx, p, ready, null);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+    if (P < .003) return;
+    const fill = ready ? grad(ctx, t => fireAt(t, time), .55) : grad(ctx, t => ramp(t, c.pc), .5);
+    const base = () => { band(ctx, 0, P, 63.5, 3.5, 8.5); ctx.fillStyle = fill; ctx.fill(); };
+    base(); glow(ctx, 6, .7, base);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+    for (const q of c.parts) {
+      q.u += q.sp * dt * (ready ? 1.6 : 1) * (.5 / Math.max(.15, P)); if (q.u > 1) { q.u -= 1; q.r = (Math.random() - .5) * 5; }
+      const t1 = q.u * P, t0 = Math.max(0, t1 - q.len), w = lerp(3.5, 8.5, t1) / 8.5;
+      const col = ready ? fireAt(t1, time) : mixc(ramp(t1, c.pc), WHITE, .6);
+      ctx.strokeStyle = rgba(col, q.a * (1 - Math.pow(q.u, 6))); ctx.lineWidth = q.w;
+      ctx.beginPath(); ctx.arc(CX, CY, 63.5 + q.r * w, ang(t0), ang(t1)); ctx.stroke();
+    }
+    ctx.restore();
+    const core = () => { band(ctx, 0, P, 63.5, .5, 1.4); ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fill(); }; core();
+    // sparks off the head
+    const ha = ang(P), rate = ready ? 0 : 26 + 60 * Math.max(0, (c.vel || 0));
+    c.spAcc = (c.spAcc || 0) + rate * dt;
+    while (c.spAcc > 1) { c.spAcc--; const tg = ha + Math.PI / 2, sp = 25 + Math.random() * 45, out = (Math.random() - .3) * 30; c.sparks.push({ x: CX + Math.cos(ha) * 63.5, y: CY + Math.sin(ha) * 63.5, vx: Math.cos(tg) * sp + Math.cos(ha) * out, vy: Math.sin(tg) * sp + Math.sin(ha) * out, life: 0, max: .25 + Math.random() * .35 }); }
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    c.sparks = c.sparks.filter(k => (k.life += dt) < k.max);
+    for (const k of c.sparks) { k.x += k.vx * dt; k.y += k.vy * dt; k.vx *= .94; k.vy *= .94; const a = 1 - k.life / k.max; ctx.fillStyle = rgba(mixc(ramp(P, c.pc), WHITE, .5), a); ctx.beginPath(); ctx.arc(k.x, k.y, .5 + a, 0, 7); ctx.fill(); }
+    ctx.restore();
+    if (!ready) { const hx = CX + Math.cos(ha) * 63.5, hy = CY + Math.sin(ha) * 63.5, rg = ctx.createRadialGradient(hx, hy, 0, hx, hy, 9); rg.addColorStop(0, 'rgba(255,255,255,1)'); rg.addColorStop(.25, rgba(mixc(ramp(P, c.pc), WHITE, .6), .7)); rg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(hx, hy, 9, 0, 7); ctx.fill(); ctx.restore(); }
+  },
+  // 4 · Pulse: the charge is a quiet ribbon; each hit sends a packet of light racing up it from the foot,
+  // and when it lands the head flares and the new ground lights; ready, a comet laps the arc
+  pulse(c, ctx, s) {
+    seat(ctx);
+    const { p, ready, time, now } = s;
+    scale(ctx, p, ready, (() => { const g = lastGain(c, now, 900); if (!g || g.age < 380) return null; const k = 1 - (g.age - 380) / 520; return { from: g.from, to: g.to, k: k * k }; })());
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,150,70,.4)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(RED), ang(1)); ctx.stroke();
+    if (ready) {
+      const base = () => { band(ctx, 0, 1, 63.5, 2.4, 5.5); ctx.fillStyle = grad(ctx, t => fireAt(t, time), .6); ctx.fill(); }; base(); glow(ctx, 6, .7, base);
+      const h = (time * .75) % 1.15, tail = () => { for (let k = 0; k < 30; k++) { const t1 = h - k * .012, t0 = t1 - .013; if (t1 < 0 || t0 > 1) continue; band(ctx, Math.max(0, t0), Math.min(1, t1), 63.5, 3, 7); ctx.fillStyle = rgba(mixc(F3, F1, k / 30), Math.pow(1 - k / 30, 2)); ctx.fill(); } };
+      tail(); glow(ctx, 5, 1, tail); return;
+    }
+    if (p < .002) return;
+    const base = () => { band(ctx, 0, p, 63.5, 2, 5.5); ctx.fillStyle = grad(ctx, t => ramp(t, c.pc), .75); ctx.fill(); };
+    base(); glow(ctx, 4, .45, base);
+    // the head: a long soft afterglow behind it
+    const tail = () => { for (let k = 0; k < 24; k++) { const t1 = p - k * .008, t0 = t1 - .009; if (t1 <= 0) break; band(ctx, Math.max(0, t0), t1, 63.5, 2.5, 6.5); ctx.fillStyle = rgba(mixc(WHITE, ramp(t1, c.pc), k / 24), .8 * Math.pow(1 - k / 24, 2)); ctx.fill(); } };
+    tail(); glow(ctx, 4, .8, tail);
+    // packets in flight, then the landing flare
+    for (const g of c.gains.slice(-3)) {
+      const age = now - g.t0;
+      if (age < 380) { const q = easeOut(age / 380) * g.to, pk = () => { band(ctx, Math.max(0, q - .07), q, 63.5, 3, 7.5); ctx.fillStyle = grad(ctx, t => (t > q - .07 ? WHITE : WHITE), 1); ctx.fill(); }; pk(); glow(ctx, 6, 1, pk); }
+      else if (age < 780) { const k = (age - 380) / 400, a = ang(g.to), hx = CX + Math.cos(a) * 63.5, hy = CY + Math.sin(a) * 63.5; ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = rgba(WHITE, (1 - k) * .9); ctx.lineWidth = 1.5 * (1 - k) + .3; ctx.beginPath(); ctx.arc(hx, hy, 3 + k * 13, 0, 7); ctx.stroke(); const rg = ctx.createRadialGradient(hx, hy, 0, hx, hy, 12); rg.addColorStop(0, rgba(WHITE, 1 - k)); rg.addColorStop(1, rgba(WHITE, 0)); ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(hx, hy, 12, 0, 7); ctx.fill(); ctx.restore(); }
+    }
+    const a = ang(p), hx = CX + Math.cos(a) * 63.5, hy = CY + Math.sin(a) * 63.5, rg = ctx.createRadialGradient(hx, hy, 0, hx, hy, 6);
+    rg.addColorStop(0, '#fff'); rg.addColorStop(.35, 'rgba(255,255,255,.55)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(hx, hy, 6, 0, 7); ctx.fill(); ctx.restore();
+  },
+};
+// ---- Pulse, refined: one renderer, configured per variant ----
+// Gated: the gauge (and the number) only move when the packet lands, so every gain is seen to arrive.
+const easeOutQuart = x => 1 - Math.pow(1 - x, 4);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+function sparks(ctx, c, dt) {
+  if (!c.sparks) c.sparks = [];
+  c.sparks = c.sparks.filter(k => (k.life += dt) < k.max);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const k of c.sparks) { k.x += k.vx * dt; k.y += k.vy * dt; k.vx *= .92; k.vy *= .92; const a = 1 - k.life / k.max; ctx.fillStyle = rgba(k.col, a); ctx.beginPath(); ctx.arc(k.x, k.y, .4 + a * k.r, 0, 7); ctx.fill(); }
+  ctx.restore();
+}
+function spark(c, t, n, spd, col, r = 1) {
+  if (!c.sparks) c.sparks = [];
+  const a = ang(t), x = CX + Math.cos(a) * 63.5, y = CY + Math.sin(a) * 63.5;
+  for (let i = 0; i < n; i++) { const d = Math.random() * Math.PI * 2, v = spd * (.4 + Math.random() * .6); c.sparks.push({ x, y, vx: Math.cos(d) * v, vy: Math.sin(d) * v, life: 0, max: .25 + Math.random() * .35, col, r }); }
+}
+function hot(ctx, t, r, a = 1, col = WHITE) {
+  const an = ang(t), hx = CX + Math.cos(an) * 63.5, hy = CY + Math.sin(an) * 63.5, rg = ctx.createRadialGradient(hx, hy, 0, hx, hy, r);
+  rg.addColorStop(0, rgba(WHITE, a)); rg.addColorStop(.3, rgba(col, a * .55)); rg.addColorStop(1, rgba(col, 0));
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(hx, hy, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function pulseX(o) {
+  const ease = o.ease || easeOutQuart;
+  return function (c, ctx, s) {
+    const { p, ready, time, now, dt } = s;
+    seat(ctx);
+    // the baseline feed (CSS): light runs in along the line under the number before it climbs the arc
+    if (o.feed) {
+      const g = c.gains[c.gains.length - 1], age = g ? now - g.t0 : 1e9;
+      const fx = age < g?.delay ? age / g.delay : 1, fo = age < (g?.delay || 0) + 60 ? 1 : 0;
+      c.el.style.setProperty('--fx', easeInOut(Math.min(1, fx)).toFixed(3)); c.el.style.setProperty('--fo', fo);
+    }
+    const L = c.gains.filter(g => now >= g.land && now - g.land < 650).pop(), fk = L ? Math.pow(1 - (now - L.land) / 650, 2) : 0;
+    scale(ctx, p, ready, L ? { from: L.from, to: L.to, k: fk } : null, o.flick ? fk : 0);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,150,70,.4)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(RED), ang(1)); ctx.stroke();
+    if (ready) {
+      const base = () => { band(ctx, 0, 1, 63.5, 2.4, 5.5); ctx.fillStyle = grad(ctx, t => fireAt(t, time), o.noir ? .45 : .6); ctx.fill(); }; base(); glow(ctx, 6, .7, base);
+      const h = (time * (o.lap || .75)) % 1.15, n = o.noir ? 44 : 30, tail = () => { for (let k = 0; k < n; k++) { const t1 = h - k * .012, t0 = t1 - .013; if (t1 < 0 || t0 > 1) continue; band(ctx, Math.max(0, t0), Math.min(1, t1), 63.5, 3, 7); ctx.fillStyle = rgba(mixc(F3, F1, k / n), Math.pow(1 - k / n, 2)); ctx.fill(); } };
+      tail(); glow(ctx, 5, 1, tail); if (h <= 1) hot(ctx, h, 8, .9, F2); sparks(ctx, c, dt); return;
+    }
+    // the ribbon, and the long afterglow behind its head
+    if (p > .002) {
+      const base = () => { band(ctx, 0, p, 63.5, 2, 5.5); ctx.fillStyle = grad(ctx, t => ramp(t, c.pc), o.baseA || .75); ctx.fill(); };
+      base(); glow(ctx, 4, .45, base);
+      const n = o.tail || 24, st = (o.tail ? .2 : .19) / n, tail = () => { for (let k = 0; k < n; k++) { const t1 = p - k * st, t0 = t1 - st - .001; if (t1 <= 0) break; band(ctx, Math.max(0, t0), t1, 63.5, 2.5, 6.5); ctx.fillStyle = rgba(mixc(WHITE, ramp(t1, c.pc), k / n), .8 * Math.pow(1 - k / n, 2)); ctx.fill(); } };
+      tail(); glow(ctx, 4, .8, tail);
+    }
+    // packets in flight
+    for (const g of c.gains) {
+      const n = o.multi ? Math.min(3, 1 + Math.floor((g.streak || 0) / 3)) : 1;
+      for (let j = 0; j < n; j++) {
+        const age = now - (g.t0 + g.delay + j * 110); if (age < 0 || age > g.dur) continue;
+        const u = age / g.dur, q = ease(u) * g.to, size = (o.quality ? g.q : 1) * (j ? .7 : 1), gold = o.quality && g.q >= 1;
+        if (o.packet === 'needle') {
+          const pk = () => { band(ctx, Math.max(0, q - .05), q, 63.5, 1.3, 1.3); ctx.fillStyle = 'rgba(255,255,255,.95)'; ctx.fill(); }; pk(); glow(ctx, 3, .9, pk); hot(ctx, q, 4, .9);
+        } else {
+          const len = .1 * (.55 + .45 * size), N = 18, pk = () => { for (let k = 0; k < N; k++) { const t1 = q - k * len / N, t0 = t1 - len / N - .002; if (t1 <= 0) break; const w = lerp(2.5 + 5 * size, 1.5, k / N); band(ctx, Math.max(0, t0), t1, 63.5, w, w); ctx.fillStyle = rgba(mixc(WHITE, gold ? GOLD : ramp(t1, c.pc), k / N), Math.pow(1 - k / N, 1.6)); ctx.fill(); } };
+          pk(); glow(ctx, 5, 1, pk); hot(ctx, q, 5 + 4 * size, 1, gold ? GOLD : WHITE);
+          if (gold && !j && Math.random() < dt * 60) spark(c, q, 1, 25, GOLD, .9);
+        }
+      }
+      // the landing
+      const la = (now - g.land) / 650; if (la < 0 || la >= 1) continue;
+      const a = ang(g.to), hx = CX + Math.cos(a) * 63.5, hy = CY + Math.sin(a) * 63.5, big = o.quality ? (g.q >= 1 ? 1.25 : .7) : 1;
+      if (!g.burst) { g.burst = 1; if (o.land === 'spark') spark(c, g.to, Math.round(14 * big), 70 * big, g.q >= 1 && o.quality ? GOLD : WHITE, 1.1); }
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      if (o.land === 'ring' || o.land === 'spark') { ctx.strokeStyle = rgba(WHITE, (1 - la) * .9); ctx.lineWidth = 1.5 * (1 - la) + .3; ctx.beginPath(); ctx.arc(hx, hy, 3 + la * 14 * big, 0, 7); ctx.stroke(); }
+      if (o.land === 'ripple') { const w = g.to - la * g.to * .95, rp = () => { band(ctx, Math.max(0, w - .04), Math.min(g.to, w + .01), 63.5, 3.5, 8.5); ctx.fillStyle = rgba(WHITE, (1 - la) * .75); ctx.fill(); }; ctx.restore(); rp(); glow(ctx, 5, (1 - la), rp); ctx.save(); ctx.globalCompositeOperation = 'lighter'; }
+      const rg = ctx.createRadialGradient(hx, hy, 0, hx, hy, (o.land === 'bloom' ? 16 : 12) * big); rg.addColorStop(0, rgba(WHITE, (1 - la) * (o.land === 'bloom' ? .55 : 1))); rg.addColorStop(1, rgba(WHITE, 0)); ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(hx, hy, 16 * big, 0, 7); ctx.fill();
+      ctx.restore();
+    }
+    sparks(ctx, c, dt);
+    if (p > .002) hot(ctx, p, o.noir ? 4.5 : 6, 1, ramp(p, c.pc));
+  };
+}
+Object.assign(GAUGES, {
+  p1: pulseX({ packet: 'comet', land: 'ring', gate: 1 }),
+  p2: pulseX({ packet: 'comet', land: 'ring', gate: 1, feed: 1 }),
+  p3: pulseX({ packet: 'comet', land: 'spark', gate: 1, quality: 1, multi: 1 }),
+  p4: pulseX({ packet: 'comet', land: 'ripple', gate: 1, flick: 1 }),
+  p5: pulseX({ packet: 'needle', land: 'bloom', gate: 1, noir: 1, tail: 40, baseA: .55, lap: .5, ease: easeInOut }),
+});
+const GATED = { p1: 1, p2: 1, p3: 1, p4: 1, p5: 1 }, FEED = { p2: 1 };
+// ---- Flow: the fill itself grows, smoothly, with nothing running ahead of it ----
+// The display follows the charge through two chained critically-damped smoothers: it eases in, flows,
+// and settles with no overshoot, and a hit arriving mid-climb just bends the curve (no restart).
+function sdamp(cur, target, st, dt) {
+  const w = 2 / st.t, x = w * dt, e = 1 / (1 + x + .48 * x * x + .235 * x * x * x), ch = cur - target, tmp = (st.v + w * ch) * dt;
+  st.v = (st.v - w * tmp) * e; return target + (ch + tmp) * e;
+}
+function flowX(o) {
+  return function (c, ctx, s) {
+    const { p, ready, time, now } = s, sp = cl((c.spd || 0) * 2.2); // how fast the fill is moving, 0..1
+    seat(ctx);
+    scale(ctx, p, ready, null);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,150,70,.4)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(RED), ang(1)); ctx.stroke();
+    if (ready) { // no orb: fire flows along the whole arc and breathes
+      const base = () => { band(ctx, 0, 1, 63.5, 2.6, 6); ctx.fillStyle = grad(ctx, t => fireAt(t * .6, time * .7), .9); ctx.fill(); };
+      base(); glow(ctx, 6 + 2 * Math.sin(time * 4), .85, base);
+      const u = (time * .45) % 1.4, sh = () => { for (let k = 0; k < 14; k++) { const t1 = u - k * .012; if (t1 < 0 || t1 > 1) continue; band(ctx, Math.max(0, t1 - .013), t1, 63.5, 3, 7); ctx.fillStyle = rgba(F3, .55 * Math.sin(Math.PI * k / 14)); ctx.fill(); } };
+      sh(); glow(ctx, 4, .7, sh); return;
+    }
+    if (p < .002) return;
+    // the ribbon: solid, or (feather) dissolving over its last few percent so the edge has no hard end
+    const fe = o.feather ? Math.min(.05, p) : 0, fill = grad(ctx, t => ramp(t, c.pc), .82);
+    const base = () => {
+      band(ctx, 0, p - fe, 63.5, 2, 5.5); ctx.fillStyle = fill; ctx.fill();
+      for (let k = 0; k < 10 && fe; k++) { const t0 = p - fe + fe * k / 10, t1 = t0 + fe / 10 + .001; band(ctx, t0, Math.min(p, t1), 63.5, 2, 5.5); ctx.fillStyle = rgba(ramp(t0, c.pc), .82 * (1 - k / 10)); ctx.fill(); }
+    };
+    base(); glow(ctx, 4, .5, base);
+    // warm trail: what the fill has just gained glows white-gold and cools to the ribbon's colour
+    if (o.heat) {
+      const N = 300, top = Math.floor(p * N);
+      if (!c.heat || top < (c.heatTop || 0) - 2) { c.heat = new Float64Array(N + 1); c.heatTop = top; }
+      for (let i = c.heatTop + 1; i <= top; i++) c.heat[i] = now; c.heatTop = Math.max(c.heatTop, top);
+      const hd = () => { for (let i = 0; i < top; i += 2) { const h = c.heat[i] ? Math.exp(-(now - c.heat[i]) / 750) : 0; if (h < .03) continue; band(ctx, i / N, Math.min(p, (i + 2.4) / N), 63.5, 2.6, 6.5); ctx.fillStyle = rgba(mixc(GOLD, WHITE, h), .85 * h); ctx.fill(); } };
+      hd(); glow(ctx, 5, .9, hd);
+    }
+    // sheen: a broad soft light that keeps flowing from the foot to the head, even at rest
+    if (o.sheen) {
+      const span = p + .3, u = (time * .22) % span, sh = () => { for (let k = 0; k < 16; k++) { const t1 = u - k * .01; if (t1 <= 0 || t1 - .011 >= p) continue; band(ctx, Math.max(0, t1 - .011), Math.min(p, t1), 63.5, 2.2, 6); ctx.fillStyle = rgba(WHITE, .42 * Math.sin(Math.PI * k / 16)); ctx.fill(); } };
+      sh(); glow(ctx, 4, .6, sh);
+    }
+    // the head: its afterglow stretches while the fill moves and draws in when it rests
+    const L = .035 + .15 * sp, n = 22, st = L / n, br = .5 + .5 * sp;
+    const tail = () => { for (let k = 0; k < n; k++) { const t1 = p - k * st, t0 = t1 - st - .001; if (t1 <= 0) break; band(ctx, Math.max(0, t0), t1, 63.5, 2.5, 6.5); ctx.fillStyle = rgba(mixc(WHITE, ramp(t1, c.pc), k / n), br * Math.pow(1 - k / n, 2)); ctx.fill(); } };
+    tail(); glow(ctx, 4, .7 + .3 * sp, tail);
+    hot(ctx, p, 4 + 3 * sp, .55 + .45 * sp + .08 * Math.sin(time * 3), ramp(p, c.pc));
+  };
+}
+Object.assign(GAUGES, {
+  f1: flowX({}),
+  f2: flowX({ feather: 1, sheen: 1 }),
+  f3: flowX({ heat: 1 }),
+  f4: flowX({ feather: 1, sheen: 1, heat: 1 }),
+});
+const FLOW = { f1: 1, f2: 1, f3: 1, f4: 1 };
+// ---- Liquid: the ribbon rendered in a shader, its colour flowing like molten liquid ----
+// Each pixel near the arc works out where it is along the gauge (t) and across the ribbon (v). Inside,
+// a domain-warped noise field drifts along the arc; the gauge's heat gradient is its base colour, the
+// fresh charge runs white-gold and cools, and the head is a rounded liquid front that wobbles. Glow is
+// computed in the same pass (distance to the ribbon), added on top.
+const LAVA_FS = `#version 300 es
+precision highp float;
+uniform vec2 uRes; uniform float uP, uT, uReady, uSpd, uMode; uniform vec3 uPc; uniform sampler2D uHeat;
+out vec4 o;
+const float PI = 3.14159265, RC = 63.5, ARC = 1.5 * PI * 63.5, RED = .86;
+float h21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float vn(vec2 p) { vec2 i = floor(p), f = fract(p), u = f * f * f * (f * (f * 6. - 15.) + 10.);
+  return mix(mix(h21(i), h21(i + vec2(1, 0)), u.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), u.x), u.y); }
+float fbm(vec2 p) { float s = 0., a = .5; mat2 m = mat2(1.6, 1.2, -1.2, 1.6); for (int i = 0; i < 5; i++) { s += a * vn(p); p = m * p; a *= .5; } return s; }
+vec3 ramp(float t) { vec3 W = vec3(1), G = vec3(1., .863, .588), A = vec3(1., .667, .275), H = vec3(1., .408, .157), c1 = mix(uPc, W, .65);
+  if (t < .2) return mix(uPc, c1, t / .2); if (t < .42) return mix(c1, W, (t - .2) / .22); if (t < .72) return mix(W, G, (t - .42) / .3);
+  if (t < RED) return mix(G, A, (t - .72) / (RED - .72)); return mix(A, H, (t - RED) / (1. - RED)); }
+vec3 fire(float n) { vec3 F1 = vec3(1., .29, .063), F2 = vec3(1., .604, .18), F3 = vec3(1., .914, .69); float k = clamp(n * 1.4 - .2, 0., 1.); return k < .5 ? mix(F1, F2, k * 2.) : mix(F2, F3, (k - .5) * 2.); }
+void main() {
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) / uRes * 190.;
+  vec2 d = px - 95.; float r = length(d), dr = r - RC;
+  float t = mod(atan(d.y, d.x) - PI * .5, 2. * PI) / (1.5 * PI);
+  if (abs(dr) > 16. || t > 1.05) { o = vec4(0); return; }
+  bool ready = uReady > .5; float P = ready ? 1. : uP;
+  float tc = clamp(t, 0., 1.), hw = mix(1.4, 3.7, tc), u = tc * ARC, s = (P - t) * ARC;
+  // the flow: warped noise drifting from the foot towards the head
+  float sp = ready ? 1.8 : 1.;
+  vec2 q = vec2(u * .05 - uT * .3 * sp, dr / hw * .5);
+  vec2 w = vec2(fbm(q * 1.15 + vec2(0., uT * .06)), fbm(q * 1.15 + vec2(5.2, -uT * .08)));
+  float n = fbm(q * 1.6 + w * 1.2 + vec2(uT * .04, 0.));
+  // the liquid front: a rounded end that wobbles a little, like surface tension
+  float sw = s + (vn(vec2(r * .22, uT * 1.1)) - .5) * 1.4 * (.4 + .6 * uSpd);
+  float sd = sw > hw ? abs(dr) - hw : length(vec2(dr, hw - sw)) - hw;
+  float al = 1. - smoothstep(-.45, .45, sd);
+  float v = clamp(dr / hw, -1., 1.), core = 1. - v * v;
+  vec3 base = ready ? fire(n) : ramp(tc), col;
+  bool molten = uMode < .5 || abs(uMode - 2.) < .5;
+  if (molten) { // molten: dark crust, bright channels of liquid moving through it
+    float mk = smoothstep(.36, .66, n);
+    col = mix(base * .5 + vec3(.05, .012, 0.), mix(base, vec3(1., .95, .85), .2) * 1.25, mk);
+    col += vec3(1., .9, .72) * smoothstep(.7, .88, n) * .55;
+    col *= .72 + .45 * core;
+  } else { // silk: the gradient marbled into soft, creamy swirls
+    float m = smoothstep(0., 1., .5 + .5 * sin(q.x * 2.1 + n * 6.2832 + w.y * 3.));
+    col = mix(base * .8, mix(base, vec3(1.), .32) * 1.06, m);
+    col *= .82 + .26 * core;
+  }
+  if (uMode > 1.5) { // glass: lit as a glossy tube of liquid, the flow bending the highlights
+    float e = .07, nx = fbm((q + vec2(e, 0.)) * 1.6 + w * 1.2) - n, ny = fbm((q + vec2(0., e)) * 1.6 + w * 1.2) - n;
+    vec2 rad = d / r, tang = vec2(-rad.y, rad.x);
+    vec3 Nt = normalize(vec3(rad * v, sqrt(max(0., 1. - v * v)) + .05));
+    vec3 N = normalize(Nt + vec3(tang * nx * 7. + rad * ny * 7., 0.));
+    vec3 L = normalize(vec3(-.45, -.75, .75)), Hh = normalize(L + vec3(0, 0, 1));
+    float dif = max(dot(N, L), 0.), spec = pow(max(dot(N, Hh), 0.), 70.);
+    col = col * (.74 + .42 * dif) + vec3(1.) * spec * .95 + col * pow(1. - Nt.z, 2.) * .35;
+  }
+  float heat = texture(uHeat, vec2(tc, .5)).r; // the fresh charge: white-gold, cooling
+  col = mix(col, vec3(1., .94, .78), heat * .55) + vec3(1., .78, .45) * heat * .22;
+  if (uMode < 1.5) { float sh = mod(uT * 52., ARC + 140.) - 70.; col += vec3(1.) * exp(-pow((u - sh) / 30., 2.)) * .22; } // the sheen
+  col += vec3(1.) * exp(-max(s, 0.) / 9.) * (.3 + .6 * uSpd) * .5; // the front glows, more while it moves
+  if (ready) col *= 1.05 + .12 * sin(uT * 4.);
+  float g = exp(-max(sd, 0.) / 3.6) * (ready ? .75 : .5) * (1. - al);
+  o = vec4(col * al + mix(base, vec3(1.), .25) * g, al);
+}`;
+function glLava(mode) {
+  return function (c, ctx, s) {
+    const { p, ready, time, now } = s;
+    seat(ctx); scale(ctx, p, ready, null);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(0), ang(1)); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,150,70,.4)'; ctx.beginPath(); ctx.arc(CX, CY, 63.5, ang(RED), ang(1)); ctx.stroke();
+    if (!c.gl) {
+      const cv = document.createElement('canvas'); cv.className = 'gcv'; cv.width = cv.height = 190 * GS; c.el.querySelector('.halo').appendChild(cv);
+      const gl = cv.getContext('webgl2', { premultipliedAlpha: true, alpha: true, antialias: false });
+      const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(o)); return o; };
+      const pr = gl.createProgram();
+      gl.attachShader(pr, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 a; void main(){ gl_Position = vec4(a, 0., 1.); }'));
+      gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, LAVA_FS)); gl.linkProgram(pr); gl.useProgram(pr);
+      const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(pr, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      const U = {}; for (const k of ['uRes', 'uP', 'uT', 'uReady', 'uSpd', 'uMode', 'uPc', 'uHeat']) U[k] = gl.getUniformLocation(pr, k);
+      c.gl = { gl, U, heat: new Uint8Array(256), bins: new Float64Array(301), top: 0 };
+    }
+    const G = c.gl, gl = G.gl, U = G.U;
+    // the fresh-charge map: when the fill passed each point, cooling over ~0.9 s
+    const N = 300, top = Math.floor(p * N);
+    if (top < G.top - 2) { G.bins.fill(0); G.top = top; }
+    for (let i = G.top + 1; i <= top; i++) G.bins[i] = now; G.top = Math.max(G.top, top);
+    for (let j = 0; j < 256; j++) { const bt = G.bins[Math.floor(j / 255 * N)]; G.heat[j] = bt ? Math.round(255 * Math.exp(-(now - bt) / 900)) : 0; }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 256, 1, 0, gl.RED, gl.UNSIGNED_BYTE, G.heat);
+    gl.viewport(0, 0, 190 * GS, 190 * GS); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(U.uRes, 190 * GS, 190 * GS); gl.uniform1f(U.uP, p); gl.uniform1f(U.uT, time % 1000); gl.uniform1f(U.uReady, ready ? 1 : 0);
+    gl.uniform1f(U.uSpd, cl((c.spd || 0) * 2.2)); gl.uniform1f(U.uMode, mode); gl.uniform3f(U.uPc, c.pc[0] / 255, c.pc[1] / 255, c.pc[2] / 255); gl.uniform1i(U.uHeat, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+}
+Object.assign(GAUGES, { l1: glLava(0), l2: glLava(1), l3: glLava(2), l4: glLava(3) });
+Object.assign(FLOW, { l1: 1, l2: 1, l3: 1, l4: 1 });
+cards.forEach(c => {
+  c.pv = 0; c.vel = 0; c.lastTarget = 0; c.gains = []; c.lastV = -1;
+  const g = c.el.dataset.g; if (!g) return;
+  const cv = document.createElement('canvas'); cv.className = 'gcv'; cv.width = cv.height = 190 * GS; c.el.querySelector('.halo').appendChild(cv);
+  c.gx = cv.getContext('2d'); c.gfn = GAUGES[g]; c.gate = !!GATED[g]; c.feed = !!FEED[g]; c.goal = 0; if (c.feed) c.el.classList.add('feed'); c.flow = !!FLOW[g]; c.m1 = 0; c.s1 = { v: 0, t: .2 }; c.s2 = { v: 0, t: .2 };
+});
+const readPc = () => cards.forEach(c => { c.pc = hex(getComputedStyle(c.el).getPropertyValue('--pc')); });
+readPc();
+
+let charge = 0, readyAt = 0, lastNow = performance.now(), hitQ = 1;
+function tick(now) {
+  const dt = Math.min(.05, (now - lastNow) / 1000); lastNow = now;
+  let target, ready;
+  if (now - lastHit > 1200) {
+    lastHit = now; n++;
+    const k = kinds[n % kinds.length], kmh = 120 + (n * 37) % 220, perfect = n % 7 !== 6;
+    streak = perfect ? streak + 1 : 0; hitQ = perfect ? 1 : .55;
+    if (streak > 0 && streak % 3 === 0) play = { name: 'pump', t0: now };
+    cards.forEach(c => { perfect ? setGrade(c, 'PERFECT', '#ffd34d', `${k} · ${kmh} km/h`) : setGrade(c, 'GREAT', '#9be86a', `late · ${kmh} km/h`); drawStreak(c); });
+    if (mode === 'loop' && !readyAt) charge = Math.min(1, charge + (perfect ? .1 + (n % 3) * .03 : .05));
+  }
+  if (mode === 'loop') {
+    if (charge >= 1 && !readyAt) readyAt = now;
+    if (readyAt && now - readyAt > 3500) { charge = 0; readyAt = 0; }
+    target = charge; ready = charge >= 1;
+  } else if (mode === 'mid') { target = .45; ready = false; } else if (mode === 'red') { target = .92; ready = false; } else { target = 1; ready = true; }
+  if (ready && !wasReady) { play = { name: 'flourish', t0: now }; cards.forEach(c => { c.burst.classList.remove('go'); void c.burst.offsetWidth; c.burst.classList.add('go'); }); }
+  wasReady = ready;
+  // the portrait frame: idle back and forth, a celebration once through
+  let [s, len] = CLIP[play.name], i = Math.floor((now - play.t0) / 1000 * FPS);
+  if (play.name !== 'idle' && i >= len) { play = { name: 'idle', t0: now }; [s, len] = CLIP.idle; i = 0; }
+  if (play.name === 'idle') { const m = i % (2 * len - 2); i = m < len ? m : 2 * len - 2 - m; }
+  const f = s + Math.min(len - 1, i), time = now / 1000;
+  cards.forEach(c => {
+    // the display follows the charge on a spring
+    if (target > c.lastTarget + 1e-4) {
+      const g = { from: c.gate ? c.goal : cl(c.pv), to: target, t0: now, q: hitQ, streak, delay: c.feed ? 240 : 0 };
+      g.dur = 260 + 360 * target; g.land = g.t0 + g.delay + g.dur + (c.el.dataset.g === 'p3' ? Math.min(2, Math.floor(streak / 3)) * 110 : 0);
+      c.gains.push(g);
+    } else if (target < c.lastTarget - 1e-4) { c.gains = []; c.goal = target; }
+    c.lastTarget = target; if (c.gains.length > 6) c.gains.shift();
+    // gated gauges move only when a packet lands
+    if (c.gate) { for (const g of c.gains) if (now >= g.land && g.to > c.goal) c.goal = g.to; } else c.goal = target;
+    const K = c.gate ? 320 : 140, D = c.gate ? 30 : 19; // (gated: snap to the landing, a little overshoot)
+    c.vel += ((c.goal - c.pv) * K - c.vel * D) * dt; c.pv += c.vel * dt;
+    if (c.flow) { c.vel = 0; const was = c.pv0 || 0; c.m1 = sdamp(c.m1, c.goal, c.s1, dt); c.pv = sdamp(c.pv0 ?? 0, c.m1, c.s2, dt); c.pv0 = c.pv; c.spd = lerp(c.spd || 0, Math.max(0, (c.pv - was) / Math.max(dt, 1e-3)), .25); }
+    const p = cl(c.pv), v = Math.floor(p * 100 + 1e-6);
+    c.el.style.setProperty('--p', p.toFixed(4));
+    c.el.classList.toggle('fire', ready);
+    c.el.classList.toggle('redline', p >= RED && !ready);
+    if (v !== c.lastV) { c.lastV = v; c.pctEl.textContent = v; c.pctEl.dataset.w = v; }
+    if (sheet.complete && sheet.naturalWidth && f !== c.lastFrame) { c.lastFrame = f; c.ctx.clearRect(0, 0, FW, FH); c.ctx.drawImage(sheet, (f % COLS) * FW, Math.floor(f / COLS) * FH, FW, FH, 0, 0, FW, FH); }
+    if (c.gx) { const g = c.gx; g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, 190 * GS, 190 * GS); g.setTransform(GS, 0, 0, GS, 0, 0); c.gfn(c, g, { p, ready, time, now, dt }); return; }
+    if (c.v === 'C2') { // the SVG gauge (the current one)
+      const ls = Math.floor(p * 36 + 1e-6);
+      c.ticks.forEach((t, k) => t.classList.toggle('lit', k <= ls && p > 0));
+      c.lbls.forEach(t => t.classList.toggle('lit', +t.dataset.i <= ls));
+      c.segs.forEach((sg, k) => { sg.classList.toggle('lit', k < ls); sg.classList.toggle('hot', k < ls && k >= ls - 2 && !ready); });
+    }
+  });
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { mode = b.dataset.m; t0 = performance.now(); charge = 0; readyAt = 0; document.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', x === b)); });
+document.querySelectorAll('[data-z]').forEach(b => b.onclick = () => { document.documentElement.style.setProperty('--z', b.dataset.z); document.querySelectorAll('[data-z]').forEach(x => x.classList.toggle('on', x === b)); });
+document.getElementById('team').onclick = e => { const blue = !cards[0].el.classList.contains('blue'); cards.forEach(c => c.el.classList.toggle('blue', blue)); e.target.textContent = 'Team: ' + (blue ? 'blue' : 'red'); readPc(); };
+</script>
+</body>
+</html>
